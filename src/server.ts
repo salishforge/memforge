@@ -6,11 +6,19 @@
 //   POST   /memory/:agentId/consolidate
 //   GET    /memory/:agentId/stats
 //   GET    /health
+//   GET    /metrics              (Prometheus)
+//   GET    /api/spec.json        (OpenAPI 3.0)
+//   GET    /api/docs             (Swagger UI)
 
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { MemoryManager } from './memory-manager.js';
 import { closePool } from './db.js';
+import {
+  registry,
+  httpRequestsTotal,
+  httpRequestDurationSeconds,
+} from './metrics.js';
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -26,18 +34,205 @@ const manager = new MemoryManager({
 const app = express();
 app.use(express.json());
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Request metrics middleware ───────────────────────────────────────────────
 
-function agentId(req: Request): string {
-  return req.params['agentId'] ?? '';
-}
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const route = (req.route?.path as string | undefined) ?? req.path;
+    const labels = {
+      method: req.method,
+      route,
+      status_code: String(res.statusCode),
+    };
+    httpRequestsTotal.inc(labels);
+    httpRequestDurationSeconds.observe(labels, (Date.now() - start) / 1000);
+  });
+  next();
+});
 
-function ok(res: Response, data: unknown): void {
-  res.json({ ok: true, data });
-}
+// ─── OpenAPI spec ─────────────────────────────────────────────────────────────
 
-function fail(res: Response, status: number, message: string): void {
-  res.status(status).json({ ok: false, error: message });
+const openApiSpec = {
+  openapi: '3.0.3',
+  info: {
+    title: 'MemForge Memory API',
+    version: '1.0.0',
+    description:
+      'Tiered agent memory service with hot/warm/cold PostgreSQL storage and full-text search.',
+  },
+  servers: [{ url: `http://localhost:${PORT}`, description: 'Local' }],
+  tags: [
+    { name: 'Memory', description: 'Agent memory operations' },
+    { name: 'System', description: 'Health and observability' },
+  ],
+  paths: {
+    '/health': {
+      get: {
+        summary: 'Health check',
+        tags: ['System'],
+        responses: {
+          '200': {
+            description: 'Service is healthy',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string', example: 'ok' },
+                    ts: { type: 'string', format: 'date-time' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/metrics': {
+      get: {
+        summary: 'Prometheus metrics',
+        tags: ['System'],
+        responses: {
+          '200': {
+            description: 'Prometheus text format metrics',
+            content: { 'text/plain': { schema: { type: 'string' } } },
+          },
+        },
+      },
+    },
+    '/memory/{agentId}/add': {
+      post: {
+        summary: 'Add memory event to hot tier',
+        tags: ['Memory'],
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['content'],
+                properties: {
+                  content: { type: 'string', description: 'Memory content to store' },
+                  metadata: { type: 'object', additionalProperties: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Memory added', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+          '400': { '$ref': '#/components/responses/BadRequest' },
+          '500': { '$ref': '#/components/responses/InternalError' },
+        },
+      },
+    },
+    '/memory/{agentId}/query': {
+      get: {
+        summary: 'Full-text search warm tier',
+        tags: ['Memory'],
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'q', in: 'query', required: true, schema: { type: 'string' }, description: 'Search query' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 10 } },
+        ],
+        responses: {
+          '200': { description: 'Search results', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+          '400': { '$ref': '#/components/responses/BadRequest' },
+          '500': { '$ref': '#/components/responses/InternalError' },
+        },
+      },
+    },
+    '/memory/{agentId}/consolidate': {
+      post: {
+        summary: 'Trigger hot→warm memory consolidation',
+        tags: ['Memory'],
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': { description: 'Consolidation result', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+          '400': { '$ref': '#/components/responses/BadRequest' },
+          '500': { '$ref': '#/components/responses/InternalError' },
+        },
+      },
+    },
+    '/memory/{agentId}/stats': {
+      get: {
+        summary: 'Get memory tier statistics for an agent',
+        tags: ['Memory'],
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': { description: 'Memory stats', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+          '404': { '$ref': '#/components/responses/NotFound' },
+          '500': { '$ref': '#/components/responses/InternalError' },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      OkResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          data: { description: 'Response payload' },
+        },
+      },
+      ErrorResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: false },
+          error: { type: 'string' },
+        },
+      },
+    },
+    responses: {
+      BadRequest: {
+        description: 'Bad request',
+        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
+      },
+      NotFound: {
+        description: 'Resource not found',
+        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
+      },
+      InternalError: {
+        description: 'Internal server error',
+        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
+      },
+    },
+  },
+};
+
+// ─── Swagger UI HTML helper ───────────────────────────────────────────────────
+
+function swaggerUiHtml(specUrl: string, title: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${title}</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    SwaggerUIBundle({
+      url: '${specUrl}',
+      dom_id: '#swagger-ui',
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: 'BaseLayout',
+      deepLinking: true,
+    });
+  </script>
+</body>
+</html>`;
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
@@ -48,6 +243,31 @@ function fail(res: Response, status: number, message: string): void {
  */
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
+});
+
+/**
+ * GET /metrics
+ * Prometheus text-format metrics.
+ */
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', registry.contentType);
+  res.send(await registry.metrics());
+});
+
+/**
+ * GET /api/spec.json
+ * OpenAPI 3.0 specification.
+ */
+app.get('/api/spec.json', (_req, res) => {
+  res.json(openApiSpec);
+});
+
+/**
+ * GET /api/docs
+ * Interactive Swagger UI.
+ */
+app.get('/api/docs', (_req, res) => {
+  res.type('html').send(swaggerUiHtml('/api/spec.json', 'MemForge API Docs'));
 });
 
 /**
@@ -138,6 +358,20 @@ app.get('/memory/:agentId/stats', async (req: Request, res: Response) => {
     }
   }
 });
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function agentId(req: Request): string {
+  return req.params['agentId'] ?? '';
+}
+
+function ok(res: Response, data: unknown): void {
+  res.json({ ok: true, data });
+}
+
+function fail(res: Response, status: number, message: string): void {
+  res.status(status).json({ ok: false, error: message });
+}
 
 // ─── Global error handler ────────────────────────────────────────────────────
 
