@@ -6,9 +6,12 @@
 //   process_memory_bytes          gauge     (via collectDefaultMetrics)
 //   process_uptime_seconds        gauge     (via collectDefaultMetrics)
 //   database_pool_connections     gauge     (state: total|idle|waiting)
+//   cache_operations_total        counter   (operation: hit|miss|set|invalidation|error)
+//   cache_hit_rate                gauge     (ratio 0-1)
 
 import { Registry, Counter, Histogram, Gauge, collectDefaultMetrics } from 'prom-client';
 import { getPool } from './db.js';
+import { getLocalStats } from './cache.js';
 
 export const registry = new Registry();
 
@@ -48,6 +51,30 @@ export const dbPoolConnections = new Gauge({
       this.set({ state: 'waiting' }, pool.waitingCount);
     } catch {
       // pool not yet initialised
+    }
+  },
+});
+
+// ── Cache metrics ─────────────────────────────────────────────────────────────
+
+export const cacheOperationsTotal = new Counter({
+  name: 'cache_operations_total',
+  help: 'Total Redis cache operations by type',
+  labelNames: ['operation'] as const,
+  registers: [registry],
+});
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const cacheHitRate = new Gauge({
+  name: 'cache_hit_rate',
+  help: 'Redis cache hit rate (0–1)',
+  registers: [registry],
+  collect() {
+    try {
+      const s = getLocalStats();
+      this.set(s.hit_rate / 100);
+    } catch {
+      // cache not yet initialised
     }
   },
 });

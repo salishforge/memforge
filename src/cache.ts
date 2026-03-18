@@ -1,0 +1,227 @@
+// MemForge — Redis cache layer
+//
+// Cache tiers:
+//   hot          →  5 min TTL  (stats, recent items)
+//   search       → 10 min TTL  (FTS query results)
+//   consolidation→ 30 min TTL  (consolidation result records)
+//
+// Key format:
+//   memforge:{agentId}:stats
+//   memforge:{agentId}:q:{sha256(q+limit)[0:12]}
+
+import { createClient } from 'redis';
+import type { RedisClientType } from 'redis';
+import { createHash } from 'crypto';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type CacheTier = 'hot' | 'search' | 'consolidation';
+
+const TTL_SECONDS: Record<CacheTier, number> = {
+  hot: 5 * 60,            //  5 min
+  search: 10 * 60,        // 10 min
+  consolidation: 30 * 60, // 30 min
+};
+
+interface CacheCounters {
+  hits: number;
+  misses: number;
+  sets: number;
+  invalidations: number;
+  errors: number;
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
+
+const counters: CacheCounters = { hits: 0, misses: 0, sets: 0, invalidations: 0, errors: 0 };
+
+let redisClient: RedisClientType | null = null;
+let connectionPromise: Promise<RedisClientType | null> | null = null;
+
+// ─── Connection ───────────────────────────────────────────────────────────────
+
+export async function getRedis(): Promise<RedisClientType | null> {
+  if (redisClient?.isOpen) return redisClient;
+
+  // Coalesce concurrent connection attempts
+  if (connectionPromise) return connectionPromise;
+
+  connectionPromise = (async (): Promise<RedisClientType | null> => {
+    const url = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+    try {
+      const client = createClient({ url }) as RedisClientType;
+
+      client.on('error', (err: Error) => {
+        console.error('[cache] Redis error:', err.message);
+        counters.errors++;
+      });
+      client.on('reconnecting', () => {
+        console.log('[cache] Redis reconnecting…');
+      });
+      client.on('end', () => {
+        console.log('[cache] Redis connection closed');
+        redisClient = null;
+      });
+
+      await client.connect();
+      console.log(`[cache] Redis connected at ${url}`);
+      redisClient = client;
+      return client;
+    } catch (err) {
+      console.error('[cache] Redis connection failed:', (err as Error).message, '— operating without cache');
+      return null;
+    } finally {
+      connectionPromise = null;
+    }
+  })();
+
+  return connectionPromise;
+}
+
+// ─── Key helpers ──────────────────────────────────────────────────────────────
+
+export function queryHash(q: string, limit: number): string {
+  return createHash('sha256')
+    .update(`${q}::${limit}`)
+    .digest('hex')
+    .slice(0, 12);
+}
+
+export function statsKey(agentId: string): string {
+  return `memforge:${agentId}:stats`;
+}
+
+export function searchKey(agentId: string, q: string, limit: number): string {
+  return `memforge:${agentId}:q:${queryHash(q, limit)}`;
+}
+
+// ─── Core operations ──────────────────────────────────────────────────────────
+
+export async function cacheGet(key: string): Promise<unknown> {
+  const redis = await getRedis();
+  if (!redis) {
+    counters.misses++;
+    return null;
+  }
+
+  try {
+    const raw = await redis.get(key);
+    if (raw !== null) {
+      counters.hits++;
+      return JSON.parse(raw) as unknown;
+    }
+    counters.misses++;
+    return null;
+  } catch (err) {
+    console.error('[cache] GET error:', (err as Error).message);
+    counters.errors++;
+    counters.misses++;
+    return null;
+  }
+}
+
+export async function cacheSet(key: string, value: unknown, tier: CacheTier): Promise<void> {
+  const redis = await getRedis();
+  if (!redis) return;
+
+  try {
+    await redis.setEx(key, TTL_SECONDS[tier], JSON.stringify(value));
+    counters.sets++;
+  } catch (err) {
+    console.error('[cache] SET error:', (err as Error).message);
+    counters.errors++;
+  }
+}
+
+/**
+ * Delete all cache keys matching a glob pattern using SCAN (production-safe).
+ */
+export async function invalidatePattern(pattern: string): Promise<number> {
+  const redis = await getRedis();
+  if (!redis) return 0;
+
+  const keys: string[] = [];
+  try {
+    for await (const batch of redis.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+      if (Array.isArray(batch)) {
+        keys.push(...(batch as string[]));
+      } else {
+        keys.push(batch as unknown as string);
+      }
+    }
+    if (keys.length === 0) return 0;
+
+    // Delete in parallel batches (pipeline-style); del accepts a single key per call
+    const results = await Promise.all(keys.map((k) => redis.del(k)));
+    const deleted = results.reduce((sum, n) => sum + n, 0);
+    counters.invalidations += deleted;
+    return deleted;
+  } catch (err) {
+    console.error('[cache] SCAN/DEL error:', (err as Error).message);
+    counters.errors++;
+    return 0;
+  }
+}
+
+/**
+ * Invalidate all cached entries for a specific agent.
+ */
+export async function invalidateAgent(agentId: string): Promise<number> {
+  return invalidatePattern(`memforge:${agentId}:*`);
+}
+
+/**
+ * Flush all MemForge cache keys (does NOT flush the entire Redis DB).
+ */
+export async function flushCache(agentId?: string): Promise<number> {
+  if (agentId) return invalidateAgent(agentId);
+  return invalidatePattern('memforge:*');
+}
+
+// ─── Statistics ───────────────────────────────────────────────────────────────
+
+export function getLocalStats(): CacheCounters & { hit_rate: number } {
+  const total = counters.hits + counters.misses;
+  return {
+    ...counters,
+    hit_rate: total > 0 ? Math.round((counters.hits / total) * 10000) / 100 : 0,
+  };
+}
+
+export async function getRedisStats(): Promise<Record<string, unknown>> {
+  const redis = await getRedis();
+  if (!redis?.isOpen) return { connected: false };
+
+  try {
+    const [memInfo, statsInfo] = await Promise.all([
+      redis.info('memory'),
+      redis.info('stats'),
+    ]);
+
+    const usedMemory = memInfo.match(/used_memory_human:([^\r\n]+)/)?.[1]?.trim() ?? 'unknown';
+    const evictions = parseInt(statsInfo.match(/evicted_keys:(\d+)/)?.[1] ?? '0', 10);
+    const keyspaceHits = parseInt(statsInfo.match(/keyspace_hits:(\d+)/)?.[1] ?? '0', 10);
+    const keyspaceMisses = parseInt(statsInfo.match(/keyspace_misses:(\d+)/)?.[1] ?? '0', 10);
+    const totalKeys = await redis.dbSize();
+
+    return {
+      connected: true,
+      used_memory: usedMemory,
+      total_keys: totalKeys,
+      evictions,
+      keyspace_hits: keyspaceHits,
+      keyspace_misses: keyspaceMisses,
+    };
+  } catch (err) {
+    return { connected: false, error: (err as Error).message };
+  }
+}
+
+// ─── Lifecycle ────────────────────────────────────────────────────────────────
+
+export async function closeRedis(): Promise<void> {
+  if (redisClient?.isOpen) {
+    await redisClient.quit();
+    redisClient = null;
+  }
+}
