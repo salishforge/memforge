@@ -14,7 +14,7 @@ If you discover a security vulnerability in MemForge, please report it responsib
 
 **Do not open a public issue.** Instead:
 
-1. Email **security@salishforge.com** with details of the vulnerability
+1. [Open a private security advisory](https://github.com/salishforge/memforge/security/advisories/new) on GitHub with details of the vulnerability
 2. Include steps to reproduce, potential impact, and suggested fix if you have one
 3. Allow up to 72 hours for an initial response
 

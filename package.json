@@ -73,7 +73,7 @@
     "tiered-memory",
     "reflection"
   ],
-  "author": "SalishForge <hello@salishforge.com> (https://github.com/salishforge)",
+  "author": "SalishForge (https://github.com/salishforge)",
   "repository": {
     "type": "git",
     "url": "https://github.com/salishforge/memforge.git"

@@ -33,7 +33,7 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project team at **conduct@salishforge.com**.
+reported by [opening a private security advisory](https://github.com/salishforge/memforge/security/advisories/new) on GitHub.
 
 All complaints will be reviewed and investigated promptly and fairly. The project
 team is obligated to maintain confidentiality with regard to the reporter of an incident.
