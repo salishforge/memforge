@@ -422,6 +422,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
 | [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.1.0 |
+| [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges (17 items) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |
 | [SECURITY.md](SECURITY.md) | Security policy, architecture, hardening checklist |
