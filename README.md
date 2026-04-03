@@ -31,7 +31,7 @@ Most AI memory systems are passive stores — they save and retrieve, but the st
 - **Retrieval reinforces memory.** Memories that are frequently accessed and lead to good outcomes become stronger. Unused memories decay naturally.
 - **One database does everything.** PostgreSQL handles storage, full-text search, vector similarity, and graph traversal. No Neo4j, no Pinecone, no separate systems to manage.
 
-See [SPECIFICATION.md](SPECIFICATION.md) for design philosophy and [ARCHITECTURE.md](ARCHITECTURE.md) for internal architecture.
+See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (any framework, any language). See [SPECIFICATION.md](SPECIFICATION.md) for design philosophy and [ARCHITECTURE.md](ARCHITECTURE.md) for internal architecture.
 
 ## Features
 
@@ -433,6 +433,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
 | [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.1.0 |
+| [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges (17 items) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |

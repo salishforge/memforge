@@ -7,6 +7,7 @@ This file provides context for AI agents (Claude Code, Cursor, etc.) working on 
 MemForge is a neuroscience-inspired memory system for AI agents. It provides tiered memory storage (hot → warm → cold), hybrid search, a knowledge graph, LLM-driven reflection, sleep cycles that actively revise and improve stored knowledge, and procedural learning.
 
 **Key design documents:**
+- [INTEGRATION.md](INTEGRATION.md) — How to wire MemForge into any agent (REST, SDK, MCP, LangChain, CrewAI, etc.)
 - [SPECIFICATION.md](SPECIFICATION.md) — Design philosophy, objectives, and core tenets
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Internal architecture, data models, module structure
 - [DEVELOPMENT.md](DEVELOPMENT.md) — Setup, testing, extension points
