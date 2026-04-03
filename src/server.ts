@@ -777,7 +777,14 @@ function ok(res: Response, data: unknown): void {
 }
 
 function fail(res: Response, status: number, message: string): void {
-  res.status(status).json({ ok: false, error: message });
+  // Sanitize 500 errors — never expose internal details to clients
+  const safeMessage = status >= 500
+    ? 'Internal server error'
+    : message;
+  if (status >= 500) {
+    console.error(`[memforge] ${status}:`, message);
+  }
+  res.status(status).json({ ok: false, error: safeMessage });
 }
 
 // ─── Global error handler ────────────────────────────────────────────────────

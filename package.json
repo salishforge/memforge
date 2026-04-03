@@ -30,7 +30,7 @@
     "mcp": "node dist/mcp.js",
     "migrate": "psql \"$DATABASE_URL\" -f schema/schema.sql",
     "type-check": "tsc --noEmit",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint src/",
     "test:cache": "node --import tsx/esm --test tests/cache.test.ts",
     "test:integration": "node --import tsx/esm --test tests/integration.test.ts",
     "test": "node --import tsx/esm --test tests/*.test.ts"
@@ -46,6 +46,9 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.10",
     "@types/pg": "^8.11.10",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },
@@ -70,5 +73,14 @@
     "tiered-memory",
     "reflection"
   ],
+  "author": "SalishForge <hello@salishforge.com> (https://github.com/salishforge)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/salishforge/memforge.git"
+  },
+  "homepage": "https://github.com/salishforge/memforge#readme",
+  "bugs": {
+    "url": "https://github.com/salishforge/memforge/issues"
+  },
   "license": "MIT"
 }

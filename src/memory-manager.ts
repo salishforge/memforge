@@ -22,7 +22,6 @@ import type {
   ClearResult,
   AgentStats,
   TimelineEntry,
-  Entity,
   EntitySearchResult,
   GraphNode,
   GraphEdge,

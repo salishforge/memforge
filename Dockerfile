@@ -21,6 +21,10 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY schema ./schema
 
+# Run as non-root user
+RUN addgroup -g 1001 memforge && adduser -D -u 1001 -G memforge memforge
+USER memforge
+
 EXPOSE 3333
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
