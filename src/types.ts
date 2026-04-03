@@ -1,5 +1,8 @@
 // MemForge Standalone — Shared TypeScript types
 
+import type { EmbeddingProvider, EmbeddingProviderType } from './embedding.js';
+import type { LLMProvider, LLMProviderType, ConsolidationSummary } from './llm.js';
+
 export interface Agent {
   id: string;
   created_at: Date;
@@ -32,6 +35,10 @@ export interface WarmRow {
   source_hot_ids: bigint[];
   metadata: Record<string, unknown>;
   consolidated_at: Date;
+  time_start: Date | null;
+  time_end: Date | null;
+  access_count: number;
+  last_accessed: Date | null;
   /** Full-text search rank (present only in query results) */
   rank?: number;
 }
@@ -41,17 +48,257 @@ export interface QueryResult {
   content: string;
   metadata: Record<string, unknown>;
   consolidated_at: Date;
+  time_start: Date | null;
+  time_end: Date | null;
   rank: number;
 }
 
+// ─── Query modes ─────────────────────────────────────────────────────────────
+
+export type QueryMode = 'keyword' | 'semantic' | 'hybrid';
+
+export interface QueryOptions {
+  /** Search text (required for keyword/hybrid, optional for semantic) */
+  q: string;
+  /** Maximum results (default 10) */
+  limit?: number;
+  /** Search mode (default: hybrid if embeddings enabled, keyword otherwise) */
+  mode?: QueryMode;
+  /** Filter: only return memories after this time */
+  after?: Date;
+  /** Filter: only return memories before this time */
+  before?: Date;
+  /** Temporal decay rate per hour (0 = no decay, default from config) */
+  decayRate?: number;
+}
+
+// ─── Timeline ────────────────────────────────────────────────────────────────
+
+export interface TimelineEntry {
+  id: bigint;
+  content: string;
+  metadata: Record<string, unknown>;
+  time_start: Date | null;
+  time_end: Date | null;
+  consolidated_at: Date;
+  access_count: number;
+}
+
 // ─── Consolidation ───────────────────────────────────────────────────────────
+
+export type ConsolidationMode = 'concat' | 'summarize';
 
 export interface ConsolidateResult {
   run_id: bigint;
   agent_id: string;
   hot_rows_processed: number;
   warm_rows_created: number;
+  consolidation_mode: ConsolidationMode;
   status: 'complete' | 'failed';
+}
+
+// ─── Knowledge Graph ─────────────────────────────────────────────────────────
+
+export interface Entity {
+  id: bigint;
+  agent_id: string;
+  name: string;
+  entity_type: string;
+  metadata: Record<string, unknown>;
+  first_seen: Date;
+  last_seen: Date;
+  mention_count: number;
+}
+
+export interface Relationship {
+  id: bigint;
+  agent_id: string;
+  source_entity_id: bigint;
+  target_entity_id: bigint;
+  relation_type: string;
+  weight: number;
+  metadata: Record<string, unknown>;
+  first_seen: Date;
+  last_seen: Date;
+  valid_from: Date;
+  valid_until: Date | null;
+}
+
+export interface GraphNode {
+  id: bigint;
+  name: string;
+  entity_type: string;
+  mention_count: number;
+  first_seen: Date;
+  last_seen: Date;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  relation_type: string;
+  weight: number;
+}
+
+export interface GraphQueryResult {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface EntitySearchResult {
+  id: bigint;
+  name: string;
+  entity_type: string;
+  mention_count: number;
+  first_seen: Date;
+  last_seen: Date;
+  /** Warm-tier memory IDs that mention this entity */
+  memory_ids: bigint[];
+}
+
+// ─── Reflection & Self-Learning ──────────────────────────────────────────────
+
+export type ReflectionTrigger = 'manual' | 'threshold' | 'scheduled';
+
+export interface Reflection {
+  id: bigint;
+  agent_id: string;
+  content: string;
+  key_insights: string[];
+  contradictions: string[];
+  source_warm_ids: bigint[];
+  trigger_type: ReflectionTrigger;
+  reflection_level: number;
+  source_reflection_ids: bigint[];
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface ReflectionResult {
+  id: bigint;
+  agent_id: string;
+  insights_count: number;
+  contradictions_count: number;
+  source_memories_reviewed: number;
+  trigger_type: ReflectionTrigger;
+  reflection_level: number;
+}
+
+export interface MetaReflectionResult {
+  id: bigint;
+  agent_id: string;
+  insights_count: number;
+  contradictions_count: number;
+  source_reflections_reviewed: number;
+  reflection_level: number;
+}
+
+// ─── Procedural Memory ───────────────────────────────────────────────────────
+
+export interface Procedure {
+  id: bigint;
+  agent_id: string;
+  condition: string;
+  action: string;
+  source_reflection_id: bigint | null;
+  confidence: number;
+  access_count: number;
+  last_accessed: Date | null;
+  active: boolean;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+// ─── Memory Revision Engine ──────────────────────────────────────────────────
+
+export type RevisionType = 'augment' | 'correct' | 'merge' | 'compress';
+
+export type FeedbackOutcome = 'positive' | 'negative' | 'neutral';
+
+export interface RetrievalEvent {
+  id: bigint;
+  agent_id: string;
+  warm_tier_id: bigint;
+  query_text: string;
+  query_mode: string;
+  rank_position: number;
+  outcome: FeedbackOutcome | null;
+  feedback_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface FeedbackResult {
+  agent_id: string;
+  updated: number;
+  outcome: FeedbackOutcome;
+}
+
+export interface ActiveMemoryResult {
+  agent_id: string;
+  memories: Array<{ id: bigint; content: string; relevance: string }>;
+  procedures: Array<{ condition: string; action: string; confidence: number }>;
+}
+
+export interface MemoryRevision {
+  id: bigint;
+  agent_id: string;
+  warm_tier_id: bigint;
+  revision_number: number;
+  previous_content: string;
+  new_content: string;
+  revision_type: RevisionType;
+  reason: string;
+  delta_summary: string;
+  confidence: number;
+  model_used: string;
+  created_at: Date;
+}
+
+export interface SleepCycleResult {
+  agent_id: string;
+  phase1_scores_updated: number;
+  phase2_evicted: number;
+  phase2_flagged_for_revision: number;
+  phase3_revised: number;
+  phase3_skipped: number;
+  phase4_edges_invalidated: number;
+  phase4_entities_merged: number;
+  phase5_reflection: boolean;
+  tokens_used: number;
+  duration_ms: number;
+}
+
+export interface SleepCycleConfig {
+  /** Max tokens to spend on LLM calls per cycle (default 100000) */
+  tokenBudget: number;
+  /** Importance threshold below which memories are evicted (default 0.1) */
+  evictionThreshold: number;
+  /** Confidence threshold below which memories are flagged for revision (default 0.4) */
+  revisionThreshold: number;
+  /** Whether to run Phase 5 (reflection) in this cycle (default true) */
+  includeReflection: boolean;
+  /** Importance score weights */
+  weights: {
+    recency: number;
+    frequency: number;
+    centrality: number;
+    reflection: number;
+    stability: number;
+  };
+}
+
+export interface MemoryHealth {
+  agent_id: string;
+  total_memories: number;
+  avg_importance: number;
+  avg_confidence: number;
+  memories_below_eviction: number;
+  memories_below_revision: number;
+  revision_velocity_24h: number;
+  knowledge_stability_pct: number;
+  retrieval_count_24h: number;
+  contradiction_rate: number;
 }
 
 // ─── Cold tier ───────────────────────────────────────────────────────────────
@@ -69,6 +316,9 @@ export interface AgentStats {
   hot_count: number;
   warm_count: number;
   cold_count: number;
+  entity_count: number;
+  relationship_count: number;
+  reflection_count: number;
   last_consolidation: Date | null;
   last_seen: Date;
 }
@@ -84,8 +334,24 @@ export interface MemForgeConfig {
   consolidationThreshold: number;
   /** Whether to auto-register unknown agent IDs on add() (default true) */
   autoRegisterAgents: boolean;
+  /** Embedding provider instance (default: NoOpEmbeddingProvider) */
+  embeddingProvider?: EmbeddingProvider;
+  /** LLM provider instance for intelligent consolidation (default: null = concat mode) */
+  llmProvider?: LLMProvider | null;
+  /** Consolidation mode: 'concat' (fast, no LLM) or 'summarize' (LLM-driven distillation) */
+  consolidationMode: ConsolidationMode;
+  /** Temporal decay rate per hour for query ranking (default 0 = no decay) */
+  temporalDecayRate: number;
+  /** LLM provider for sleep cycle revision (can differ from consolidation LLM) */
+  revisionLlmProvider?: LLMProvider | null;
+  /** Sleep cycle configuration */
+  sleepCycle: SleepCycleConfig;
 }
 
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
 };
+
+// Re-export provider types for convenience
+export type { EmbeddingProvider, EmbeddingProviderType };
+export type { LLMProvider, LLMProviderType, ConsolidationSummary };

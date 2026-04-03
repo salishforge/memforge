@@ -5,14 +5,53 @@
 
 export { MemoryManager } from './memory-manager.js';
 export { getPool, closePool } from './db.js';
+export {
+  createEmbeddingProvider,
+  OpenAIEmbeddingProvider,
+  OllamaEmbeddingProvider,
+  NoOpEmbeddingProvider,
+} from './embedding.js';
+export {
+  createLLMProvider,
+  AnthropicLLMProvider,
+  OpenAILLMProvider,
+  OllamaLLMProvider,
+} from './llm.js';
 export type {
   Agent,
   HotRow,
   WarmRow,
   AddResult,
   QueryResult,
+  QueryOptions,
+  QueryMode,
+  ConsolidationMode,
+  TimelineEntry,
   ConsolidateResult,
   ClearResult,
   AgentStats,
   MemForgeConfig,
+  EmbeddingProvider,
+  EmbeddingProviderType,
+  LLMProvider,
+  LLMProviderType,
+  ConsolidationSummary,
+  Entity,
+  Relationship,
+  GraphNode,
+  GraphEdge,
+  GraphQueryResult,
+  EntitySearchResult,
+  Reflection,
+  ReflectionResult,
+  ReflectionTrigger,
+  RetrievalEvent,
+  MemoryRevision,
+  RevisionType,
+  SleepCycleResult,
+  SleepCycleConfig,
+  MemoryHealth,
+  Procedure,
 } from './types.js';
+export { SleepCycleEngine } from './sleep-cycle.js';
+export { VERSION } from './version.js';

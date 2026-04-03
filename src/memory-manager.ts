@@ -6,13 +6,38 @@
 
 import { Pool } from 'pg';
 import { getPool } from './db.js';
+import { NoOpEmbeddingProvider } from './embedding.js';
+import type { EmbeddingProvider } from './embedding.js';
+import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT } from './llm.js';
+import type { LLMProvider, ConsolidationSummary } from './llm.js';
+import { SleepCycleEngine } from './sleep-cycle.js';
 import type {
   MemForgeConfig,
+  ConsolidationMode,
   AddResult,
   QueryResult,
+  QueryOptions,
+  QueryMode,
   ConsolidateResult,
   ClearResult,
   AgentStats,
+  TimelineEntry,
+  Entity,
+  EntitySearchResult,
+  GraphNode,
+  GraphEdge,
+  GraphQueryResult,
+  Reflection,
+  ReflectionResult,
+  ReflectionTrigger,
+  SleepCycleConfig,
+  SleepCycleResult,
+  MemoryHealth,
+  Procedure,
+  FeedbackOutcome,
+  FeedbackResult,
+  MetaReflectionResult,
+  ActiveMemoryResult,
 } from './types.js';
 
 const DEFAULTS: MemForgeConfig = {
@@ -20,23 +45,42 @@ const DEFAULTS: MemForgeConfig = {
   consolidationBatchSize: 500,
   consolidationThreshold: 50,
   autoRegisterAgents: true,
+  consolidationMode: 'concat',
+  temporalDecayRate: 0,
+  sleepCycle: {
+    tokenBudget: 100_000,
+    evictionThreshold: 0.1,
+    revisionThreshold: 0.4,
+    includeReflection: true,
+    weights: { recency: 0.25, frequency: 0.20, centrality: 0.20, reflection: 0.15, stability: 0.20 },
+  },
 };
 
 export class MemoryManager {
   private readonly pool: Pool;
   private readonly config: MemForgeConfig;
+  private readonly embedder: EmbeddingProvider;
+  private readonly llm: LLMProvider | null;
 
   constructor(config: Partial<MemForgeConfig> = {}) {
     this.config = { ...DEFAULTS, ...config };
     this.pool = getPool(this.config.databaseUrl || undefined);
+    this.embedder = this.config.embeddingProvider ?? new NoOpEmbeddingProvider();
+    this.llm = this.config.llmProvider ?? null;
+  }
+
+  /** Whether vector search is available (embedding provider is configured). */
+  get embeddingsEnabled(): boolean {
+    return this.embedder.dimensions > 0;
+  }
+
+  /** Whether LLM-driven summarization is available. */
+  get summarizationEnabled(): boolean {
+    return this.llm !== null;
   }
 
   // ─── Agent registration ───────────────────────────────────────────────────
 
-  /**
-   * Ensure an agent exists in the registry.
-   * Called automatically by add() when autoRegisterAgents is true.
-   */
   async registerAgent(agentId: string, metadata: Record<string, unknown> = {}): Promise<void> {
     await this.pool.query(
       `INSERT INTO agents (id, metadata)
@@ -48,14 +92,6 @@ export class MemoryManager {
 
   // ─── add ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Ingest a new event into the hot tier for the given agent.
-   *
-   * @param agentId   Tenant identifier
-   * @param content   Raw text content to store
-   * @param metadata  Optional structured metadata
-   * @returns         The inserted row's id and timestamp
-   */
   async add(
     agentId: string,
     content: string,
@@ -85,62 +121,295 @@ export class MemoryManager {
   // ─── query ────────────────────────────────────────────────────────────────
 
   /**
-   * Full-text search over the warm tier for the given agent.
+   * Search warm tier memory with support for keyword, semantic, or hybrid modes.
    *
-   * Results are ranked by PostgreSQL ts_rank_cd (cover density).
-   * Falls back to ILIKE if the query contains no FTS-compatible tokens.
+   * - keyword: PostgreSQL FTS with trigram fallback (original behavior)
+   * - semantic: Vector cosine similarity via pgvector
+   * - hybrid: Reciprocal rank fusion of keyword + semantic results
    *
-   * @param agentId     Tenant identifier
-   * @param searchText  Natural-language search query
-   * @param limit       Maximum results (default 10)
-   * @returns           Ranked warm-tier rows
+   * Supports temporal filtering (after/before) and decay scoring.
    */
   async query(
     agentId: string,
-    searchText: string,
-    limit = 10,
+    searchTextOrOpts: string | QueryOptions,
+    limit?: number,
   ): Promise<QueryResult[]> {
+    // Normalize arguments — support both old (string, limit) and new (QueryOptions) signatures
+    const opts: QueryOptions = typeof searchTextOrOpts === 'string'
+      ? { q: searchTextOrOpts, limit }
+      : searchTextOrOpts;
+
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
     }
-    if (!searchText || typeof searchText !== 'string') {
-      throw new TypeError('searchText must be a non-empty string');
+    if (!opts.q || typeof opts.q !== 'string') {
+      throw new TypeError('search query must be a non-empty string');
     }
 
-    // Build a plainto_tsquery for safe FTS (handles arbitrary user input)
+    const resolvedLimit = opts.limit ?? 10;
+    const mode: QueryMode = opts.mode ?? (this.embeddingsEnabled ? 'hybrid' : 'keyword');
+    const decayRate = opts.decayRate ?? this.config.temporalDecayRate;
+
+    let results: QueryResult[];
+
+    switch (mode) {
+      case 'keyword':
+        results = await this.queryKeyword(agentId, opts.q, resolvedLimit, opts.after, opts.before);
+        break;
+      case 'semantic':
+        results = await this.querySemantic(agentId, opts.q, resolvedLimit, opts.after, opts.before);
+        break;
+      case 'hybrid':
+        results = await this.queryHybrid(agentId, opts.q, resolvedLimit, opts.after, opts.before);
+        break;
+    }
+
+    // Apply temporal decay if configured
+    if (decayRate > 0) {
+      const now = Date.now();
+      results = results.map((r) => {
+        const ageHours = (now - new Date(r.consolidated_at).getTime()) / (1000 * 60 * 60);
+        return { ...r, rank: r.rank * Math.exp(-decayRate * ageHours) };
+      });
+      results.sort((a, b) => b.rank - a.rank);
+    }
+
+    // Log retrieval events and update access counts (fire-and-forget)
+    if (results.length > 0) {
+      const ids = results.map((r) => r.id);
+      void this.pool.query(
+        `UPDATE warm_tier SET access_count = access_count + 1, last_accessed = now()
+         WHERE id = ANY($1)`,
+        [ids],
+      );
+      // Log individual retrieval events for reinforcement analysis
+      void Promise.all(results.map((r, idx) =>
+        this.pool.query(
+          `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [agentId, r.id, opts.q, mode, idx + 1],
+        ),
+      )).catch((err) => console.error('[memforge] retrieval log failed:', (err as Error).message));
+    }
+
+    return results;
+  }
+
+  // ─── Keyword search (FTS + trigram fallback) ──────────────────────────────
+
+  private async queryKeyword(
+    agentId: string,
+    searchText: string,
+    limit: number,
+    after?: Date,
+    before?: Date,
+  ): Promise<QueryResult[]> {
+    const timeFilter = this.buildTimeFilter(after, before, 3);
+    const params: unknown[] = [agentId, searchText];
+    if (after) params.push(after);
+    if (before) params.push(before);
+    params.push(limit);
+    const limitIdx = params.length;
+
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT
-         id,
-         content,
-         metadata,
-         consolidated_at,
-         ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) AS rank
+      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+              ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
          AND content_tsv @@ plainto_tsquery('english', $2)
+         ${timeFilter}
        ORDER BY rank DESC
-       LIMIT $3`,
-      [agentId, searchText, limit],
+       LIMIT $${limitIdx}`,
+      params,
     );
 
-    // If FTS finds nothing, fall back to trigram similarity search
     if (rows.length === 0) {
-      const fallback = await this.pool.query<QueryResult>(
-        `SELECT
-           id,
-           content,
-           metadata,
-           consolidated_at,
-           similarity(content, $2) AS rank
-         FROM warm_tier
-         WHERE agent_id = $1
-           AND content ILIKE $3
-         ORDER BY rank DESC
-         LIMIT $4`,
-        [agentId, searchText, `%${searchText}%`, limit],
-      );
-      return fallback.rows;
+      return this.queryTrigram(agentId, searchText, limit, after, before);
     }
+
+    return rows;
+  }
+
+  private async queryTrigram(
+    agentId: string,
+    searchText: string,
+    limit: number,
+    after?: Date,
+    before?: Date,
+  ): Promise<QueryResult[]> {
+    const params: unknown[] = [agentId, searchText, `%${searchText}%`];
+    const timeFilter = this.buildTimeFilter(after, before, 4);
+    if (after) params.push(after);
+    if (before) params.push(before);
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<QueryResult>(
+      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+              similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
+       FROM warm_tier
+       WHERE agent_id = $1
+         AND content ILIKE $3
+         ${timeFilter}
+       ORDER BY rank DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows;
+  }
+
+  // ─── Semantic search (vector similarity) ──────────────────────────────────
+
+  private async querySemantic(
+    agentId: string,
+    searchText: string,
+    limit: number,
+    after?: Date,
+    before?: Date,
+  ): Promise<QueryResult[]> {
+    if (!this.embeddingsEnabled) {
+      throw new Error('Semantic search requires an embedding provider — set EMBEDDING_PROVIDER');
+    }
+
+    const queryEmbedding = await this.embedder.embed(searchText);
+    const vectorLiteral = `[${queryEmbedding.join(',')}]`;
+
+    const params: unknown[] = [agentId, vectorLiteral];
+    const timeFilter = this.buildTimeFilter(after, before, 3);
+    if (after) params.push(after);
+    if (before) params.push(before);
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<QueryResult>(
+      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+              (1 - (embedding <=> $2::vector)) * (0.5 + 0.5 * importance) AS rank
+       FROM warm_tier
+       WHERE agent_id = $1
+         AND embedding IS NOT NULL
+         ${timeFilter}
+       ORDER BY embedding <=> $2::vector
+       LIMIT $${limitIdx}`,
+      params,
+    );
+
+    return rows;
+  }
+
+  // ─── Hybrid search (reciprocal rank fusion) ───────────────────────────────
+
+  private async queryHybrid(
+    agentId: string,
+    searchText: string,
+    limit: number,
+    after?: Date,
+    before?: Date,
+  ): Promise<QueryResult[]> {
+    // If embeddings are not enabled, fall back to keyword-only
+    if (!this.embeddingsEnabled) {
+      return this.queryKeyword(agentId, searchText, limit, after, before);
+    }
+
+    // Fetch more candidates for fusion — diminishing returns above ~60 per source
+    const candidateLimit = Math.min(Math.max(limit * 2, 20), 60);
+    const [keywordResults, semanticResults] = await Promise.all([
+      this.queryKeyword(agentId, searchText, candidateLimit, after, before),
+      this.querySemantic(agentId, searchText, candidateLimit, after, before),
+    ]);
+
+    // Reciprocal rank fusion (k=60 is standard)
+    const K = 60;
+    const scores = new Map<string, { score: number; row: QueryResult }>();
+
+    keywordResults.forEach((row, idx) => {
+      const key = String(row.id);
+      const rrf = 1 / (K + idx + 1);
+      const existing = scores.get(key);
+      if (existing) {
+        existing.score += rrf;
+      } else {
+        scores.set(key, { score: rrf, row });
+      }
+    });
+
+    semanticResults.forEach((row, idx) => {
+      const key = String(row.id);
+      const rrf = 1 / (K + idx + 1);
+      const existing = scores.get(key);
+      if (existing) {
+        existing.score += rrf;
+      } else {
+        scores.set(key, { score: rrf, row });
+      }
+    });
+
+    return Array.from(scores.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(({ score, row }) => ({ ...row, rank: score }));
+  }
+
+  // ─── Time filter builder ──────────────────────────────────────────────────
+
+  private buildTimeFilter(after?: Date, before?: Date, nextParamIdx = 3): string {
+    const clauses: string[] = [];
+    let idx = nextParamIdx;
+
+    if (after) {
+      clauses.push(`AND (time_end >= $${idx} OR (time_end IS NULL AND consolidated_at >= $${idx}))`);
+      idx++;
+    }
+    if (before) {
+      clauses.push(`AND (time_start <= $${idx} OR (time_start IS NULL AND consolidated_at <= $${idx}))`);
+    }
+
+    return clauses.join(' ');
+  }
+
+  // ─── timeline ─────────────────────────────────────────────────────────────
+
+  /**
+   * Retrieve memories in chronological order within a time range.
+   *
+   * @param agentId  Tenant identifier
+   * @param from     Start of time range (optional — defaults to all time)
+   * @param to       End of time range (optional — defaults to now)
+   * @param limit    Maximum results (default 50)
+   */
+  async timeline(
+    agentId: string,
+    from?: Date,
+    to?: Date,
+    limit = 50,
+  ): Promise<TimelineEntry[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const params: unknown[] = [agentId];
+    const clauses: string[] = [];
+
+    if (from) {
+      params.push(from);
+      clauses.push(`AND COALESCE(time_start, consolidated_at) >= $${params.length}`);
+    }
+    if (to) {
+      params.push(to);
+      clauses.push(`AND COALESCE(time_start, consolidated_at) <= $${params.length}`);
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<TimelineEntry>(
+      `SELECT id, content, metadata, time_start, time_end, consolidated_at, access_count
+       FROM warm_tier
+       WHERE agent_id = $1
+         ${clauses.join(' ')}
+       ORDER BY COALESCE(time_start, consolidated_at) ASC
+       LIMIT $${limitIdx}`,
+      params,
+    );
 
     return rows;
   }
@@ -150,19 +419,29 @@ export class MemoryManager {
   /**
    * Move unconsolidated hot-tier events into the warm tier for the given agent.
    *
-   * Hot rows are grouped into batches and written to warm_tier with a combined
-   * content blob. The original hot rows are then deleted (their IDs are stored
-   * in warm_tier.source_hot_ids for traceability).
+   * Supports two modes:
    *
-   * Runs inside a transaction — either all rows are consolidated or none are.
+   * **concat** (default): Hot rows are grouped into batches and concatenated
+   * with separator markers. Fast and free — no LLM calls.
    *
-   * @param agentId   Tenant identifier
-   * @returns         Summary of the consolidation run
+   * **summarize**: Each batch is sent to an LLM for intelligent distillation.
+   * The LLM produces a narrative summary, extracts key facts, identifies
+   * entities and relationships. The warm row stores the summary as content
+   * and the structured extraction in metadata. Falls back to concat if the
+   * LLM call fails.
+   *
+   * In both modes, embeddings are generated when an embedding provider is
+   * configured, and temporal bounds are set from source event timestamps.
+   *
+   * @param agentId  Tenant identifier
+   * @param mode     Override the configured consolidation mode for this run
    */
-  async consolidate(agentId: string): Promise<ConsolidateResult> {
+  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult> {
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
     }
+
+    const resolvedMode = mode ?? this.config.consolidationMode;
 
     const client = await this.pool.connect();
     let runId: bigint = BigInt(0);
@@ -172,8 +451,8 @@ export class MemoryManager {
 
       // Create audit log row
       const logRow = await client.query<{ id: bigint }>(
-        `INSERT INTO consolidation_log (agent_id) VALUES ($1) RETURNING id`,
-        [agentId],
+        `INSERT INTO consolidation_log (agent_id, metadata) VALUES ($1, $2) RETURNING id`,
+        [agentId, JSON.stringify({ consolidation_mode: resolvedMode })],
       );
       runId = logRow.rows[0]!.id;
 
@@ -193,7 +472,6 @@ export class MemoryManager {
       );
 
       if (hotRows.rows.length === 0) {
-        // Nothing to do — close run successfully
         await client.query(
           `UPDATE consolidation_log
            SET status = 'complete', completed_at = now(), hot_rows_processed = 0, warm_rows_created = 0
@@ -206,34 +484,164 @@ export class MemoryManager {
           agent_id: agentId,
           hot_rows_processed: 0,
           warm_rows_created: 0,
+          consolidation_mode: resolvedMode,
           status: 'complete',
         };
       }
 
-      // Produce one warm row per batch of BATCH_SIZE hot rows
+      // Group hot rows into sub-batches
       const BATCH_SIZE = 50;
-      let warmCreated = 0;
+      const batches: Array<{
+        rawContent: string;
+        ids: bigint[];
+        oldest: Date;
+        newest: Date;
+        batchSize: number;
+      }> = [];
 
       for (let i = 0; i < hotRows.rows.length; i += BATCH_SIZE) {
         const batch = hotRows.rows.slice(i, i + BATCH_SIZE);
-        const combined = batch.map((r) => r.content).join('\n\n---\n\n');
-        const ids = batch.map((r) => r.id);
+        batches.push({
+          rawContent: batch.map((r) => r.content).join('\n\n---\n\n'),
+          ids: batch.map((r) => r.id),
+          oldest: batch[0]!.created_at,
+          newest: batch[batch.length - 1]!.created_at,
+          batchSize: batch.length,
+        });
+      }
 
-        await client.query(
-          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata)
-           VALUES ($1, $2, $3, $4)`,
+      // ── Summarize mode: send each batch to LLM ──────────────────────────
+      let summaries: Array<ConsolidationSummary | null> | null = null;
+      if (resolvedMode === 'summarize' && this.llm) {
+        try {
+          summaries = await Promise.all(
+            batches.map(async (batch) => {
+              try {
+                return await this.llm!.summarize(batch.rawContent);
+              } catch (err) {
+                console.error('[memforge] LLM summarization failed for batch, falling back to concat:', (err as Error).message);
+                return null;
+              }
+            }),
+          );
+        } catch (err) {
+          console.error('[memforge] LLM summarization failed, falling back to concat for all batches:', (err as Error).message);
+          summaries = null;
+        }
+      }
+
+      // ── Determine final content for each batch ──────────────────────────
+      const finalContents = batches.map((batch, i) => {
+        const summary = summaries?.[i];
+        if (summary) {
+          return summary.summary;
+        }
+        return batch.rawContent;
+      });
+
+      // ── Generate embeddings for final content ───────────────────────────
+      let embeddings: number[][] | null = null;
+      if (this.embeddingsEnabled) {
+        try {
+          embeddings = await this.embedder.embedBatch(finalContents);
+        } catch (err) {
+          console.error('[memforge] embedding failed during consolidation:', (err as Error).message);
+        }
+      }
+
+      // ── Insert warm rows and populate knowledge graph ──────────────────
+      let warmCreated = 0;
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i]!;
+        const summary = summaries?.[i] ?? null;
+        const embedding = embeddings?.[i] ?? null;
+        const vectorLiteral = embedding ? `[${embedding.join(',')}]` : null;
+
+        // Build metadata — always includes batch info, adds extraction if summarized
+        const metadata: Record<string, unknown> = {
+          batch_size: batch.batchSize,
+          oldest: batch.oldest,
+          newest: batch.newest,
+          consolidation_mode: summary ? 'summarize' : 'concat',
+        };
+
+        if (summary) {
+          metadata.key_facts = summary.keyFacts;
+          metadata.entities = summary.entities;
+          metadata.relationships = summary.relationships;
+          metadata.sentiment = summary.sentiment;
+        }
+
+        const warmRow = await client.query<{ id: bigint }>(
+          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, embedding, time_start, time_end)
+           VALUES ($1, $2, $3, $4, $5::vector, $6, $7)
+           RETURNING id`,
           [
             agentId,
-            combined,
-            ids,
-            JSON.stringify({
-              batch_size: batch.length,
-              oldest: batch[0]!.created_at,
-              newest: batch[batch.length - 1]!.created_at,
-            }),
+            finalContents[i],
+            batch.ids,
+            JSON.stringify(metadata),
+            vectorLiteral,
+            batch.oldest,
+            batch.newest,
           ],
         );
+        const warmRowId = warmRow.rows[0]!.id;
         warmCreated++;
+
+        // ── Populate knowledge graph from LLM extraction ────────────────
+        if (summary && (summary.entities.length > 0 || summary.relationships.length > 0)) {
+          const entityIdMap = new Map<string, bigint>();
+
+          // Batch upsert entities
+          if (summary.entities.length > 0) {
+            const names = summary.entities.map((e) => e.name);
+            const types = summary.entities.map((e) => e.type);
+            const entityRows = await client.query<{ id: bigint; name: string }>(
+              `INSERT INTO entities (agent_id, name, entity_type)
+               SELECT $1, unnest($2::text[]), unnest($3::text[])
+               ON CONFLICT (agent_id, name) DO UPDATE
+                 SET mention_count = entities.mention_count + 1,
+                     last_seen = now(),
+                     entity_type = CASE
+                       WHEN entities.entity_type = 'other' THEN EXCLUDED.entity_type
+                       ELSE entities.entity_type
+                     END
+               RETURNING id, name`,
+              [agentId, names, types],
+            );
+            for (const row of entityRows.rows) {
+              entityIdMap.set(row.name, row.id);
+            }
+
+            // Batch link entities to this warm row
+            const entityIds = entityRows.rows.map((r) => r.id);
+            await client.query(
+              `INSERT INTO warm_tier_entities (warm_tier_id, entity_id)
+               SELECT $1, unnest($2::bigint[])
+               ON CONFLICT DO NOTHING`,
+              [warmRowId, entityIds],
+            );
+          }
+
+          // Batch upsert relationships (only if both endpoints exist as entities)
+          const validRels = summary.relationships.filter(
+            (r) => entityIdMap.has(r.source) && entityIdMap.has(r.target),
+          );
+          if (validRels.length > 0) {
+            const srcIds = validRels.map((r) => entityIdMap.get(r.source)!);
+            const tgtIds = validRels.map((r) => entityIdMap.get(r.target)!);
+            const relTypes = validRels.map((r) => r.relation);
+            await client.query(
+              `INSERT INTO relationships (agent_id, source_entity_id, target_entity_id, relation_type)
+               SELECT $1, unnest($2::bigint[]), unnest($3::bigint[]), unnest($4::text[])
+               ON CONFLICT (agent_id, source_entity_id, target_entity_id, relation_type)
+               DO UPDATE SET weight = relationships.weight + 1, last_seen = now()`,
+              [agentId, srcIds, tgtIds, relTypes],
+            );
+          }
+        }
       }
 
       // Delete consolidated hot-tier rows
@@ -261,12 +669,12 @@ export class MemoryManager {
         agent_id: agentId,
         hot_rows_processed: hotRows.rows.length,
         warm_rows_created: warmCreated,
+        consolidation_mode: resolvedMode,
         status: 'complete',
       };
     } catch (err) {
       await client.query('ROLLBACK');
 
-      // Mark run failed if we already created the log row
       if (runId) {
         try {
           await this.pool.query(
@@ -288,15 +696,6 @@ export class MemoryManager {
 
   // ─── clear ────────────────────────────────────────────────────────────────
 
-  /**
-   * Archive and clear all hot and warm memory for the given agent.
-   *
-   * Hot and warm rows are copied to cold_tier before deletion.
-   * The agent record itself is preserved.
-   *
-   * @param agentId   Tenant identifier
-   * @returns         Count of rows archived from each tier
-   */
   async clear(agentId: string): Promise<ClearResult> {
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
@@ -353,55 +752,993 @@ export class MemoryManager {
 
   // ─── stats ────────────────────────────────────────────────────────────────
 
-  /**
-   * Return live row counts and last-consolidation timestamp for an agent.
-   *
-   * @param agentId   Tenant identifier
-   * @returns         Aggregate stats object
-   */
   async stats(agentId: string): Promise<AgentStats> {
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
     }
 
-    const [hotCount, warmCount, coldCount, lastConsolidation, agent] = await Promise.all([
-      this.pool.query<{ count: string }>(
-        `SELECT count(*) FROM hot_tier WHERE agent_id = $1`,
+    // Single-query stats: all tier counts + last consolidation + agent info
+    // Avoids 8 separate round-trips to the database
+    const { rows: statsRows } = await this.pool.query<{
+      last_seen: Date;
+      hot_count: string;
+      warm_count: string;
+      cold_count: string;
+      entity_count: string;
+      relationship_count: string;
+      reflection_count: string;
+      last_consolidation: Date | null;
+    }>(
+      `SELECT
+         a.last_seen,
+         (SELECT count(*) FROM hot_tier WHERE agent_id = $1) AS hot_count,
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1) AS warm_count,
+         (SELECT count(*) FROM cold_tier WHERE agent_id = $1) AS cold_count,
+         (SELECT count(*) FROM entities WHERE agent_id = $1) AS entity_count,
+         (SELECT count(*) FROM relationships WHERE agent_id = $1) AS relationship_count,
+         (SELECT count(*) FROM reflections WHERE agent_id = $1) AS reflection_count,
+         (SELECT completed_at FROM consolidation_log
+          WHERE agent_id = $1 AND status = 'complete'
+          ORDER BY completed_at DESC LIMIT 1) AS last_consolidation
+       FROM agents a
+       WHERE a.id = $1`,
+      [agentId],
+    );
+
+    if (statsRows.length === 0) {
+      throw new Error(`Agent '${agentId}' not found`);
+    }
+
+    const row = statsRows[0]!;
+    return {
+      agent_id: agentId,
+      hot_count: parseInt(row.hot_count, 10),
+      warm_count: parseInt(row.warm_count, 10),
+      cold_count: parseInt(row.cold_count, 10),
+      entity_count: parseInt(row.entity_count, 10),
+      relationship_count: parseInt(row.relationship_count, 10),
+      reflection_count: parseInt(row.reflection_count, 10),
+      last_consolidation: row.last_consolidation,
+      last_seen: row.last_seen,
+    };
+  }
+
+  // ─── Knowledge Graph: Entity Search ───────────────────────────────────────
+
+  /**
+   * Search for entities in the knowledge graph by name (case-insensitive prefix/contains match).
+   *
+   * @param agentId  Tenant identifier
+   * @param query    Search string (matched against entity name)
+   * @param type     Optional entity type filter
+   * @param limit    Maximum results (default 20)
+   */
+  async searchEntities(
+    agentId: string,
+    query?: string,
+    type?: string,
+    limit = 20,
+  ): Promise<EntitySearchResult[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const params: unknown[] = [agentId];
+    const clauses: string[] = [];
+
+    if (query) {
+      params.push(`%${query}%`);
+      clauses.push(`AND e.name ILIKE $${params.length}`);
+    }
+    if (type) {
+      params.push(type);
+      clauses.push(`AND e.entity_type = $${params.length}`);
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<EntitySearchResult>(
+      `SELECT
+         e.id,
+         e.name,
+         e.entity_type,
+         e.mention_count,
+         e.first_seen,
+         e.last_seen,
+         COALESCE(array_agg(wte.warm_tier_id) FILTER (WHERE wte.warm_tier_id IS NOT NULL), '{}') AS memory_ids
+       FROM entities e
+       LEFT JOIN warm_tier_entities wte ON wte.entity_id = e.id
+       WHERE e.agent_id = $1
+         ${clauses.join(' ')}
+       GROUP BY e.id
+       ORDER BY e.mention_count DESC, e.last_seen DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+
+    return rows;
+  }
+
+  // ─── Knowledge Graph: Graph Traversal ─────────────────────────────────────
+
+  /**
+   * Traverse the knowledge graph starting from a given entity, up to N hops.
+   *
+   * Uses a recursive CTE to walk relationships in both directions.
+   *
+   * @param agentId    Tenant identifier
+   * @param entityName Starting entity name
+   * @param depth      Maximum traversal depth (default 2, max 5)
+   */
+  async graphTraverse(
+    agentId: string,
+    entityName: string,
+    depth = 2,
+  ): Promise<GraphQueryResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (!entityName || typeof entityName !== 'string') {
+      throw new TypeError('entityName must be a non-empty string');
+    }
+
+    const clampedDepth = Math.min(Math.max(depth, 1), 5);
+
+    // Recursive CTE with cycle detection via visited[] array
+    const { rows } = await this.pool.query<{
+      node_id: bigint;
+      node_name: string;
+      node_type: string;
+      mention_count: number;
+      first_seen: Date;
+      last_seen: Date;
+      edge_source: string | null;
+      edge_target: string | null;
+      relation_type: string | null;
+      edge_weight: number | null;
+      hop: number;
+    }>(
+      `WITH RECURSIVE seed AS (
+         SELECT id FROM entities WHERE agent_id = $1 AND name = $2
+       ),
+       graph AS (
+         -- Seed: the starting entity
+         SELECT
+           e.id AS node_id,
+           e.name AS node_name,
+           e.entity_type AS node_type,
+           e.mention_count,
+           e.first_seen,
+           e.last_seen,
+           NULL::text AS edge_source,
+           NULL::text AS edge_target,
+           NULL::text AS relation_type,
+           NULL::real AS edge_weight,
+           0 AS hop,
+           ARRAY[e.id] AS visited
+         FROM entities e
+         WHERE e.id IN (SELECT id FROM seed)
+
+         UNION ALL
+
+         -- Forward edges: source → target
+         SELECT
+           e2.id,
+           e2.name,
+           e2.entity_type,
+           e2.mention_count,
+           e2.first_seen,
+           e2.last_seen,
+           g.node_name,
+           e2.name,
+           r.relation_type,
+           r.weight,
+           g.hop + 1,
+           g.visited || e2.id
+         FROM graph g
+         JOIN relationships r ON r.source_entity_id = g.node_id AND r.agent_id = $1 AND r.valid_until IS NULL
+         JOIN entities e2 ON e2.id = r.target_entity_id
+         WHERE g.hop < $3 AND NOT (e2.id = ANY(g.visited))
+
+         UNION ALL
+
+         -- Reverse edges: target → source
+         SELECT
+           e2.id,
+           e2.name,
+           e2.entity_type,
+           e2.mention_count,
+           e2.first_seen,
+           e2.last_seen,
+           e2.name,
+           g.node_name,
+           r.relation_type,
+           r.weight,
+           g.hop + 1,
+           g.visited || e2.id
+         FROM graph g
+         JOIN relationships r ON r.target_entity_id = g.node_id AND r.agent_id = $1 AND r.valid_until IS NULL
+         JOIN entities e2 ON e2.id = r.source_entity_id
+         WHERE g.hop < $3 AND NOT (e2.id = ANY(g.visited))
+       )
+       SELECT DISTINCT ON (node_id, edge_source, edge_target, relation_type)
+         node_id, node_name, node_type, mention_count, first_seen, last_seen,
+         edge_source, edge_target, relation_type, edge_weight, hop
+       FROM graph
+       ORDER BY node_id, edge_source, edge_target, relation_type, hop`,
+      [agentId, entityName, clampedDepth],
+    );
+
+    // Deduplicate nodes and collect edges
+    const nodesMap = new Map<string, GraphNode>();
+    const edges: GraphEdge[] = [];
+
+    for (const row of rows) {
+      if (!nodesMap.has(String(row.node_id))) {
+        nodesMap.set(String(row.node_id), {
+          id: row.node_id,
+          name: row.node_name,
+          entity_type: row.node_type,
+          mention_count: row.mention_count,
+          first_seen: row.first_seen,
+          last_seen: row.last_seen,
+        });
+      }
+
+      if (row.edge_source && row.edge_target && row.relation_type) {
+        edges.push({
+          source: row.edge_source,
+          target: row.edge_target,
+          relation_type: row.relation_type,
+          weight: row.edge_weight ?? 1,
+        });
+      }
+    }
+
+    // Deduplicate edges
+    const edgeSet = new Set<string>();
+    const uniqueEdges = edges.filter((e) => {
+      const key = `${e.source}→${e.target}:${e.relation_type}`;
+      if (edgeSet.has(key)) return false;
+      edgeSet.add(key);
+      return true;
+    });
+
+    return {
+      nodes: Array.from(nodesMap.values()),
+      edges: uniqueEdges,
+    };
+  }
+
+  // ─── Reflection & Self-Learning ───────────────────────────────────────────
+
+  /**
+   * Trigger a reflection — LLM reviews recent warm-tier memories and existing
+   * reflections/entities to synthesize higher-order insights.
+   *
+   * Detects contradictions with prior reflections and knowledge.
+   * Boosts access_count on source memories to reinforce frequently-reflected content.
+   *
+   * @param agentId   Tenant identifier
+   * @param trigger   What triggered this reflection (manual, threshold, scheduled)
+   * @param limit     Max warm-tier rows to review (default 20)
+   */
+  async reflect(
+    agentId: string,
+    trigger: ReflectionTrigger = 'manual',
+    limit = 20,
+  ): Promise<ReflectionResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (!this.llm) {
+      throw new Error('Reflection requires an LLM provider — set LLM_PROVIDER');
+    }
+
+    // Gather context: recent warm memories, top entities, and prior reflections
+    const [recentMemories, topEntities, priorReflections] = await Promise.all([
+      this.pool.query<{ id: bigint; content: string; metadata: Record<string, unknown>; consolidated_at: Date }>(
+        `SELECT id, content, metadata, consolidated_at
+         FROM warm_tier
+         WHERE agent_id = $1
+         ORDER BY consolidated_at DESC
+         LIMIT $2`,
+        [agentId, limit],
+      ),
+      this.pool.query<{ name: string; entity_type: string; mention_count: number }>(
+        `SELECT name, entity_type, mention_count
+         FROM entities
+         WHERE agent_id = $1
+         ORDER BY mention_count DESC
+         LIMIT 20`,
         [agentId],
       ),
-      this.pool.query<{ count: string }>(
-        `SELECT count(*) FROM warm_tier WHERE agent_id = $1`,
-        [agentId],
-      ),
-      this.pool.query<{ count: string }>(
-        `SELECT count(*) FROM cold_tier WHERE agent_id = $1`,
-        [agentId],
-      ),
-      this.pool.query<{ completed_at: Date | null }>(
-        `SELECT completed_at
-         FROM consolidation_log
-         WHERE agent_id = $1 AND status = 'complete'
-         ORDER BY completed_at DESC
-         LIMIT 1`,
-        [agentId],
-      ),
-      this.pool.query<{ last_seen: Date }>(
-        `SELECT last_seen FROM agents WHERE id = $1`,
+      this.pool.query<{ content: string; key_insights: string[]; created_at: Date }>(
+        `SELECT content, key_insights, created_at
+         FROM reflections
+         WHERE agent_id = $1
+         ORDER BY created_at DESC
+         LIMIT 5`,
         [agentId],
       ),
     ]);
 
-    if (agent.rows.length === 0) {
-      throw new Error(`Agent '${agentId}' not found`);
+    if (recentMemories.rows.length === 0) {
+      throw new Error(`No warm-tier memories to reflect on for agent '${agentId}'`);
+    }
+
+    // Build the reflection prompt
+    const memoriesText = recentMemories.rows
+      .map((r, i) => {
+        const keyFacts = Array.isArray(r.metadata?.['key_facts'])
+          ? `\nKey facts: ${(r.metadata['key_facts'] as string[]).join('; ')}`
+          : '';
+        return `[Memory ${i + 1} — ${new Date(r.consolidated_at).toISOString()}]\n${r.content}${keyFacts}`;
+      })
+      .join('\n\n---\n\n');
+
+    const entitiesText = topEntities.rows.length > 0
+      ? `\n\nKnown entities:\n${topEntities.rows.map((e) => `- ${e.name} (${e.entity_type}, mentioned ${e.mention_count}x)`).join('\n')}`
+      : '';
+
+    const priorText = priorReflections.rows.length > 0
+      ? `\n\nPrior reflections:\n${priorReflections.rows.map((r) => `[${new Date(r.created_at).toISOString()}] ${r.content}\nInsights: ${r.key_insights.join('; ')}`).join('\n\n')}`
+      : '';
+
+    const userPrompt = `Review the following recent memories and synthesize higher-order insights.${entitiesText}${priorText}\n\nRecent memories to reflect on:\n\n${memoriesText}`;
+
+    const responseText = await this.llm.chat(REFLECTION_SYSTEM_PROMPT, userPrompt);
+
+    // Parse the LLM response
+    const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Reflection LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
+    }
+
+    const reflectionContent = typeof parsed['reflection'] === 'string' ? parsed['reflection'] : '';
+    const keyInsights = Array.isArray(parsed['key_insights'])
+      ? (parsed['key_insights'] as unknown[]).filter((i): i is string => typeof i === 'string')
+      : [];
+    const contradictions = Array.isArray(parsed['contradictions'])
+      ? (parsed['contradictions'] as unknown[]).filter((c): c is string => typeof c === 'string')
+      : [];
+    const reinforcedPatterns = Array.isArray(parsed['reinforced_patterns'])
+      ? (parsed['reinforced_patterns'] as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [];
+
+    const sourceWarmIds = recentMemories.rows.map((r) => r.id);
+
+    // Store the reflection
+    const { rows } = await this.pool.query<{ id: bigint }>(
+      `INSERT INTO reflections (agent_id, content, key_insights, contradictions, source_warm_ids, trigger_type, reflection_level, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, $7)
+       RETURNING id`,
+      [
+        agentId,
+        reflectionContent,
+        keyInsights,
+        contradictions,
+        sourceWarmIds,
+        trigger,
+        JSON.stringify({
+          reinforced_patterns: reinforcedPatterns,
+          memories_reviewed: recentMemories.rows.length,
+          entities_considered: topEntities.rows.length,
+          prior_reflections_reviewed: priorReflections.rows.length,
+          model: this.llm.model,
+        }),
+      ],
+    );
+
+    // Reinforce source memories — boost access counts
+    if (sourceWarmIds.length > 0) {
+      void this.pool.query(
+        `UPDATE warm_tier SET access_count = access_count + 1, last_accessed = now()
+         WHERE id = ANY($1)`,
+        [sourceWarmIds],
+      );
+    }
+
+    // Auto-extract procedural memory from this reflection
+    const reflectionId = rows[0]!.id;
+    if (keyInsights.length > 0) {
+      void this.extractProcedures(agentId, reflectionId).catch((err) =>
+        console.error('[memforge] auto-procedure extraction failed:', (err as Error).message),
+      );
     }
 
     return {
+      id: reflectionId,
       agent_id: agentId,
-      hot_count: parseInt(hotCount.rows[0]!.count, 10),
-      warm_count: parseInt(warmCount.rows[0]!.count, 10),
-      cold_count: parseInt(coldCount.rows[0]!.count, 10),
-      last_consolidation: lastConsolidation.rows[0]?.completed_at ?? null,
-      last_seen: agent.rows[0]!.last_seen,
+      insights_count: keyInsights.length,
+      contradictions_count: contradictions.length,
+      source_memories_reviewed: recentMemories.rows.length,
+      trigger_type: trigger,
+      reflection_level: 1,
+    };
+  }
+
+  // ─── Get reflections ──────────────────────────────────────────────────────
+
+  /**
+   * Retrieve stored reflections for an agent, newest first.
+   *
+   * @param agentId  Tenant identifier
+   * @param limit    Maximum results (default 10)
+   */
+  async getReflections(agentId: string, limit = 10): Promise<Reflection[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const { rows } = await this.pool.query<Reflection>(
+      `SELECT id, agent_id, content, key_insights, contradictions, source_warm_ids,
+              trigger_type, reflection_level, source_reflection_ids, metadata, created_at
+       FROM reflections
+       WHERE agent_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [agentId, limit],
+    );
+
+    return rows;
+  }
+
+  // ─── Procedural Memory ────────────────────────────────────────────────────
+
+  /**
+   * Extract condition→action procedures from a reflection's insights.
+   * Called automatically after reflection, or manually.
+   */
+  async extractProcedures(agentId: string, reflectionId: bigint): Promise<number> {
+    if (!this.llm) {
+      throw new Error('Procedure extraction requires an LLM provider');
+    }
+
+    const reflection = await this.pool.query<{ content: string; key_insights: string[] }>(
+      `SELECT content, key_insights FROM reflections WHERE id = $1 AND agent_id = $2`,
+      [reflectionId, agentId],
+    );
+    if (reflection.rows.length === 0) return 0;
+
+    const row = reflection.rows[0]!;
+    const userPrompt = `Reflection:\n${row.content}\n\nKey insights:\n${row.key_insights.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}`;
+
+    let responseText: string;
+    try {
+      responseText = await this.llm.chat(PROCEDURE_EXTRACTION_PROMPT, userPrompt);
+    } catch (err) {
+      console.error('[memforge] procedure extraction failed:', (err as Error).message);
+      return 0;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      return 0;
+    }
+
+    const procedures = Array.isArray(parsed['procedures']) ? parsed['procedures'] as Array<Record<string, unknown>> : [];
+    let created = 0;
+
+    for (const proc of procedures) {
+      if (typeof proc['condition'] !== 'string' || typeof proc['action'] !== 'string') continue;
+      const confidence = typeof proc['confidence'] === 'number' ? proc['confidence'] : 0.5;
+
+      await this.pool.query(
+        `INSERT INTO procedures (agent_id, condition, action, source_reflection_id, confidence)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [agentId, proc['condition'], proc['action'], reflectionId, confidence],
+      );
+      created++;
+    }
+
+    return created;
+  }
+
+  /**
+   * Retrieve active procedures for an agent, optionally filtered by a query.
+   * When a query is provided, procedures whose condition matches are returned.
+   */
+  async getProcedures(agentId: string, query?: string, limit = 20): Promise<Procedure[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const params: unknown[] = [agentId];
+    let filter = '';
+
+    if (query) {
+      params.push(`%${query}%`);
+      filter = `AND (condition ILIKE $${params.length} OR action ILIKE $${params.length})`;
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<Procedure>(
+      `SELECT id, agent_id, condition, action, source_reflection_id, confidence,
+              access_count, last_accessed, active, metadata, created_at
+       FROM procedures
+       WHERE agent_id = $1 AND active = true ${filter}
+       ORDER BY confidence DESC, access_count DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+
+    // Track access on matched procedures
+    if (rows.length > 0 && query) {
+      const ids = rows.map((r) => r.id);
+      void this.pool.query(
+        `UPDATE procedures SET access_count = access_count + 1, last_accessed = now()
+         WHERE id = ANY($1)`,
+        [ids],
+      );
+    }
+
+    return rows;
+  }
+
+  // ─── Sleep Cycle ──────────────────────────────────────────────────────────
+
+  /**
+   * Execute a sleep cycle — background processing that scores, triages,
+   * revises, and maintains the knowledge base.
+   *
+   * Requires an LLM provider (either the main one or a dedicated revision LLM).
+   */
+  async sleep(agentId: string, configOverrides?: Partial<SleepCycleConfig>): Promise<SleepCycleResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const revisionLlm = this.config.revisionLlmProvider ?? this.llm;
+    if (!revisionLlm) {
+      throw new Error('Sleep cycle requires an LLM provider — set LLM_PROVIDER or REVISION_LLM_PROVIDER');
+    }
+
+    const cycleConfig = {
+      ...this.config.sleepCycle,
+      ...configOverrides,
+      weights: { ...this.config.sleepCycle.weights, ...configOverrides?.weights },
+    };
+
+    const engine = new SleepCycleEngine(this.pool, revisionLlm, this.embedder, cycleConfig);
+    const result = await engine.run(agentId);
+
+    // If Phase 5 signals reflection should run, do it
+    if (result.phase5_reflection && this.llm) {
+      try {
+        await this.reflect(agentId, 'scheduled');
+      } catch (err) {
+        console.error('[memforge] post-sleep reflection failed:', (err as Error).message);
+      }
+    }
+
+    return result;
+  }
+
+  // ─── Memory Health ────────────────────────────────────────────────────────
+
+  /**
+   * Return memory health metrics for an agent — quality indicators
+   * derived from revision history, retrieval patterns, and importance scores.
+   */
+  async health(agentId: string): Promise<MemoryHealth> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const { rows } = await this.pool.query<{
+      total_memories: string;
+      avg_importance: number | null;
+      avg_confidence: number | null;
+      below_eviction: string;
+      below_revision: string;
+      revision_velocity: string;
+      stable_pct: number | null;
+      retrieval_count: string;
+      contradiction_rate: number | null;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1) AS total_memories,
+         (SELECT avg(importance) FROM warm_tier WHERE agent_id = $1) AS avg_importance,
+         (SELECT avg(confidence) FROM warm_tier WHERE agent_id = $1) AS avg_confidence,
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1 AND importance < 0.1) AS below_eviction,
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1 AND confidence < 0.4) AS below_revision,
+         (SELECT count(*) FROM memory_revisions WHERE agent_id = $1 AND created_at > now() - interval '24 hours') AS revision_velocity,
+         (SELECT CASE WHEN count(*) = 0 THEN 100.0
+                 ELSE 100.0 * count(*) FILTER (WHERE revision_count = 0 OR NOT EXISTS (
+                   SELECT 1 FROM memory_revisions mr WHERE mr.warm_tier_id = w.id AND mr.created_at > now() - interval '7 days'
+                 )) / count(*)::float END
+          FROM warm_tier w WHERE w.agent_id = $1) AS stable_pct,
+         (SELECT count(*) FROM retrieval_log WHERE agent_id = $1 AND created_at > now() - interval '24 hours') AS retrieval_count,
+         (SELECT CASE WHEN count(*) = 0 THEN 0.0
+                 ELSE avg(array_length(contradictions, 1))::float END
+          FROM reflections WHERE agent_id = $1 AND created_at > now() - interval '7 days') AS contradiction_rate`,
+      [agentId],
+    );
+
+    const r = rows[0]!;
+    return {
+      agent_id: agentId,
+      total_memories: parseInt(r.total_memories, 10),
+      avg_importance: r.avg_importance ?? 0,
+      avg_confidence: r.avg_confidence ?? 0,
+      memories_below_eviction: parseInt(r.below_eviction, 10),
+      memories_below_revision: parseInt(r.below_revision, 10),
+      revision_velocity_24h: parseInt(r.revision_velocity, 10),
+      knowledge_stability_pct: r.stable_pct ?? 100,
+      retrieval_count_24h: parseInt(r.retrieval_count, 10),
+      contradiction_rate: r.contradiction_rate ?? 0,
+    };
+  }
+
+  // ─── Downstream Outcome Feedback ─────────────────────────────────────────
+
+  /**
+   * Record feedback on whether retrieved memories led to good outcomes.
+   * Links retrieval events to success/failure signals for self-improvement.
+   *
+   * @param agentId       Tenant identifier
+   * @param retrievalIds  Retrieval log IDs to update (from query results)
+   * @param outcome       Whether the retrieval was helpful
+   * @param metadata      Optional feedback context
+   */
+  async feedback(
+    agentId: string,
+    retrievalIds: bigint[],
+    outcome: FeedbackOutcome,
+    metadata: Record<string, unknown> = {},
+  ): Promise<FeedbackResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (!Array.isArray(retrievalIds) || retrievalIds.length === 0) {
+      throw new TypeError('retrievalIds must be a non-empty array');
+    }
+    if (!['positive', 'negative', 'neutral'].includes(outcome)) {
+      throw new TypeError('outcome must be one of: positive, negative, neutral');
+    }
+
+    const { rowCount } = await this.pool.query(
+      `UPDATE retrieval_log
+       SET outcome = $3, feedback_at = now(), feedback_metadata = $4
+       WHERE agent_id = $1 AND id = ANY($2)`,
+      [agentId, retrievalIds, outcome, JSON.stringify(metadata)],
+    );
+
+    const updated = rowCount ?? 0;
+
+    // Boost or penalize importance of linked warm-tier memories
+    if (updated > 0) {
+      const delta = outcome === 'positive' ? 0.05 : outcome === 'negative' ? -0.05 : 0;
+      if (delta !== 0) {
+        void this.pool.query(
+          `UPDATE warm_tier SET importance = LEAST(1.0, GREATEST(0.0, importance + $3))
+           WHERE id IN (
+             SELECT DISTINCT warm_tier_id FROM retrieval_log
+             WHERE agent_id = $1 AND id = ANY($2)
+           )`,
+          [agentId, retrievalIds, delta],
+        );
+      }
+    }
+
+    return { agent_id: agentId, updated, outcome };
+  }
+
+  // ─── Meta-Reflection (Hierarchical) ──────────────────────────────────────
+
+  /**
+   * Reflect on reflections — synthesize higher-order principles from
+   * accumulated first-order reflections. Produces level-2+ reflections.
+   *
+   * @param agentId  Tenant identifier
+   * @param limit    Max reflections to review (default 10)
+   */
+  async metaReflect(agentId: string, limit = 10): Promise<MetaReflectionResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (!this.llm) {
+      throw new Error('Meta-reflection requires an LLM provider — set LLM_PROVIDER');
+    }
+
+    // Get recent first-order reflections that haven't been meta-reflected on
+    const reflections = await this.pool.query<{
+      id: bigint; content: string; key_insights: string[];
+      contradictions: string[]; created_at: Date;
+    }>(
+      `SELECT id, content, key_insights, contradictions, created_at
+       FROM reflections
+       WHERE agent_id = $1 AND reflection_level = 1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [agentId, limit],
+    );
+
+    if (reflections.rows.length < 3) {
+      throw new Error(`Need at least 3 first-order reflections for meta-reflection (have ${reflections.rows.length})`);
+    }
+
+    // Get existing meta-reflections for context
+    const priorMeta = await this.pool.query<{ content: string; key_insights: string[]; created_at: Date }>(
+      `SELECT content, key_insights, created_at
+       FROM reflections
+       WHERE agent_id = $1 AND reflection_level >= 2
+       ORDER BY created_at DESC
+       LIMIT 3`,
+      [agentId],
+    );
+
+    const reflectionsText = reflections.rows
+      .map((r, i) => {
+        const insights = r.key_insights.join('; ');
+        const contradictions = r.contradictions.length > 0
+          ? `\nContradictions: ${r.contradictions.join('; ')}`
+          : '';
+        return `[Reflection ${i + 1} — ${new Date(r.created_at).toISOString()}]\n${r.content}\nInsights: ${insights}${contradictions}`;
+      })
+      .join('\n\n---\n\n');
+
+    const priorMetaText = priorMeta.rows.length > 0
+      ? `\n\nPrior meta-reflections:\n${priorMeta.rows.map((r) => `[${new Date(r.created_at).toISOString()}] ${r.content}\nInsights: ${r.key_insights.join('; ')}`).join('\n\n')}`
+      : '';
+
+    const META_REFLECTION_SYSTEM_PROMPT = `You are a meta-reflection engine for an AI agent's memory system. You review first-order reflections (which summarized raw memories) and synthesize second-order patterns — principles, strategies, and meta-cognitive insights that emerge from the reflections themselves.
+
+You MUST respond with valid JSON matching this schema:
+{
+  "reflection": "A synthesis of recurring themes, strategic principles, and meta-cognitive insights drawn from the collection of reflections. Focus on what the pattern of reflections reveals about the agent's learning trajectory, blind spots, and emerging wisdom.",
+  "key_insights": ["Higher-order principles that transcend individual reflections. Each should be a durable strategic insight."],
+  "contradictions": ["Contradictions between reflections, or between reflections and meta-reflections. Each should identify what conflicts and what it means."],
+  "reinforced_patterns": ["Patterns consistently appearing across multiple reflections — these are the agent's most reliable knowledge."]
+}
+
+Guidelines:
+- Look for patterns ACROSS reflections, not within them.
+- Identify which insights are consistently reinforced vs. contradicted over time.
+- Surface blind spots — topics the agent reflects on without making progress.
+- Extract durable principles, not ephemeral observations.
+- Respond with ONLY the JSON object.`;
+
+    const userPrompt = `Review the following first-order reflections and synthesize higher-order patterns and principles.${priorMetaText}\n\nFirst-order reflections to analyze:\n\n${reflectionsText}`;
+
+    const responseText = await this.llm.chat(META_REFLECTION_SYSTEM_PROMPT, userPrompt);
+
+    const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Meta-reflection LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
+    }
+
+    const content = typeof parsed['reflection'] === 'string' ? parsed['reflection'] : '';
+    const keyInsights = Array.isArray(parsed['key_insights'])
+      ? (parsed['key_insights'] as unknown[]).filter((i): i is string => typeof i === 'string')
+      : [];
+    const contradictions = Array.isArray(parsed['contradictions'])
+      ? (parsed['contradictions'] as unknown[]).filter((c): c is string => typeof c === 'string')
+      : [];
+    const reinforcedPatterns = Array.isArray(parsed['reinforced_patterns'])
+      ? (parsed['reinforced_patterns'] as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [];
+
+    const sourceReflectionIds = reflections.rows.map((r) => r.id);
+
+    const { rows } = await this.pool.query<{ id: bigint }>(
+      `INSERT INTO reflections (agent_id, content, key_insights, contradictions, source_warm_ids, trigger_type, reflection_level, source_reflection_ids, metadata)
+       VALUES ($1, $2, $3, $4, '{}', 'scheduled', 2, $5, $6)
+       RETURNING id`,
+      [
+        agentId,
+        content,
+        keyInsights,
+        contradictions,
+        sourceReflectionIds,
+        JSON.stringify({
+          reinforced_patterns: reinforcedPatterns,
+          reflections_reviewed: reflections.rows.length,
+          model: this.llm.model,
+        }),
+      ],
+    );
+
+    // Extract procedures from meta-reflections too
+    const metaReflectionId = rows[0]!.id;
+    if (keyInsights.length > 0) {
+      void this.extractProcedures(agentId, metaReflectionId).catch((err) =>
+        console.error('[memforge] meta-reflection procedure extraction failed:', (err as Error).message),
+      );
+    }
+
+    return {
+      id: metaReflectionId,
+      agent_id: agentId,
+      insights_count: keyInsights.length,
+      contradictions_count: contradictions.length,
+      source_reflections_reviewed: reflections.rows.length,
+      reflection_level: 2,
+    };
+  }
+
+  // ─── Entity Deduplication ────────────────────────────────────────────────
+
+  /**
+   * Detect and merge duplicate entities within an agent's knowledge graph.
+   * Uses trigram similarity to find candidates, then merges by repointing
+   * all relationships and warm_tier_entities references to the canonical entity.
+   *
+   * @param agentId    Tenant identifier
+   * @param threshold  Similarity threshold (0-1, default 0.7)
+   * @returns Number of entities merged
+   */
+  async deduplicateEntities(agentId: string, threshold = 0.7): Promise<number> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    // Find candidate duplicate pairs using trigram similarity
+    const candidates = await this.pool.query<{
+      id_a: bigint; name_a: string; id_b: bigint; name_b: string;
+      mention_a: number; mention_b: number; sim: number;
+    }>(
+      `SELECT
+         a.id AS id_a, a.name AS name_a, a.mention_count AS mention_a,
+         b.id AS id_b, b.name AS name_b, b.mention_count AS mention_b,
+         similarity(a.name, b.name) AS sim
+       FROM entities a
+       JOIN entities b ON a.agent_id = b.agent_id
+         AND a.id < b.id
+         AND a.entity_type = b.entity_type
+       WHERE a.agent_id = $1
+         AND similarity(a.name, b.name) >= $2
+       ORDER BY sim DESC
+       LIMIT 50`,
+      [agentId, threshold],
+    );
+
+    if (candidates.rows.length === 0) return 0;
+
+    let merged = 0;
+    const alreadyMerged = new Set<string>();
+
+    for (const pair of candidates.rows) {
+      // Skip if either entity was already merged in this run
+      if (alreadyMerged.has(String(pair.id_a)) || alreadyMerged.has(String(pair.id_b))) continue;
+
+      // Keep the entity with more mentions (or the shorter name as tiebreaker)
+      const [keepId, removeId] = pair.mention_a >= pair.mention_b
+        ? [pair.id_a, pair.id_b]
+        : [pair.id_b, pair.id_a];
+
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Repoint warm_tier_entities references
+        await client.query(
+          `UPDATE warm_tier_entities SET entity_id = $1
+           WHERE entity_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM warm_tier_entities WHERE warm_tier_id = warm_tier_entities.warm_tier_id AND entity_id = $1
+           )`,
+          [keepId, removeId],
+        );
+        // Delete remaining duplicates that couldn't be repointed
+        await client.query(
+          `DELETE FROM warm_tier_entities WHERE entity_id = $1`,
+          [removeId],
+        );
+
+        // Repoint relationships (source side)
+        await client.query(
+          `UPDATE relationships SET source_entity_id = $1
+           WHERE source_entity_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM relationships r2
+             WHERE r2.source_entity_id = $1 AND r2.target_entity_id = relationships.target_entity_id
+               AND r2.relation_type = relationships.relation_type AND r2.agent_id = relationships.agent_id
+           )`,
+          [keepId, removeId],
+        );
+        // Repoint relationships (target side)
+        await client.query(
+          `UPDATE relationships SET target_entity_id = $1
+           WHERE target_entity_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM relationships r2
+             WHERE r2.target_entity_id = $1 AND r2.source_entity_id = relationships.source_entity_id
+               AND r2.relation_type = relationships.relation_type AND r2.agent_id = relationships.agent_id
+           )`,
+          [keepId, removeId],
+        );
+        // Delete orphaned relationships that couldn't be repointed
+        await client.query(
+          `DELETE FROM relationships WHERE source_entity_id = $1 OR target_entity_id = $1`,
+          [removeId],
+        );
+
+        // Merge mention counts and update metadata
+        await client.query(
+          `UPDATE entities SET
+             mention_count = mention_count + (SELECT mention_count FROM entities WHERE id = $2),
+             first_seen = LEAST(first_seen, (SELECT first_seen FROM entities WHERE id = $2)),
+             metadata = metadata || jsonb_build_object('merged_from', COALESCE(metadata->'merged_from', '[]'::jsonb) || to_jsonb((SELECT name FROM entities WHERE id = $2)))
+           WHERE id = $1`,
+          [keepId, removeId],
+        );
+
+        // Delete the duplicate entity
+        await client.query(`DELETE FROM entities WHERE id = $1`, [removeId]);
+
+        await client.query('COMMIT');
+        merged++;
+        alreadyMerged.add(String(removeId));
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`[memforge] entity dedup failed for pair ${pair.name_a}/${pair.name_b}:`, (err as Error).message);
+      } finally {
+        client.release();
+      }
+    }
+
+    return merged;
+  }
+
+  // ─── Active Memory / Proactive Surfacing ─────────────────────────────────
+
+  /**
+   * Given an action context, proactively surface relevant memories and
+   * procedures that the agent should consider before acting.
+   *
+   * @param agentId  Tenant identifier
+   * @param context  What the agent is about to do (natural language)
+   * @param limit    Max memories to surface (default 5)
+   */
+  async activeRecall(
+    agentId: string,
+    context: string,
+    limit = 5,
+  ): Promise<ActiveMemoryResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (!context || typeof context !== 'string') {
+      throw new TypeError('context must be a non-empty string');
+    }
+
+    // Run memory search and procedure lookup in parallel
+    const [memories, procedures] = await Promise.all([
+      this.query(agentId, { q: context, limit }),
+      this.getProcedures(agentId, context, limit),
+    ]);
+
+    // Build relevance descriptions for each memory
+    const memoryResults = memories.map((m) => ({
+      id: m.id,
+      content: m.content,
+      relevance: m.rank > 0.5 ? 'high' : m.rank > 0.2 ? 'medium' : 'low',
+    }));
+
+    const procedureResults = procedures.map((p) => ({
+      condition: p.condition,
+      action: p.action,
+      confidence: p.confidence,
+    }));
+
+    return {
+      agent_id: agentId,
+      memories: memoryResults,
+      procedures: procedureResults,
     };
   }
 }

@@ -25,9 +25,11 @@ interface TokenInfo {
   cachedAt: number;
 }
 
-// 30-second in-process cache to avoid hammering the OAuth2 server
+// 30-second in-process cache to avoid hammering the OAuth2 server.
+// Capped at 10,000 entries to prevent memory exhaustion from token spray attacks.
 const TOKEN_CACHE = new Map<string, TokenInfo>();
 const CACHE_TTL_MS = 30_000;
+const CACHE_MAX_SIZE = 10_000;
 
 setInterval(() => {
   const now = Date.now();
@@ -83,6 +85,12 @@ export async function bearerAuth(
     console.error('[memforge:auth] introspect failed:', (err as Error).message);
     res.status(503).json({ ok: false, error: 'OAuth2 server unavailable' });
     return;
+  }
+
+  // Evict oldest entries if cache is full (prevents memory exhaustion from token spray)
+  if (TOKEN_CACHE.size >= CACHE_MAX_SIZE) {
+    const firstKey = TOKEN_CACHE.keys().next().value;
+    if (firstKey !== undefined) TOKEN_CACHE.delete(firstKey);
   }
 
   TOKEN_CACHE.set(token, { ...data, cachedAt: Date.now() });

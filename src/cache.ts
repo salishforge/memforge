@@ -64,7 +64,9 @@ export async function getRedis(): Promise<RedisClientType | null> {
       });
 
       await client.connect();
-      console.log(`[cache] Redis connected at ${url}`);
+      // Redact credentials from log output
+      const safeUrl = url.replace(/:\/\/[^@]*@/, '://*:*@');
+      console.log(`[cache] Redis connected at ${safeUrl}`);
       redisClient = client;
       return client;
     } catch (err) {
@@ -93,6 +95,14 @@ export function statsKey(agentId: string): string {
 
 export function searchKey(agentId: string, q: string, limit: number): string {
   return `memforge:${agentId}:q:${queryHash(q, limit)}`;
+}
+
+export function timelineKey(agentId: string, from?: string, to?: string, limit = 50): string {
+  const hash = createHash('sha256')
+    .update(`${from ?? ''}::${to ?? ''}::${limit}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `memforge:${agentId}:tl:${hash}`;
 }
 
 // ─── Core operations ──────────────────────────────────────────────────────────
@@ -151,9 +161,8 @@ export async function invalidatePattern(pattern: string): Promise<number> {
     }
     if (keys.length === 0) return 0;
 
-    // Delete in parallel batches (pipeline-style); del accepts a single key per call
-    const results = await Promise.all(keys.map((k) => redis.del(k)));
-    const deleted = results.reduce((sum, n) => sum + n, 0);
+    // DEL supports multiple keys in a single call
+    const deleted = await redis.del(keys);
     counters.invalidations += deleted;
     return deleted;
   } catch (err) {

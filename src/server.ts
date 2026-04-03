@@ -2,9 +2,18 @@
 //
 // Routes:
 //   POST   /memory/:agentId/add
-//   GET    /memory/:agentId/query?q=<text>[&limit=<n>]
+//   GET    /memory/:agentId/query?q=<text>[&limit=<n>][&mode=keyword|semantic|hybrid][&after=<iso>][&before=<iso>][&decay=<rate>]
 //   POST   /memory/:agentId/consolidate
 //   GET    /memory/:agentId/stats
+//   GET    /memory/:agentId/timeline?[from=<iso>][&to=<iso>][&limit=<n>]
+//   GET    /memory/:agentId/entities?[q=<text>][&type=<entityType>][&limit=<n>]
+//   GET    /memory/:agentId/graph?entity=<name>[&depth=<n>]
+//   POST   /memory/:agentId/reflect
+//   GET    /memory/:agentId/reflections?[limit=<n>]
+//   POST   /memory/:agentId/feedback
+//   POST   /memory/:agentId/meta-reflect
+//   POST   /memory/:agentId/dedup-entities
+//   POST   /memory/:agentId/active-recall
 //   GET    /health
 //   GET    /metrics              (Prometheus)
 //   GET    /api/spec.json        (OpenAPI 3.0)
@@ -13,9 +22,13 @@
 //   POST   /admin/cache/clear   (admin — flush cache)
 //   GET    /admin/cache/dashboard (admin — monitoring UI)
 
+import crypto from 'crypto';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import type { Request, Response, NextFunction } from 'express';
 import { MemoryManager } from './memory-manager.js';
+import { createEmbeddingProvider } from './embedding.js';
+import { createLLMProvider } from './llm.js';
 import { closePool } from './db.js';
 import {
   registry,
@@ -30,10 +43,14 @@ import {
   flushCache,
   statsKey,
   searchKey,
+  timelineKey,
   getLocalStats,
   getRedisStats,
   closeRedis,
 } from './cache.js';
+import { buildOpenApiSpec } from './openapi.js';
+import { cacheDashboardHtml } from './dashboard.js';
+import type { QueryMode, ConsolidationMode, FeedbackOutcome } from './types.js';
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -42,15 +59,54 @@ const PORT = parseInt(process.env['PORT'] ?? '3333', 10);
 // Simple shared secret for admin endpoints (optional — set ADMIN_TOKEN env var)
 const ADMIN_TOKEN = process.env['ADMIN_TOKEN'] ?? '';
 
+const embeddingProvider = createEmbeddingProvider();
+const llmProvider = createLLMProvider();
+const revisionLlmProvider = process.env['REVISION_LLM_PROVIDER']
+  ? createLLMProvider(process.env['REVISION_LLM_PROVIDER'] as 'anthropic' | 'openai' | 'ollama')
+  : null;
+
 const manager = new MemoryManager({
   databaseUrl: process.env['DATABASE_URL'],
   consolidationBatchSize: parseInt(process.env['CONSOLIDATION_BATCH_SIZE'] ?? '500', 10),
   consolidationThreshold: parseInt(process.env['CONSOLIDATION_THRESHOLD'] ?? '50', 10),
   autoRegisterAgents: process.env['AUTO_REGISTER_AGENTS'] !== 'false',
+  embeddingProvider,
+  llmProvider,
+  revisionLlmProvider,
+  consolidationMode: (process.env['CONSOLIDATION_MODE'] as ConsolidationMode) ?? 'concat',
+  temporalDecayRate: parseFloat(process.env['TEMPORAL_DECAY_RATE'] ?? '0'),
+  sleepCycle: {
+    tokenBudget: parseInt(process.env['SLEEP_CYCLE_TOKEN_BUDGET'] ?? '100000', 10),
+    evictionThreshold: parseFloat(process.env['SLEEP_CYCLE_EVICTION_THRESHOLD'] ?? '0.1'),
+    revisionThreshold: parseFloat(process.env['SLEEP_CYCLE_REVISION_THRESHOLD'] ?? '0.4'),
+    includeReflection: process.env['SLEEP_CYCLE_INCLUDE_REFLECTION'] !== 'false',
+    weights: {
+      recency: 0.25,
+      frequency: 0.20,
+      centrality: 0.20,
+      reflection: 0.15,
+      stability: 0.20,
+    },
+  },
 });
 
 const app = express();
 app.use(express.json());
+
+// ─── Rate limiting ───────────────────────────────────────────────────────────
+
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env['RATE_LIMIT_WINDOW_MS'] ?? '60000', 10);
+const RATE_LIMIT_MAX = parseInt(process.env['RATE_LIMIT_MAX'] ?? '100', 10);
+
+if (RATE_LIMIT_MAX > 0) {
+  app.use('/memory', rateLimit({
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    max: RATE_LIMIT_MAX,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { ok: false, error: 'Too many requests — try again later' },
+  }));
+}
 
 // ─── Request metrics middleware ───────────────────────────────────────────────
 
@@ -69,203 +125,24 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// ─── OpenAPI spec ─────────────────────────────────────────────────────────────
-
-const openApiSpec = {
-  openapi: '3.0.3',
-  info: {
-    title: 'MemForge Memory API',
-    version: '1.1.0',
-    description:
-      'Tiered agent memory service with hot/warm/cold PostgreSQL storage, full-text search, and Redis caching.',
-  },
-  servers: [{ url: `http://localhost:${PORT}`, description: 'Local' }],
-  tags: [
-    { name: 'Memory', description: 'Agent memory operations' },
-    { name: 'System', description: 'Health and observability' },
-    { name: 'Admin', description: 'Administrative endpoints' },
-  ],
-  paths: {
-    '/health': {
-      get: {
-        summary: 'Health check',
-        tags: ['System'],
-        responses: {
-          '200': {
-            description: 'Service is healthy',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string', example: 'ok' },
-                    ts: { type: 'string', format: 'date-time' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/metrics': {
-      get: {
-        summary: 'Prometheus metrics',
-        tags: ['System'],
-        responses: {
-          '200': {
-            description: 'Prometheus text format metrics',
-            content: { 'text/plain': { schema: { type: 'string' } } },
-          },
-        },
-      },
-    },
-    '/memory/{agentId}/add': {
-      post: {
-        summary: 'Add memory event to hot tier',
-        tags: ['Memory'],
-        parameters: [
-          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['content'],
-                properties: {
-                  content: { type: 'string', description: 'Memory content to store' },
-                  metadata: { type: 'object', additionalProperties: true },
-                },
-              },
-            },
-          },
-        },
-        responses: {
-          '200': { description: 'Memory added', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
-          '400': { '$ref': '#/components/responses/BadRequest' },
-          '500': { '$ref': '#/components/responses/InternalError' },
-        },
-      },
-    },
-    '/memory/{agentId}/query': {
-      get: {
-        summary: 'Full-text search warm tier (cached 10 min)',
-        tags: ['Memory'],
-        parameters: [
-          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'q', in: 'query', required: true, schema: { type: 'string' }, description: 'Search query' },
-          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 10 } },
-        ],
-        responses: {
-          '200': { description: 'Search results', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
-          '400': { '$ref': '#/components/responses/BadRequest' },
-          '500': { '$ref': '#/components/responses/InternalError' },
-        },
-      },
-    },
-    '/memory/{agentId}/consolidate': {
-      post: {
-        summary: 'Trigger hot→warm memory consolidation (invalidates cache)',
-        tags: ['Memory'],
-        parameters: [
-          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        responses: {
-          '200': { description: 'Consolidation result', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
-          '400': { '$ref': '#/components/responses/BadRequest' },
-          '500': { '$ref': '#/components/responses/InternalError' },
-        },
-      },
-    },
-    '/memory/{agentId}/stats': {
-      get: {
-        summary: 'Get memory tier statistics for an agent (cached 5 min)',
-        tags: ['Memory'],
-        parameters: [
-          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        responses: {
-          '200': { description: 'Memory stats', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
-          '404': { '$ref': '#/components/responses/NotFound' },
-          '500': { '$ref': '#/components/responses/InternalError' },
-        },
-      },
-    },
-    '/admin/cache/stats': {
-      get: {
-        summary: 'Cache statistics (admin)',
-        tags: ['Admin'],
-        responses: {
-          '200': { description: 'Cache hit/miss stats + Redis info' },
-        },
-      },
-    },
-    '/admin/cache/clear': {
-      post: {
-        summary: 'Flush cache (admin)',
-        tags: ['Admin'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  agentId: { type: 'string', description: 'Flush only this agent (omit to flush all)' },
-                },
-              },
-            },
-          },
-        },
-        responses: {
-          '200': { description: 'Flush result' },
-        },
-      },
-    },
-  },
-  components: {
-    schemas: {
-      OkResponse: {
-        type: 'object',
-        properties: {
-          ok: { type: 'boolean', example: true },
-          data: { description: 'Response payload' },
-        },
-      },
-      ErrorResponse: {
-        type: 'object',
-        properties: {
-          ok: { type: 'boolean', example: false },
-          error: { type: 'string' },
-        },
-      },
-    },
-    responses: {
-      BadRequest: {
-        description: 'Bad request',
-        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
-      },
-      NotFound: {
-        description: 'Resource not found',
-        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
-      },
-      InternalError: {
-        description: 'Internal server error',
-        content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } },
-      },
-    },
-  },
-};
+const openApiSpec = buildOpenApiSpec(PORT);
 
 // ─── Swagger UI HTML helper ───────────────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function escapeJsString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\x3c');
+}
 
 function swaggerUiHtml(specUrl: string, title: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
 </head>
 <body>
@@ -273,7 +150,7 @@ function swaggerUiHtml(specUrl: string, title: string): string {
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
   <script>
     SwaggerUIBundle({
-      url: '${specUrl}',
+      url: '${escapeJsString(specUrl)}',
       dom_id: '#swagger-ui',
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
       layout: 'BaseLayout',
@@ -287,16 +164,20 @@ function swaggerUiHtml(specUrl: string, title: string): string {
 // ─── Admin middleware ─────────────────────────────────────────────────────────
 
 function adminAuth(req: Request, res: Response, next: NextFunction): void {
-  // If no ADMIN_TOKEN is configured, allow all (dev mode)
   if (!ADMIN_TOKEN) {
     next();
     return;
   }
 
   const auth = req.headers['authorization'];
-  if (auth === `Bearer ${ADMIN_TOKEN}`) {
-    next();
-    return;
+  if (auth && auth.startsWith('Bearer ')) {
+    const provided = Buffer.from(auth.slice(7));
+    const expected = Buffer.from(ADMIN_TOKEN);
+    if (provided.length === expected.length &&
+        crypto.timingSafeEqual(provided, expected)) {
+      next();
+      return;
+    }
   }
 
   res.status(401).json({ ok: false, error: 'Admin token required' });
@@ -304,10 +185,6 @@ function adminAuth(req: Request, res: Response, next: NextFunction): void {
 
 // ─── Admin routes ─────────────────────────────────────────────────────────────
 
-/**
- * GET /admin/cache/stats
- * Returns cache hit/miss counters + Redis server info.
- */
 app.get('/admin/cache/stats', adminAuth, async (_req, res) => {
   const [local, redis] = await Promise.all([getLocalStats(), getRedisStats()]);
   res.json({
@@ -324,13 +201,8 @@ app.get('/admin/cache/stats', adminAuth, async (_req, res) => {
   });
 });
 
-/**
- * POST /admin/cache/clear
- * Body: { agentId?: string } — omit to flush all MemForge keys.
- */
 app.post('/admin/cache/clear', adminAuth, async (req, res) => {
   const { agentId } = req.body as { agentId?: string };
-
   const deleted = await flushCache(agentId);
   res.json({
     ok: true,
@@ -341,10 +213,6 @@ app.post('/admin/cache/clear', adminAuth, async (req, res) => {
   });
 });
 
-/**
- * GET /admin/cache/dashboard
- * Simple HTML monitoring dashboard.
- */
 app.get('/admin/cache/dashboard', adminAuth, (_req, res) => {
   res.type('html').send(cacheDashboardHtml());
 });
@@ -355,44 +223,30 @@ app.use('/memory', bearerAuth);
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
-/**
- * GET /health
- * Returns 200 when the server is up.
- */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', ts: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    ts: new Date().toISOString(),
+    embeddings: manager.embeddingsEnabled,
+    summarization: manager.summarizationEnabled,
+  });
 });
 
-/**
- * GET /metrics
- * Prometheus text-format metrics.
- */
 app.get('/metrics', async (_req, res) => {
   res.set('Content-Type', registry.contentType);
   res.send(await registry.metrics());
 });
 
-/**
- * GET /api/spec.json
- * OpenAPI 3.0 specification.
- */
 app.get('/api/spec.json', (_req, res) => {
   res.json(openApiSpec);
 });
 
-/**
- * GET /api/docs
- * Interactive Swagger UI.
- */
 app.get('/api/docs', (_req, res) => {
   res.type('html').send(swaggerUiHtml('/api/spec.json', 'MemForge API Docs'));
 });
 
 /**
  * POST /memory/:agentId/add
- * Requires scope: memforge:write
- * Body: { content: string, metadata?: object }
- * Side-effect: invalidates all cache entries for this agent.
  */
 app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Request, res: Response) => {
   const { content, metadata } = req.body as {
@@ -406,9 +260,8 @@ app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Req
   }
 
   try {
-    const result = await manager.add(agentId(req), content, metadata ?? {});
-    // Invalidate cache for this agent — data has changed
-    void invalidateAgent(agentId(req));
+    const result = await manager.add(getAgentId(req), content, metadata ?? {});
+    void invalidateAgent(getAgentId(req));
     ok(res, result);
   } catch (err) {
     const e = err as Error;
@@ -421,13 +274,15 @@ app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Req
 });
 
 /**
- * GET /memory/:agentId/query?q=<text>[&limit=<n>]
- * Requires scope: memforge:read
- * Results cached in Redis for 10 minutes.
+ * GET /memory/:agentId/query?q=<text>[&limit=<n>][&mode=keyword|semantic|hybrid][&after=<iso>][&before=<iso>][&decay=<rate>]
  */
 app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Request, res: Response) => {
   const q = req.query['q'];
   const limit = req.query['limit'];
+  const mode = req.query['mode'];
+  const after = req.query['after'];
+  const before = req.query['before'];
+  const decay = req.query['decay'];
 
   if (!q || typeof q !== 'string') {
     fail(res, 400, '"q" query param (string) is required');
@@ -440,8 +295,39 @@ app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Req
     return;
   }
 
-  // Check cache
-  const key = searchKey(agentId(req), q, limitNum);
+  if (mode && !['keyword', 'semantic', 'hybrid'].includes(mode as string)) {
+    fail(res, 400, '"mode" must be one of: keyword, semantic, hybrid');
+    return;
+  }
+
+  const afterDate = after ? new Date(after as string) : undefined;
+  const beforeDate = before ? new Date(before as string) : undefined;
+  if (afterDate && isNaN(afterDate.getTime())) {
+    fail(res, 400, '"after" must be a valid ISO 8601 timestamp');
+    return;
+  }
+  if (beforeDate && isNaN(beforeDate.getTime())) {
+    fail(res, 400, '"before" must be a valid ISO 8601 timestamp');
+    return;
+  }
+
+  const decayRate = decay !== undefined ? parseFloat(decay as string) : undefined;
+  if (decayRate !== undefined && (isNaN(decayRate) || decayRate < 0)) {
+    fail(res, 400, '"decay" must be a non-negative number');
+    return;
+  }
+
+  let agentId: string;
+  try {
+    agentId = getAgentId(req);
+  } catch (err) {
+    fail(res, 400, (err as Error).message);
+    return;
+  }
+
+  // Cache key includes all query parameters
+  const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}`;
+  const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
   const cached = await cacheGet(key);
   if (cached !== null) {
     res.setHeader('X-Cache', 'HIT');
@@ -452,7 +338,14 @@ app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Req
   res.setHeader('X-Cache', 'MISS');
 
   try {
-    const results = await manager.query(agentId(req), q, limitNum);
+    const results = await manager.query(agentId, {
+      q,
+      limit: limitNum,
+      mode: mode as QueryMode | undefined,
+      after: afterDate,
+      before: beforeDate,
+      decayRate,
+    });
     void cacheSet(key, results, 'search');
     ok(res, results);
   } catch (err) {
@@ -461,16 +354,193 @@ app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Req
 });
 
 /**
+ * GET /memory/:agentId/timeline?[from=<iso>][&to=<iso>][&limit=<n>]
+ */
+app.get('/memory/:agentId/timeline', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const from = req.query['from'];
+  const to = req.query['to'];
+  const limit = req.query['limit'];
+
+  const fromDate = from ? new Date(from as string) : undefined;
+  const toDate = to ? new Date(to as string) : undefined;
+
+  if (fromDate && isNaN(fromDate.getTime())) {
+    fail(res, 400, '"from" must be a valid ISO 8601 timestamp');
+    return;
+  }
+  if (toDate && isNaN(toDate.getTime())) {
+    fail(res, 400, '"to" must be a valid ISO 8601 timestamp');
+    return;
+  }
+
+  const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 50;
+  if (isNaN(limitNum) || limitNum < 1 || limitNum > 500) {
+    fail(res, 400, '"limit" must be an integer between 1 and 500');
+    return;
+  }
+
+  let agentId: string;
+  try {
+    agentId = getAgentId(req);
+  } catch (err) {
+    fail(res, 400, (err as Error).message);
+    return;
+  }
+
+  // Check cache
+  const key = timelineKey(agentId, from as string | undefined, to as string | undefined, limitNum);
+  const cached = await cacheGet(key);
+  if (cached !== null) {
+    res.setHeader('X-Cache', 'HIT');
+    ok(res, cached);
+    return;
+  }
+
+  res.setHeader('X-Cache', 'MISS');
+
+  try {
+    const entries = await manager.timeline(agentId, fromDate, toDate, limitNum);
+    void cacheSet(key, entries, 'search');
+    ok(res, entries);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * GET /memory/:agentId/entities?[q=<text>][&type=<entityType>][&limit=<n>]
+ */
+app.get('/memory/:agentId/entities', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const q = req.query['q'] as string | undefined;
+  const type = req.query['type'] as string | undefined;
+  const limit = req.query['limit'];
+
+  const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 20;
+  if (isNaN(limitNum) || limitNum < 1 || limitNum > 200) {
+    fail(res, 400, '"limit" must be an integer between 1 and 200');
+    return;
+  }
+
+  try {
+    const entities = await manager.searchEntities(getAgentId(req), q, type, limitNum);
+    ok(res, entities);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * GET /memory/:agentId/graph?entity=<name>[&depth=<n>]
+ */
+app.get('/memory/:agentId/graph', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const entity = req.query['entity'];
+  const depth = req.query['depth'];
+
+  if (!entity || typeof entity !== 'string') {
+    fail(res, 400, '"entity" query param (string) is required');
+    return;
+  }
+
+  const depthNum = depth !== undefined ? parseInt(depth as string, 10) : 2;
+  if (isNaN(depthNum) || depthNum < 1 || depthNum > 5) {
+    fail(res, 400, '"depth" must be an integer between 1 and 5');
+    return;
+  }
+
+  try {
+    const graph = await manager.graphTraverse(getAgentId(req), entity, depthNum);
+    ok(res, graph);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * POST /memory/:agentId/reflect
+ * Body: { trigger?: "manual" | "threshold" | "scheduled", limit?: number }
+ */
+app.post('/memory/:agentId/reflect', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const { trigger, limit } = (req.body ?? {}) as { trigger?: string; limit?: number };
+
+  if (trigger && !['manual', 'threshold', 'scheduled'].includes(trigger)) {
+    fail(res, 400, '"trigger" must be one of: manual, threshold, scheduled');
+    return;
+  }
+
+  const limitNum = limit ?? 20;
+  if (typeof limitNum !== 'number' || limitNum < 1 || limitNum > 100) {
+    fail(res, 400, '"limit" must be an integer between 1 and 100');
+    return;
+  }
+
+  try {
+    const result = await manager.reflect(getAgentId(req), (trigger as 'manual' | 'threshold' | 'scheduled') ?? 'manual', limitNum);
+    void invalidateAgent(getAgentId(req));
+    ok(res, result);
+  } catch (err) {
+    const e = err as Error;
+    if (e.message.includes('No warm-tier') || e.message.includes('requires an LLM')) {
+      fail(res, 400, e.message);
+    } else {
+      fail(res, 500, e.message);
+    }
+  }
+});
+
+/**
+ * GET /memory/:agentId/reflections?[limit=<n>]
+ */
+app.get('/memory/:agentId/reflections', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const limit = req.query['limit'];
+  const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 10;
+
+  if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    fail(res, 400, '"limit" must be an integer between 1 and 100');
+    return;
+  }
+
+  try {
+    const reflections = await manager.getReflections(getAgentId(req), limitNum);
+    ok(res, reflections);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * POST /memory/:agentId/clear
+ * Archives all hot + warm memory to cold tier.
+ */
+app.post('/memory/:agentId/clear', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  try {
+    const result = await manager.clear(getAgentId(req));
+    void invalidateAgent(getAgentId(req));
+    ok(res, result);
+  } catch (err) {
+    const e = err as Error;
+    if (e instanceof TypeError) {
+      fail(res, 400, e.message);
+    } else {
+      fail(res, 500, e.message);
+    }
+  }
+});
+
+/**
  * POST /memory/:agentId/consolidate
- * Requires scope: memforge:write
- * Body: {} (no params required)
- * Side-effect: invalidates all cache entries for this agent.
+ * Body: { mode?: "concat" | "summarize" }
  */
 app.post('/memory/:agentId/consolidate', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const { mode } = (req.body ?? {}) as { mode?: string };
+
+  if (mode && mode !== 'concat' && mode !== 'summarize') {
+    fail(res, 400, '"mode" must be one of: concat, summarize');
+    return;
+  }
+
   try {
-    const result = await manager.consolidate(agentId(req));
-    // Invalidate cache — warm tier changed, stats changed
-    void invalidateAgent(agentId(req));
+    const result = await manager.consolidate(getAgentId(req), mode as ConsolidationMode | undefined);
+    void invalidateAgent(getAgentId(req));
     ok(res, result);
   } catch (err) {
     const e = err as Error;
@@ -484,12 +554,17 @@ app.post('/memory/:agentId/consolidate', requireScope('memforge:write'), async (
 
 /**
  * GET /memory/:agentId/stats
- * Requires scope: memforge:read
- * Results cached in Redis for 5 minutes.
  */
 app.get('/memory/:agentId/stats', requireScope('memforge:read'), async (req: Request, res: Response) => {
-  // Check cache
-  const key = statsKey(agentId(req));
+  let agentId: string;
+  try {
+    agentId = getAgentId(req);
+  } catch (err) {
+    fail(res, 400, (err as Error).message);
+    return;
+  }
+
+  const key = statsKey(agentId);
   const cached = await cacheGet(key);
   if (cached !== null) {
     res.setHeader('X-Cache', 'HIT');
@@ -500,7 +575,7 @@ app.get('/memory/:agentId/stats', requireScope('memforge:read'), async (req: Req
   res.setHeader('X-Cache', 'MISS');
 
   try {
-    const stats = await manager.stats(agentId(req));
+    const stats = await manager.stats(agentId);
     void cacheSet(key, stats, 'hot');
     ok(res, stats);
   } catch (err) {
@@ -513,10 +588,188 @@ app.get('/memory/:agentId/stats', requireScope('memforge:read'), async (req: Req
   }
 });
 
+/**
+ * GET /memory/:agentId/procedures?[q=<text>][&limit=<n>]
+ */
+app.get('/memory/:agentId/procedures', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const q = req.query['q'] as string | undefined;
+  const limit = req.query['limit'];
+
+  const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 20;
+  if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    fail(res, 400, '"limit" must be an integer between 1 and 100');
+    return;
+  }
+
+  try {
+    const procedures = await manager.getProcedures(getAgentId(req), q, limitNum);
+    ok(res, procedures);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * POST /memory/:agentId/sleep
+ * Body: { tokenBudget?, evictionThreshold?, revisionThreshold?, includeReflection? }
+ */
+app.post('/memory/:agentId/sleep', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  try {
+    const result = await manager.sleep(getAgentId(req), {
+      tokenBudget: typeof body['tokenBudget'] === 'number' ? body['tokenBudget'] : undefined,
+      evictionThreshold: typeof body['evictionThreshold'] === 'number' ? body['evictionThreshold'] : undefined,
+      revisionThreshold: typeof body['revisionThreshold'] === 'number' ? body['revisionThreshold'] : undefined,
+      includeReflection: typeof body['includeReflection'] === 'boolean' ? body['includeReflection'] : undefined,
+    });
+    void invalidateAgent(getAgentId(req));
+    ok(res, result);
+  } catch (err) {
+    const e = err as Error;
+    if (e instanceof TypeError || e.message.includes('requires an LLM')) {
+      fail(res, 400, e.message);
+    } else {
+      fail(res, 500, e.message);
+    }
+  }
+});
+
+/**
+ * GET /memory/:agentId/health
+ */
+app.get('/memory/:agentId/health', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  try {
+    const health = await manager.health(getAgentId(req));
+    ok(res, health);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * POST /memory/:agentId/feedback
+ * Body: { retrieval_ids: bigint[], outcome: "positive"|"negative"|"neutral", metadata?: object }
+ */
+app.post('/memory/:agentId/feedback', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const { retrieval_ids, outcome, metadata } = req.body as {
+    retrieval_ids?: unknown[];
+    outcome?: string;
+    metadata?: Record<string, unknown>;
+  };
+
+  if (!Array.isArray(retrieval_ids) || retrieval_ids.length === 0) {
+    fail(res, 400, '"retrieval_ids" (non-empty array) is required');
+    return;
+  }
+  if (!outcome || !['positive', 'negative', 'neutral'].includes(outcome)) {
+    fail(res, 400, '"outcome" must be one of: positive, negative, neutral');
+    return;
+  }
+
+  try {
+    const result = await manager.feedback(
+      getAgentId(req),
+      retrieval_ids as bigint[],
+      outcome as FeedbackOutcome,
+      metadata ?? {},
+    );
+    ok(res, result);
+  } catch (err) {
+    const e = err as Error;
+    if (e instanceof TypeError) {
+      fail(res, 400, e.message);
+    } else {
+      fail(res, 500, e.message);
+    }
+  }
+});
+
+/**
+ * POST /memory/:agentId/meta-reflect
+ * Body: { limit?: number }
+ */
+app.post('/memory/:agentId/meta-reflect', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const { limit } = (req.body ?? {}) as { limit?: number };
+  const limitNum = limit ?? 10;
+
+  if (typeof limitNum !== 'number' || limitNum < 3 || limitNum > 50) {
+    fail(res, 400, '"limit" must be an integer between 3 and 50');
+    return;
+  }
+
+  try {
+    const result = await manager.metaReflect(getAgentId(req), limitNum);
+    void invalidateAgent(getAgentId(req));
+    ok(res, result);
+  } catch (err) {
+    const e = err as Error;
+    if (e.message.includes('Need at least') || e.message.includes('requires an LLM')) {
+      fail(res, 400, e.message);
+    } else {
+      fail(res, 500, e.message);
+    }
+  }
+});
+
+/**
+ * POST /memory/:agentId/dedup-entities
+ * Body: { threshold?: number }
+ */
+app.post('/memory/:agentId/dedup-entities', requireScope('memforge:write'), async (req: Request, res: Response) => {
+  const { threshold } = (req.body ?? {}) as { threshold?: number };
+  const thresholdNum = threshold ?? 0.7;
+
+  if (typeof thresholdNum !== 'number' || thresholdNum < 0.3 || thresholdNum > 1.0) {
+    fail(res, 400, '"threshold" must be a number between 0.3 and 1.0');
+    return;
+  }
+
+  try {
+    const merged = await manager.deduplicateEntities(getAgentId(req), thresholdNum);
+    void invalidateAgent(getAgentId(req));
+    ok(res, { agent_id: getAgentId(req), entities_merged: merged, threshold: thresholdNum });
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * POST /memory/:agentId/active-recall
+ * Body: { context: string, limit?: number }
+ */
+app.post('/memory/:agentId/active-recall', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const { context, limit } = req.body as { context?: string; limit?: number };
+
+  if (!context || typeof context !== 'string') {
+    fail(res, 400, '"context" (string) is required — describe what the agent is about to do');
+    return;
+  }
+
+  const limitNum = limit ?? 5;
+  if (typeof limitNum !== 'number' || limitNum < 1 || limitNum > 20) {
+    fail(res, 400, '"limit" must be an integer between 1 and 20');
+    return;
+  }
+
+  try {
+    const result = await manager.activeRecall(getAgentId(req), context, limitNum);
+    ok(res, result);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function agentId(req: Request): string {
-  return req.params['agentId'] ?? '';
+const AGENT_ID_PATTERN = /^[\w.@:=-]{1,256}$/;
+
+function getAgentId(req: Request): string {
+  const id = req.params['agentId'] ?? '';
+  if (!AGENT_ID_PATTERN.test(id)) {
+    throw new TypeError('agentId must be 1-256 characters of [a-zA-Z0-9_.@:=-]');
+  }
+  return id;
 }
 
 function ok(res: Response, data: unknown): void {
@@ -525,148 +778,6 @@ function ok(res: Response, data: unknown): void {
 
 function fail(res: Response, status: number, message: string): void {
   res.status(status).json({ ok: false, error: message });
-}
-
-// ─── Cache monitoring dashboard ───────────────────────────────────────────────
-
-function cacheDashboardHtml(): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MemForge Cache Dashboard</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; }
-    h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.25rem; color: #f1f5f9; }
-    .subtitle { color: #64748b; font-size: 0.875rem; margin-bottom: 2rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.25rem; }
-    .card-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 0.5rem; }
-    .card-value { font-size: 2rem; font-weight: 700; color: #38bdf8; }
-    .card-value.green { color: #4ade80; }
-    .card-value.yellow { color: #facc15; }
-    .card-value.red { color: #f87171; }
-    .section { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.25rem; margin-bottom: 1rem; }
-    .section h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; margin-bottom: 1rem; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    td, th { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #1e293b; }
-    th { color: #64748b; font-weight: 500; font-size: 0.75rem; text-transform: uppercase; }
-    tr:last-child td { border-bottom: none; }
-    .btn { background: #2563eb; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; cursor: pointer; font-size: 0.875rem; }
-    .btn:hover { background: #1d4ed8; }
-    .btn.red { background: #dc2626; }
-    .btn.red:hover { background: #b91c1c; }
-    .actions { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; }
-    .refresh-indicator { font-size: 0.75rem; color: #475569; margin-left: auto; align-self: center; }
-    .bar-container { background: #0f172a; border-radius: 9999px; height: 0.5rem; margin-top: 0.5rem; overflow: hidden; }
-    .bar-fill { height: 100%; border-radius: 9999px; transition: width 0.3s; }
-    .bar-fill.green { background: #4ade80; }
-    .bar-fill.blue { background: #38bdf8; }
-    .ttl-badge { display: inline-block; background: #1e3a5f; color: #7dd3fc; font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 9999px; margin-left: 0.5rem; }
-  </style>
-</head>
-<body>
-  <h1>MemForge Cache Dashboard</h1>
-  <p class="subtitle">Redis caching layer — live statistics</p>
-
-  <div class="actions">
-    <button class="btn" onclick="refresh()">Refresh</button>
-    <button class="btn red" onclick="clearCache()">Clear All Cache</button>
-    <span class="refresh-indicator" id="last-updated">Loading…</span>
-  </div>
-
-  <div class="grid" id="stat-cards"></div>
-
-  <div class="section">
-    <h2>Hit Rate</h2>
-    <div id="hit-rate-label" style="font-size:1.1rem;font-weight:600;color:#4ade80">—</div>
-    <div class="bar-container"><div class="bar-fill green" id="hit-rate-bar" style="width:0%"></div></div>
-  </div>
-
-  <div class="section">
-    <h2>Cache Tiers — TTL Configuration</h2>
-    <table>
-      <thead><tr><th>Tier</th><th>Routes</th><th>TTL</th></tr></thead>
-      <tbody>
-        <tr><td>Hot (stats)</td><td>/memory/:id/stats</td><td><span class="ttl-badge">5 min</span></td></tr>
-        <tr><td>Search</td><td>/memory/:id/query</td><td><span class="ttl-badge">10 min</span></td></tr>
-        <tr><td>Consolidation</td><td>—</td><td><span class="ttl-badge">30 min</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="section">
-    <h2>Redis Server Info</h2>
-    <table id="redis-table"><tbody><tr><td colspan="2">Loading…</td></tr></tbody></table>
-  </div>
-
-  <script>
-    const BASE = '';
-
-    function colorClass(hitRate) {
-      if (hitRate >= 80) return 'green';
-      if (hitRate >= 50) return 'yellow';
-      return 'red';
-    }
-
-    async function refresh() {
-      try {
-        const r = await fetch(BASE + '/admin/cache/stats');
-        const j = await r.json();
-        const { application: app, redis } = j.data;
-
-        // Stat cards
-        const cards = [
-          { label: 'Cache Hits', value: app.hits.toLocaleString(), cls: 'green' },
-          { label: 'Cache Misses', value: app.misses.toLocaleString(), cls: '' },
-          { label: 'Keys Written', value: app.sets.toLocaleString(), cls: '' },
-          { label: 'Invalidations', value: app.invalidations.toLocaleString(), cls: 'yellow' },
-          { label: 'Errors', value: app.errors.toLocaleString(), cls: app.errors > 0 ? 'red' : '' },
-          { label: 'Redis Keys', value: (redis.total_keys ?? '—').toLocaleString(), cls: '' },
-        ];
-        document.getElementById('stat-cards').innerHTML = cards.map(c =>
-          '<div class="card"><div class="card-label">' + c.label + '</div>' +
-          '<div class="card-value ' + c.cls + '">' + c.value + '</div></div>'
-        ).join('');
-
-        // Hit rate bar
-        const hitRate = app.hit_rate || 0;
-        document.getElementById('hit-rate-label').textContent = hitRate.toFixed(1) + '%';
-        document.getElementById('hit-rate-label').className = colorClass(hitRate);
-        document.getElementById('hit-rate-bar').style.width = Math.min(hitRate, 100) + '%';
-
-        // Redis info
-        const redisRows = Object.entries(redis).map(([k, v]) =>
-          '<tr><td style="color:#64748b">' + k + '</td><td>' + v + '</td></tr>'
-        ).join('');
-        document.getElementById('redis-table').querySelector('tbody').innerHTML = redisRows;
-
-        document.getElementById('last-updated').textContent =
-          'Updated ' + new Date().toLocaleTimeString();
-      } catch (e) {
-        console.error('Refresh failed:', e);
-      }
-    }
-
-    async function clearCache() {
-      if (!confirm('Clear all MemForge cache keys?')) return;
-      try {
-        const r = await fetch(BASE + '/admin/cache/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const j = await r.json();
-        alert('Cleared ' + j.data.deleted + ' keys');
-        refresh();
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
-    }
-
-    refresh();
-    setInterval(refresh, 15000);
-  </script>
-</body>
-</html>`;
 }
 
 // ─── Global error handler ────────────────────────────────────────────────────
@@ -680,6 +791,8 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 const server = app.listen(PORT, () => {
   console.log(`[memforge] listening on port ${PORT}`);
+  console.log(`[memforge] embeddings: ${manager.embeddingsEnabled ? 'enabled' : 'disabled'}`);
+  console.log(`[memforge] summarization: ${manager.summarizationEnabled ? 'enabled' : 'disabled'}`);
 });
 
 // Graceful shutdown
@@ -689,7 +802,6 @@ async function shutdown(signal: string): Promise<void> {
     await Promise.all([closePool(), closeRedis()]);
     process.exit(0);
   });
-  // Force exit after 10s
   setTimeout(() => process.exit(1), 10_000).unref();
 }
 
