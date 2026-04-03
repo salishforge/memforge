@@ -247,3 +247,115 @@ export class MemForgeClient {
 function enc(s: string): string {
   return encodeURIComponent(s);
 }
+
+// ─── Resilient Client ───────────────────────────────────────────────────────
+
+/**
+ * A wrapper around MemForgeClient that catches all errors and returns
+ * safe defaults. Use this when MemForge is optional and the agent must
+ * keep running even if memory is unavailable.
+ *
+ * Every method returns a default value on failure instead of throwing.
+ * Errors are logged to an optional callback for monitoring.
+ *
+ * Usage:
+ *   const memory = new ResilientMemForgeClient({ baseUrl: '...' });
+ *   const results = await memory.query('agent-1', { q: 'test' });
+ *   // Returns [] if MemForge is down — never throws
+ */
+export class ResilientMemForgeClient {
+  private readonly client: MemForgeClient;
+  private readonly onError: (method: string, err: Error) => void;
+
+  constructor(
+    config: MemForgeClientConfig = {},
+    onError?: (method: string, err: Error) => void,
+  ) {
+    this.client = new MemForgeClient(config);
+    this.onError = onError ?? ((method, err) => {
+      console.error(`[memforge] ${method} failed (graceful degradation):`, err.message);
+    });
+  }
+
+  private async safe<T>(method: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      this.onError(method, err as Error);
+      return fallback;
+    }
+  }
+
+  // Memory operations — return empty results on failure
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>): Promise<AddResult | null> {
+    return this.safe('add', () => this.client.add(agentId, content, metadata), null);
+  }
+
+  async query(agentId: string, options: { q: string; limit?: number; mode?: QueryMode; after?: string; before?: string; decay?: number }): Promise<QueryResult[]> {
+    return this.safe('query', () => this.client.query(agentId, options), []);
+  }
+
+  async timeline(agentId: string, options?: { from?: string; to?: string; limit?: number }): Promise<TimelineEntry[]> {
+    return this.safe('timeline', () => this.client.timeline(agentId, options), []);
+  }
+
+  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult | null> {
+    return this.safe('consolidate', () => this.client.consolidate(agentId, mode), null);
+  }
+
+  async clear(agentId: string): Promise<ClearResult | null> {
+    return this.safe('clear', () => this.client.clear(agentId), null);
+  }
+
+  async stats(agentId: string): Promise<AgentStats | null> {
+    return this.safe('stats', () => this.client.stats(agentId), null);
+  }
+
+  async searchEntities(agentId: string, options?: { q?: string; type?: string; limit?: number }): Promise<EntitySearchResult[]> {
+    return this.safe('searchEntities', () => this.client.searchEntities(agentId, options), []);
+  }
+
+  async graphTraverse(agentId: string, entity: string, depth?: number): Promise<GraphQueryResult> {
+    return this.safe('graphTraverse', () => this.client.graphTraverse(agentId, entity, depth), { nodes: [], edges: [] });
+  }
+
+  async reflect(agentId: string, options?: { trigger?: ReflectionTrigger; limit?: number }): Promise<ReflectionResult | null> {
+    return this.safe('reflect', () => this.client.reflect(agentId, options), null);
+  }
+
+  async getReflections(agentId: string, limit?: number): Promise<Reflection[]> {
+    return this.safe('getReflections', () => this.client.getReflections(agentId, limit), []);
+  }
+
+  async getProcedures(agentId: string, options?: { q?: string; limit?: number }): Promise<Procedure[]> {
+    return this.safe('getProcedures', () => this.client.getProcedures(agentId, options), []);
+  }
+
+  async sleep(agentId: string, options?: { tokenBudget?: number; evictionThreshold?: number; revisionThreshold?: number; includeReflection?: boolean }): Promise<SleepCycleResult | null> {
+    return this.safe('sleep', () => this.client.sleep(agentId, options), null);
+  }
+
+  async memoryHealth(agentId: string): Promise<MemoryHealth | null> {
+    return this.safe('memoryHealth', () => this.client.memoryHealth(agentId), null);
+  }
+
+  async feedback(agentId: string, retrievalIds: Array<number | bigint>, outcome: FeedbackOutcome, metadata?: Record<string, unknown>): Promise<FeedbackResult | null> {
+    return this.safe('feedback', () => this.client.feedback(agentId, retrievalIds, outcome, metadata), null);
+  }
+
+  async metaReflect(agentId: string, limit?: number): Promise<MetaReflectionResult | null> {
+    return this.safe('metaReflect', () => this.client.metaReflect(agentId, limit), null);
+  }
+
+  async deduplicateEntities(agentId: string, threshold?: number): Promise<{ agent_id: string; entities_merged: number; threshold: number } | null> {
+    return this.safe('deduplicateEntities', () => this.client.deduplicateEntities(agentId, threshold), null);
+  }
+
+  async activeRecall(agentId: string, context: string, limit?: number): Promise<ActiveMemoryResult> {
+    return this.safe('activeRecall', () => this.client.activeRecall(agentId, context, limit), { agent_id: agentId, memories: [], procedures: [] });
+  }
+
+  async health(): Promise<{ status: string; ts: string; embeddings: boolean; summarization: boolean } | null> {
+    return this.safe('health', () => this.client.health(), null);
+  }
+}

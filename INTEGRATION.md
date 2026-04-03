@@ -2,6 +2,42 @@
 
 This guide explains how to wire MemForge into any AI agent, regardless of framework. It covers the conceptual model, the integration points, and concrete examples for common setups.
 
+## Graceful Degradation
+
+MemForge should never crash your agent. If MemForge is down, the agent should keep working — just without long-term memory for that interaction.
+
+The SDK ships two clients:
+
+- **`MemForgeClient`** — Throws on errors. Use when you want explicit error handling.
+- **`ResilientMemForgeClient`** — Catches all errors, returns safe defaults (empty arrays, null). Use when MemForge is optional. **This is the recommended client for production agents.**
+
+```typescript
+import { ResilientMemForgeClient } from '@salishforge/memforge/client';
+
+const memory = new ResilientMemForgeClient({
+  baseUrl: 'http://localhost:3333',
+  token: process.env.MEMFORGE_TOKEN,
+});
+
+// If MemForge is down, returns [] instead of throwing
+const results = await memory.query('agent-1', { q: 'user preferences' });
+
+// If MemForge is down, returns { memories: [], procedures: [] }
+const context = await memory.activeRecall('agent-1', 'deploying v2.4');
+
+// If MemForge is down, silently drops the store — logs a warning
+await memory.add('agent-1', 'User requested dark mode');
+```
+
+Errors are logged to console by default. You can provide a custom error handler:
+
+```typescript
+const memory = new ResilientMemForgeClient(
+  { baseUrl: 'http://localhost:3333' },
+  (method, err) => myLogger.warn(`MemForge ${method} unavailable: ${err.message}`),
+);
+```
+
 ## The Core Pattern
 
 MemForge fits into any agent's lifecycle at four points:
@@ -149,9 +185,10 @@ The AI assistant then has access to tools like `memforge_add`, `memforge_query`,
 The simplest integration — a while loop that processes messages:
 
 ```typescript
-import { MemForgeClient } from '@salishforge/memforge/client';
+import { ResilientMemForgeClient } from '@salishforge/memforge/client';
 
-const memory = new MemForgeClient();
+// ResilientMemForgeClient never throws — agent keeps running if MemForge is down
+const memory = new ResilientMemForgeClient();
 const agentId = 'my-assistant';
 let interactionCount = 0;
 
@@ -203,29 +240,41 @@ headers = {
 }
 
 def recall(query: str, limit: int = 5) -> list[str]:
-    """Retrieve relevant memories before agent acts."""
-    r = httpx.get(
-        f"{MEMFORGE_URL}/memory/{AGENT_ID}/query",
-        params={"q": query, "limit": limit, "mode": "hybrid"},
-        headers=headers,
-    )
-    return [m["content"] for m in r.json()["data"]]
+    """Retrieve relevant memories. Returns [] if MemForge is unavailable."""
+    try:
+        r = httpx.get(
+            f"{MEMFORGE_URL}/memory/{AGENT_ID}/query",
+            params={"q": query, "limit": limit, "mode": "hybrid"},
+            headers=headers,
+            timeout=5.0,
+        )
+        return [m["content"] for m in r.json()["data"]]
+    except Exception:
+        return []  # Graceful degradation — agent works without memory
 
 def store(content: str):
-    """Store a memory after agent acts."""
-    httpx.post(
-        f"{MEMFORGE_URL}/memory/{AGENT_ID}/add",
-        json={"content": content},
-        headers=headers,
-    )
+    """Store a memory. Silently fails if MemForge is unavailable."""
+    try:
+        httpx.post(
+            f"{MEMFORGE_URL}/memory/{AGENT_ID}/add",
+            json={"content": content},
+            headers=headers,
+            timeout=5.0,
+        )
+    except Exception:
+        pass  # Memory store is best-effort
 
 def consolidate():
     """Consolidate hot tier into searchable memory."""
-    httpx.post(
-        f"{MEMFORGE_URL}/memory/{AGENT_ID}/consolidate",
-        json={"mode": "summarize"},
-        headers=headers,
-    )
+    try:
+        httpx.post(
+            f"{MEMFORGE_URL}/memory/{AGENT_ID}/consolidate",
+            json={"mode": "summarize"},
+            headers=headers,
+            timeout=30.0,
+        )
+    except Exception:
+        pass
 ```
 
 Wire into LangChain:
@@ -419,4 +468,4 @@ MemForge itself is free (MIT license). Costs come from:
 Use a stable `agentId`. As long as you use the same agent ID, all memories persist across conversations, sessions, and restarts. That's the point.
 
 **What happens if MemForge is down?**
-Your agent should handle MemForge being unavailable gracefully — catch errors from the client SDK or REST calls and proceed without memory context. The agent works, just without long-term memory for that interaction.
+If you use `ResilientMemForgeClient` (recommended), nothing bad happens. Queries return empty results, stores are silently dropped, and the agent continues without long-term memory for that interaction. When MemForge comes back, everything resumes normally. If you use `MemForgeClient`, you need to catch errors yourself. For Python/REST integrations, wrap calls in try/except with timeouts (see examples above).
