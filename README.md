@@ -1,6 +1,7 @@
 # MemForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg)](#project-status)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
@@ -10,6 +11,16 @@ Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, rev
 MemForge manages agent memory across three tiers (hot → warm → cold) with vector search, a knowledge graph, LLM-driven reflection, procedural learning, and a memory revision engine that actively improves stored knowledge during idle periods.
 
 > **For AI agents reading this:** See [CLAUDE.md](CLAUDE.md) for project instructions, code conventions, and architecture rules. See [BACKLOG.md](BACKLOG.md) for open issues and improvement areas.
+
+## Project Status
+
+**Alpha** — Architecture is complete, code compiles and passes type-checking and linting, but MemForge has not yet been validated in operation against a live database. Expect bugs in SQL queries, LLM response parsing, and Docker orchestration. The integration test suite exists but requires a running PostgreSQL instance to execute.
+
+We're releasing early because the design is novel and we want feedback on the architecture before investing in production hardening. If the approach resonates, help us get to beta — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [ROADMAP.md](ROADMAP.md).
+
+**What works:** TypeScript compilation, ESLint, type safety, API design, MCP tool definitions, client SDK, documentation.
+
+**What needs validation:** Everything that touches a database, an LLM, or Redis in production.
 
 ## Why MemForge?
 
