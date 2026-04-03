@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(ts|js|json|yaml|yml|md\\)$\")",
+      "Bash(gh api:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "mcp__claude_ai_GitHub_-_Salishforge__get_file_contents",
+      "mcp__claude_ai_GitHub_-_Salishforge__search_repositories",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(./node_modules/.bin/tsc)",
+      "Bash(wc -l src/*.ts schema/*.sql)",
+      "Bash(wc -l src/*.ts)"
+    ]
+  }
+}
