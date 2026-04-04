@@ -50,6 +50,8 @@ import {
 } from './cache.js';
 import { buildOpenApiSpec } from './openapi.js';
 import { cacheDashboardHtml } from './dashboard.js';
+import { createDefaultRegistry } from './classifier.js';
+import { wrapLLMProvider } from './llm-safety.js';
 import type { QueryMode, ConsolidationMode, FeedbackOutcome } from './types.js';
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
@@ -59,11 +61,25 @@ const PORT = parseInt(process.env['PORT'] ?? '3333', 10);
 // Simple shared secret for admin endpoints (optional — set ADMIN_TOKEN env var)
 const ADMIN_TOKEN = process.env['ADMIN_TOKEN'] ?? '';
 
+// Content classifier registry — runs on ingest and before LLM calls
+const classifierRegistry = createDefaultRegistry();
+
 const embeddingProvider = createEmbeddingProvider();
-const llmProvider = createLLMProvider();
-const revisionLlmProvider = process.env['REVISION_LLM_PROVIDER']
+
+// LLM providers wrapped with safety controls:
+//   - Pre-LLM content sanitization (classify + redact)
+//   - Remote providers blocked by default (set ALLOW_REMOTE_LLM=true to override)
+//   - Warning logged when content is sent to external LLM
+const llmProviderType = process.env['LLM_PROVIDER'] ?? 'none';
+const allowRemoteLLM = process.env['ALLOW_REMOTE_LLM'] === 'true';
+const rawLlmProvider = createLLMProvider();
+const llmProvider = wrapLLMProvider(rawLlmProvider, llmProviderType, classifierRegistry, allowRemoteLLM);
+
+const revisionProviderType = process.env['REVISION_LLM_PROVIDER'] ?? llmProviderType;
+const rawRevisionLlmProvider = process.env['REVISION_LLM_PROVIDER']
   ? createLLMProvider(process.env['REVISION_LLM_PROVIDER'] as 'anthropic' | 'openai' | 'ollama')
   : null;
+const revisionLlmProvider = wrapLLMProvider(rawRevisionLlmProvider, revisionProviderType, classifierRegistry, allowRemoteLLM);
 
 const manager = new MemoryManager({
   databaseUrl: process.env['DATABASE_URL'],
@@ -259,10 +275,30 @@ app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Req
     return;
   }
 
+  // Classify and optionally redact content before storage
+  const classification = classifierRegistry.classify(content);
+  const storeContent = classification.wasRedacted ? classification.redactedContent : content;
+
+  // Enrich metadata with classification results
+  const enrichedMetadata: Record<string, unknown> = {
+    ...(metadata ?? {}),
+    ...(classification.sensitivity !== 'public' ? {
+      _sensitivity: classification.sensitivity,
+      _classified_types: classification.findings.map((f) => f.type),
+    } : {}),
+  };
+
   try {
-    const result = await manager.add(getAgentId(req), content, metadata ?? {});
+    const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata);
     void invalidateAgent(getAgentId(req));
-    ok(res, result);
+    ok(res, {
+      ...result,
+      classification: {
+        sensitivity: classification.sensitivity,
+        findings_count: classification.findings.length,
+        redacted: classification.wasRedacted,
+      },
+    });
   } catch (err) {
     const e = err as Error;
     if (e.message.includes('not found') || e instanceof TypeError) {

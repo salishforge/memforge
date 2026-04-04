@@ -54,4 +54,13 @@ export type {
   Procedure,
 } from './types.js';
 export { SleepCycleEngine } from './sleep-cycle.js';
+export {
+  createDefaultRegistry,
+  ClassifierRegistry,
+  SecretPatternClassifier,
+  PIIPatternClassifier,
+  sanitizeForLLM,
+} from './classifier.js';
+export type { Sensitivity, Classification, ClassificationResult, ContentClassifier } from './classifier.js';
+export { SafeLLMProvider, wrapLLMProvider, getProviderLocality } from './llm-safety.js';
 export { VERSION } from './version.js';
