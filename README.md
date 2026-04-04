@@ -438,6 +438,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges (17 items) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |
 | [SECURITY.md](SECURITY.md) | Security policy, architecture, hardening checklist |
+| [THREAT_MODEL.md](THREAT_MODEL.md) | Comprehensive threat model — attack vectors, bypass techniques, integrity |
 | [LICENSE](LICENSE) | MIT License |
 
 ## License
