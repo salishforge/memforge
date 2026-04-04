@@ -52,6 +52,8 @@ import { buildOpenApiSpec } from './openapi.js';
 import { cacheDashboardHtml } from './dashboard.js';
 import { createDefaultRegistry } from './classifier.js';
 import { wrapLLMProvider } from './llm-safety.js';
+import { AuditChain } from './audit.js';
+import { getPool } from './db.js';
 import type { QueryMode, ConsolidationMode, FeedbackOutcome } from './types.js';
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
@@ -104,6 +106,12 @@ const manager = new MemoryManager({
       stability: 0.20,
     },
   },
+});
+
+const auditChain = new AuditChain(getPool(process.env['DATABASE_URL'] || undefined), {
+  hmacKey: process.env['AUDIT_HMAC_KEY'],
+  retentionDays: parseInt(process.env['AUDIT_RETENTION_DAYS'] ?? '90', 10),
+  archiveOnExpiry: process.env['AUDIT_ARCHIVE_ON_EXPIRY'] !== 'false',
 });
 
 const app = express();
@@ -791,6 +799,68 @@ app.post('/memory/:agentId/active-recall', requireScope('memforge:read'), async 
   try {
     const result = await manager.activeRecall(getAgentId(req), context, limitNum);
     ok(res, result);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * GET /memory/:agentId/verify
+ * Verify integrity of all audit chains for an agent.
+ */
+app.get('/memory/:agentId/verify', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  try {
+    const result = await auditChain.verifyAgent(getAgentId(req));
+    ok(res, result);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * GET /memory/:agentId/audit/:targetTable/:targetId
+ * Get temporal history of a specific memory/entity.
+ */
+app.get('/memory/:agentId/audit/:targetTable/:targetId', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const targetTable = req.params['targetTable'] ?? '';
+  const targetId = req.params['targetId'] ?? '';
+
+  if (!['warm_tier', 'entities', 'relationships', 'reflections', 'procedures'].includes(targetTable)) {
+    fail(res, 400, '"targetTable" must be one of: warm_tier, entities, relationships, reflections, procedures');
+    return;
+  }
+
+  try {
+    const history = await auditChain.history(getAgentId(req), targetTable, BigInt(targetId));
+    ok(res, history);
+  } catch (err) {
+    fail(res, 500, (err as Error).message);
+  }
+});
+
+/**
+ * GET /memory/:agentId/audit/:targetTable/:targetId/at?t=<iso>
+ * Get the state of a memory at a specific point in time.
+ */
+app.get('/memory/:agentId/audit/:targetTable/:targetId/at', requireScope('memforge:read'), async (req: Request, res: Response) => {
+  const targetTable = req.params['targetTable'] ?? '';
+  const targetId = req.params['targetId'] ?? '';
+  const t = req.query['t'] as string | undefined;
+
+  if (!t) {
+    fail(res, 400, '"t" query param (ISO 8601 timestamp) is required');
+    return;
+  }
+
+  const asOf = new Date(t);
+  if (isNaN(asOf.getTime())) {
+    fail(res, 400, '"t" must be a valid ISO 8601 timestamp');
+    return;
+  }
+
+  try {
+    const state = await auditChain.stateAt(getAgentId(req), targetTable, BigInt(targetId), asOf);
+    ok(res, state);
   } catch (err) {
     fail(res, 500, (err as Error).message);
   }
