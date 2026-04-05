@@ -12,6 +12,7 @@ import type { Pool } from 'pg';
 import type { LLMProvider } from './llm.js';
 import type { EmbeddingProvider } from './embedding.js';
 import type { SleepCycleConfig, SleepCycleResult, RevisionType } from './types.js';
+import type { AuditChain } from './audit.js';
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
   tokenBudget: 100_000,
@@ -50,17 +51,20 @@ export class SleepCycleEngine {
   private readonly llm: LLMProvider;
   private readonly embedder: EmbeddingProvider;
   private readonly config: SleepCycleConfig;
+  private readonly audit: AuditChain | null;
 
   constructor(
     pool: Pool,
     llm: LLMProvider,
     embedder: EmbeddingProvider,
     config: Partial<SleepCycleConfig> = {},
+    audit: AuditChain | null = null,
   ) {
     this.pool = pool;
     this.llm = llm;
     this.embedder = embedder;
     this.config = { ...DEFAULT_CONFIG, ...config, weights: { ...DEFAULT_CONFIG.weights, ...config.weights } };
+    this.audit = audit;
   }
 
   /**
@@ -108,6 +112,17 @@ export class SleepCycleEngine {
       didReflect = await this.phaseReflection(agentId);
     }
 
+    // Phase 6: Archive expired audit records
+    let auditArchived = 0;
+    if (this.audit) {
+      try {
+        const archiveResult = await this.audit.archiveExpired(agentId);
+        auditArchived = archiveResult.archived + archiveResult.pruned;
+      } catch (err) {
+        console.error('[sleep-cycle] audit archive failed:', (err as Error).message);
+      }
+    }
+
     return {
       agent_id: agentId,
       phase1_scores_updated: scoresUpdated,
@@ -118,6 +133,7 @@ export class SleepCycleEngine {
       phase4_edges_invalidated: edgesInvalidated,
       phase4_entities_merged: entitiesMerged,
       phase5_reflection: didReflect,
+      audit_records_archived: auditArchived,
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
     };
@@ -148,6 +164,13 @@ export class SleepCycleEngine {
       [agentId, w.recency, w.frequency, w.centrality, w.reflection, w.stability],
     );
 
+    if (this.audit && (rowCount ?? 0) > 0) {
+      void this.audit.recordBatch(agentId, 'warm_tier', 'score',
+        { rows_updated: rowCount, weights: this.config.weights },
+        'sleep_cycle',
+      ).catch((err) => console.error('[memforge:audit] scoring audit failed:', (err as Error).message));
+    }
+
     return rowCount ?? 0;
   }
 
@@ -174,6 +197,13 @@ export class SleepCycleEngine {
       [agentId, this.config.evictionThreshold],
     );
     const evicted = parseInt(evictResult.rows[0]?.count ?? '0', 10);
+
+    if (this.audit && evicted > 0) {
+      void this.audit.recordBatch(agentId, 'warm_tier', 'evict',
+        { evicted_count: evicted, threshold: this.config.evictionThreshold },
+        'sleep_cycle',
+      ).catch((err) => console.error('[memforge:audit] triage audit failed:', (err as Error).message));
+    }
 
     // Flag low-confidence memories for revision, ordered by highest importance first
     // (prioritize revising the memories that matter most)
@@ -328,6 +358,17 @@ ${relatedList || 'None'}`;
         : [warmTierId, revisedContent, confidence, agentId],
     );
 
+    // Audit: record memory revision with before/after content
+    if (this.audit) {
+      const cHash = await this.audit.record(
+        agentId, 'warm_tier', warmTierId, 'revise',
+        row.content, revisedContent,
+        { revision_type: action, reason, delta_summary: deltaSummary, confidence, revision_number: nextRevision },
+        'sleep_cycle', this.llm.model,
+      );
+      void this.pool.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [warmTierId, cHash]);
+    }
+
     return totalTokens;
   }
 
@@ -365,6 +406,13 @@ ${relatedList || 'None'}`;
        WHERE agent_id = $1 AND valid_until IS NULL AND weight < 0.1`,
       [agentId],
     );
+
+    if (this.audit && (rowCount ?? 0) > 0) {
+      void this.audit.recordBatch(agentId, 'relationships', 'evict',
+        { edges_invalidated: rowCount, stale_edges_decayed: staleIds.length },
+        'sleep_cycle',
+      ).catch((err) => console.error('[memforge:audit] graph maintenance audit failed:', (err as Error).message));
+    }
 
     return rowCount ?? 0;
   }
@@ -433,6 +481,15 @@ ${relatedList || 'None'}`;
           [keepId, removeId],
         );
         await client.query(`DELETE FROM entities WHERE id = $1`, [removeId]);
+
+        if (this.audit) {
+          await this.audit.record(
+            agentId, 'entities', keepId, 'merge',
+            pair.name_b, pair.name_a,
+            { merged_entity_id: String(removeId), kept_entity_id: String(keepId) },
+            'dedup', null, client,
+          );
+        }
 
         await client.query('COMMIT');
         merged++;

@@ -11,6 +11,7 @@ import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT } from './llm.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { SleepCycleEngine } from './sleep-cycle.js';
+import type { AuditChain } from './audit.js';
 import type {
   MemForgeConfig,
   ConsolidationMode,
@@ -60,12 +61,14 @@ export class MemoryManager {
   private readonly config: MemForgeConfig;
   private readonly embedder: EmbeddingProvider;
   private readonly llm: LLMProvider | null;
+  private readonly audit: AuditChain | null;
 
   constructor(config: Partial<MemForgeConfig> = {}) {
     this.config = { ...DEFAULTS, ...config };
     this.pool = getPool(this.config.databaseUrl || undefined);
     this.embedder = this.config.embeddingProvider ?? new NoOpEmbeddingProvider();
     this.llm = this.config.llmProvider ?? null;
+    this.audit = this.config.auditChain ?? null;
   }
 
   /** Whether vector search is available (embedding provider is configured). */
@@ -589,6 +592,17 @@ export class MemoryManager {
         const warmRowId = warmRow.rows[0]!.id;
         warmCreated++;
 
+        // Audit: record warm-tier creation
+        if (this.audit) {
+          const cHash = await this.audit.record(
+            agentId, 'warm_tier', warmRowId, 'create',
+            null, finalContents[i]!,
+            { source_hot_ids: batch.ids.map(String), batch_size: batch.batchSize, mode: summary ? 'summarize' : 'concat' },
+            'consolidation', summary ? this.llm?.model ?? null : null, client,
+          );
+          await client.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [warmRowId, cHash]);
+        }
+
         // ── Populate knowledge graph from LLM extraction ────────────────
         if (summary && (summary.entities.length > 0 || summary.relationships.length > 0)) {
           const entityIdMap = new Map<string, bigint>();
@@ -733,6 +747,17 @@ export class MemoryManager {
       );
 
       await client.query(`DELETE FROM warm_tier WHERE agent_id = $1`, [agentId]);
+
+      // Audit: record clear/archive operation
+      if (this.audit) {
+        const warmCount = parseInt(warmResult.rows[0]!.count, 10);
+        if (warmCount > 0) {
+          await this.audit.recordBatch(agentId, 'warm_tier', 'evict',
+            { warm_archived: warmCount, hot_archived: parseInt(hotResult.rows[0]!.count, 10), reason: 'clear' },
+            'api', client,
+          );
+        }
+      }
 
       await client.query('COMMIT');
 
@@ -1144,6 +1169,16 @@ export class MemoryManager {
 
     // Auto-extract procedural memory from this reflection
     const reflectionId = rows[0]!.id;
+
+    // Audit: record reflection creation
+    if (this.audit) {
+      void this.audit.record(
+        agentId, 'reflections', reflectionId, 'create',
+        null, reflectionContent,
+        { insights_count: keyInsights.length, contradictions_count: contradictions.length, trigger },
+        'reflection', this.llm?.model ?? null,
+      ).catch((err) => console.error('[memforge:audit] reflect audit failed:', (err as Error).message));
+    }
     if (keyInsights.length > 0) {
       void this.extractProcedures(agentId, reflectionId).catch((err) =>
         console.error('[memforge] auto-procedure extraction failed:', (err as Error).message),
@@ -1230,12 +1265,22 @@ export class MemoryManager {
       if (typeof proc['condition'] !== 'string' || typeof proc['action'] !== 'string') continue;
       const confidence = typeof proc['confidence'] === 'number' ? proc['confidence'] : 0.5;
 
-      await this.pool.query(
+      const procRow = await this.pool.query<{ id: bigint }>(
         `INSERT INTO procedures (agent_id, condition, action, source_reflection_id, confidence)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
         [agentId, proc['condition'], proc['action'], reflectionId, confidence],
       );
       created++;
+
+      if (this.audit && procRow.rows[0]) {
+        void this.audit.record(
+          agentId, 'procedures', procRow.rows[0].id, 'create',
+          null, `${proc['condition'] as string} → ${proc['action'] as string}`,
+          { confidence, source_reflection_id: String(reflectionId) },
+          'reflection', this.llm?.model ?? null,
+        ).catch((err) => console.error('[memforge:audit] procedure audit failed:', (err as Error).message));
+      }
     }
 
     return created;
@@ -1308,7 +1353,7 @@ export class MemoryManager {
       weights: { ...this.config.sleepCycle.weights, ...configOverrides?.weights },
     };
 
-    const engine = new SleepCycleEngine(this.pool, revisionLlm, this.embedder, cycleConfig);
+    const engine = new SleepCycleEngine(this.pool, revisionLlm, this.embedder, cycleConfig, this.audit);
     const result = await engine.run(agentId);
 
     // If Phase 5 signals reflection should run, do it
@@ -1428,6 +1473,14 @@ export class MemoryManager {
           [agentId, retrievalIds, delta],
         );
       }
+    }
+
+    // Audit: record feedback event
+    if (this.audit && updated > 0) {
+      void this.audit.recordBatch(agentId, 'retrieval_log', 'feedback',
+        { retrieval_ids: retrievalIds.map(String), outcome, updated },
+        'feedback',
+      ).catch((err) => console.error('[memforge:audit] feedback audit failed:', (err as Error).message));
     }
 
     return { agent_id: agentId, updated, outcome };
@@ -1553,6 +1606,16 @@ Guidelines:
 
     // Extract procedures from meta-reflections too
     const metaReflectionId = rows[0]!.id;
+
+    // Audit: record meta-reflection creation
+    if (this.audit) {
+      void this.audit.record(
+        agentId, 'reflections', metaReflectionId, 'create',
+        null, content,
+        { reflection_level: 2, insights_count: keyInsights.length, source_reflections: reflections.rows.length },
+        'reflection', this.llm?.model ?? null,
+      ).catch((err) => console.error('[memforge:audit] metaReflect audit failed:', (err as Error).message));
+    }
     if (keyInsights.length > 0) {
       void this.extractProcedures(agentId, metaReflectionId).catch((err) =>
         console.error('[memforge] meta-reflection procedure extraction failed:', (err as Error).message),
@@ -1678,6 +1741,17 @@ Guidelines:
 
         // Delete the duplicate entity
         await client.query(`DELETE FROM entities WHERE id = $1`, [removeId]);
+
+        // Audit: record entity merge (inside transaction)
+        if (this.audit) {
+          await this.audit.record(
+            agentId, 'entities', keepId, 'merge',
+            pair.mention_a >= pair.mention_b ? pair.name_b : pair.name_a,
+            pair.mention_a >= pair.mention_b ? pair.name_a : pair.name_b,
+            { merged_entity_id: String(removeId), kept_entity_id: String(keepId) },
+            'dedup', null, client,
+          );
+        }
 
         await client.query('COMMIT');
         merged++;

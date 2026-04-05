@@ -83,6 +83,12 @@ const rawRevisionLlmProvider = process.env['REVISION_LLM_PROVIDER']
   : null;
 const revisionLlmProvider = wrapLLMProvider(rawRevisionLlmProvider, revisionProviderType, classifierRegistry, allowRemoteLLM);
 
+const auditChain = new AuditChain(getPool(process.env['DATABASE_URL'] || undefined), {
+  hmacKey: process.env['AUDIT_HMAC_KEY'],
+  retentionDays: parseInt(process.env['AUDIT_RETENTION_DAYS'] ?? '90', 10),
+  archiveOnExpiry: process.env['AUDIT_ARCHIVE_ON_EXPIRY'] !== 'false',
+});
+
 const manager = new MemoryManager({
   databaseUrl: process.env['DATABASE_URL'],
   consolidationBatchSize: parseInt(process.env['CONSOLIDATION_BATCH_SIZE'] ?? '500', 10),
@@ -106,12 +112,7 @@ const manager = new MemoryManager({
       stability: 0.20,
     },
   },
-});
-
-const auditChain = new AuditChain(getPool(process.env['DATABASE_URL'] || undefined), {
-  hmacKey: process.env['AUDIT_HMAC_KEY'],
-  retentionDays: parseInt(process.env['AUDIT_RETENTION_DAYS'] ?? '90', 10),
-  archiveOnExpiry: process.env['AUDIT_ARCHIVE_ON_EXPIRY'] !== 'false',
+  auditChain,
 });
 
 const app = express();

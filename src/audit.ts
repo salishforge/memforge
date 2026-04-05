@@ -14,6 +14,9 @@
 import { createHmac } from 'crypto';
 import type { Pool } from 'pg';
 
+/** Anything with a .query() method — works with both Pool and PoolClient. */
+type QueryExecutor = Pick<Pool, 'query'>;
+
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
 export type AuditOperation = 'create' | 'update' | 'delete' | 'revise' | 'merge' | 'evict' | 'score' | 'feedback';
@@ -115,7 +118,9 @@ export class AuditChain {
     metadataDelta: Record<string, unknown> = {},
     triggeredBy: AuditTrigger = 'api',
     modelUsed: string | null = null,
+    executor?: QueryExecutor,
   ): Promise<string> {
+    const db = executor ?? this.pool;
     const now = new Date().toISOString();
 
     // Compute content hash
@@ -123,7 +128,7 @@ export class AuditChain {
     const cHash = contentHash(this.config.hmacKey, hashContent);
 
     // Get previous chain hash for this target
-    const prev = await this.pool.query<{ chain_hash: string }>(
+    const prev = await db.query<{ chain_hash: string }>(
       `SELECT chain_hash FROM audit_chain
        WHERE agent_id = $1 AND target_table = $2 AND target_id = $3
        ORDER BY id DESC LIMIT 1`,
@@ -133,7 +138,7 @@ export class AuditChain {
 
     // Close the previous record's valid_until
     if (prev.rows.length > 0) {
-      await this.pool.query(
+      await db.query(
         `UPDATE audit_chain SET valid_until = $4
          WHERE agent_id = $1 AND target_table = $2 AND target_id = $3
          AND valid_until IS NULL`,
@@ -145,7 +150,7 @@ export class AuditChain {
     const cChain = chainHash(this.config.hmacKey, previousHash, cHash, operation, now);
 
     // Insert audit record
-    await this.pool.query(
+    await db.query(
       `INSERT INTO audit_chain
          (agent_id, target_table, target_id, operation, valid_from,
           content_before, content_after, metadata_delta,
@@ -161,6 +166,24 @@ export class AuditChain {
     );
 
     return cHash;
+  }
+
+  /**
+   * Record a batch/summary audit entry (e.g., bulk scoring, batch eviction).
+   * Uses target_id=0 as a sentinel — not tied to a specific row.
+   */
+  async recordBatch(
+    agentId: string,
+    targetTable: string,
+    operation: AuditOperation,
+    metadataDelta: Record<string, unknown>,
+    triggeredBy: AuditTrigger,
+    executor?: QueryExecutor,
+  ): Promise<void> {
+    await this.record(
+      agentId, targetTable, BigInt(0), operation,
+      null, null, metadataDelta, triggeredBy, null, executor,
+    );
   }
 
   /**

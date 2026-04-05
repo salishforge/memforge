@@ -2,6 +2,7 @@
 
 import type { EmbeddingProvider, EmbeddingProviderType } from './embedding.js';
 import type { LLMProvider, LLMProviderType, ConsolidationSummary } from './llm.js';
+import type { AuditChain } from './audit.js';
 
 export interface Agent {
   id: string;
@@ -265,6 +266,7 @@ export interface SleepCycleResult {
   phase4_edges_invalidated: number;
   phase4_entities_merged: number;
   phase5_reflection: boolean;
+  audit_records_archived: number;
   tokens_used: number;
   duration_ms: number;
 }
@@ -346,6 +348,8 @@ export interface MemForgeConfig {
   revisionLlmProvider?: LLMProvider | null;
   /** Sleep cycle configuration */
   sleepCycle: SleepCycleConfig;
+  /** Audit chain instance for recording mutations (optional) */
+  auditChain?: AuditChain | null;
 }
 
 export type DeepPartial<T> = {
