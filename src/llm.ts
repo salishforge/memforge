@@ -161,6 +161,7 @@ export class AnthropicLLMProvider implements LLMProvider {
   }
 
   async chat(systemPrompt: string, userPrompt: string): Promise<string> {
+    // Hardcoded URL — no SSRF risk. If a configurable baseUrl is added, use validateProviderUrl().
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {

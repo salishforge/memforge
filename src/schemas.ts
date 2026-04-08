@@ -104,10 +104,22 @@ export function safeParseLLMResponse<T>(schema: z.ZodType<T>, raw: string): T {
 
 // ─── Provider URL Validation ────────────────────────────────────────────────
 
-const PRIVATE_IP_PATTERN = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/;
+// IPv4 private/loopback/link-local ranges
+const PRIVATE_IPV4_PATTERN = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/;
+// IPv6 private (fc00::/7), link-local (fe80::/10), loopback (::1)
+const PRIVATE_IPV6_PATTERN = /^(fc|fd|fe[89ab]|::1$|\[?(fc|fd|fe[89ab]))/i;
+
+function isPrivateHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
+  if (PRIVATE_IPV4_PATTERN.test(hostname)) return true;
+  if (PRIVATE_IPV6_PATTERN.test(hostname)) return true;
+  // Block decimal/hex IP shorthand (e.g., 2130706433 = 127.0.0.1, 0x7f000001)
+  if (/^\d+$/.test(hostname) || /^0x[0-9a-f]+$/i.test(hostname)) return true;
+  return false;
+}
 
 /**
- * Validates a provider base URL. In production, blocks RFC1918/link-local addresses.
+ * Validates a provider base URL. In production, blocks RFC1918/link-local/IPv6 private addresses.
  * Always requires http or https protocol.
  */
 export function validateProviderUrl(url: string, providerName: string, allowLocal = false): string {
@@ -124,7 +136,7 @@ export function validateProviderUrl(url: string, providerName: string, allowLoca
 
   if (process.env['NODE_ENV'] === 'production' && !allowLocal) {
     const hostname = parsed.hostname;
-    if (PRIVATE_IP_PATTERN.test(hostname) || hostname === 'localhost' || hostname === '::1') {
+    if (isPrivateHost(hostname)) {
       throw new Error(`${providerName} baseUrl must not point to private/internal networks in production (got ${hostname})`);
     }
   }

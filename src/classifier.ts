@@ -200,7 +200,6 @@ export class PIIPatternClassifier implements ContentClassifier {
   readonly description = 'Detects PII: SSN, email, credit cards, phone numbers, IBAN (Presidio-derived patterns with context boosting)';
 
   classify(content: string): Classification[] {
-    const contentLower = content.toLowerCase();
     const findings: Classification[] = [];
 
     for (const def of PII_PATTERNS) {
