@@ -2,20 +2,20 @@
 
 Generated: 2026-04-08
 
-## LongMemEval — keyword mode
+## LongMemEval — hybrid mode
 
-- Questions evaluated: 500
+- Questions evaluated: 50
 - Consolidation mode: concat
-- Timestamp: 2026-04-08T22:16:17.143Z
+- Timestamp: 2026-04-08T23:02:59.219Z
 
 ### Retrieval Quality
 
 | Metric | Score |
 |--------|-------|
-| Recall@1 | 88.0% |
+| Recall@1 | 74.0% |
 | Recall@3 | 88.0% |
-| Recall@5 | 88.0% |
-| Recall@10 | 88.0% |
+| Recall@5 | 92.0% |
+| Recall@10 | 94.0% |
 
 **Baselines:** Hippo 74.0% R@5 (BM25 keyword), Zep +18.5% over full-context
 
@@ -23,19 +23,44 @@ Generated: 2026-04-08
 
 | Category | Count | R@1 | R@3 | R@5 | R@10 |
 |----------|-------|------|------|------|------|
-| knowledge-update | 78 | 96.2% | 96.2% | 96.2% | 96.2% |
-| multi-session | 133 | 90.2% | 90.2% | 90.2% | 90.2% |
-| single-session-assistant | 56 | 85.7% | 85.7% | 85.7% | 85.7% |
-| single-session-preference | 30 | 66.7% | 66.7% | 66.7% | 66.7% |
-| single-session-user | 70 | 88.6% | 88.6% | 88.6% | 88.6% |
-| temporal-reasoning | 133 | 86.5% | 86.5% | 86.5% | 86.5% |
+| single-session-user | 50 | 74.0% | 88.0% | 92.0% | 94.0% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 59ms | 74ms | 59ms |
-| Ingest (per question) | 370ms | 560ms | 390ms |
+| Query | 32ms | 47ms | 32ms |
+| Ingest (per question) | 13.3s | 22.5s | 14.4s |
+
+## LongMemEval — keyword mode
+
+- Questions evaluated: 50
+- Consolidation mode: concat
+- Timestamp: 2026-04-08T23:02:59.220Z
+
+### Retrieval Quality
+
+| Metric | Score |
+|--------|-------|
+| Recall@1 | 60.0% |
+| Recall@3 | 60.0% |
+| Recall@5 | 60.0% |
+| Recall@10 | 60.0% |
+
+**Baselines:** Hippo 74.0% R@5 (BM25 keyword), Zep +18.5% over full-context
+
+### Per-Category Breakdown
+
+| Category | Count | R@1 | R@3 | R@5 | R@10 |
+|----------|-------|------|------|------|------|
+| single-session-user | 50 | 60.0% | 60.0% | 60.0% | 60.0% |
+
+### Latency
+
+| Operation | p50 | p95 | Mean |
+|-----------|-----|-----|------|
+| Query | 7ms | 19ms | 9ms |
+| Ingest (per question) | 13.3s | 22.5s | 14.4s |
 
 ---
 
