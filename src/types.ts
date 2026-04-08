@@ -25,7 +25,11 @@ export interface AddResult {
   id: bigint;
   agent_id: string;
   created_at: Date;
+  deduplicated?: boolean;
 }
+
+/** Outcome type for memory tagging — inspired by MH-FLOCKE (Apache 2.0) + hippo-memory (MIT) */
+export type OutcomeType = 'error' | 'success' | 'decision' | 'observation' | 'neutral';
 
 // ─── Warm tier ───────────────────────────────────────────────────────────────
 
@@ -56,7 +60,8 @@ export interface QueryResult {
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
 
-export type QueryMode = 'keyword' | 'semantic' | 'hybrid';
+/** Search modes — 'code' mode uses simple tokenizer preserving symbols. Inspired by CCRider (MIT). */
+export type QueryMode = 'keyword' | 'semantic' | 'hybrid' | 'code';
 
 export interface QueryOptions {
   /** Search text (required for keyword/hybrid, optional for semantic) */
@@ -283,6 +288,8 @@ export interface SleepCycleConfig {
   includeReflection: boolean;
   /** Number of days to retain cold tier records; older records are deleted (optional) */
   coldRetentionDays?: number;
+  /** Max revisions per sleep cycle — caps LLM spending. Inspired by claude-code-toolkit (MIT) auto-dream. */
+  maxRevisionsPerCycle?: number;
   /** Importance score weights */
   weights: {
     recency: number;
@@ -358,6 +365,30 @@ export interface MemForgeConfig {
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
 };
+
+// ─── Resume Context ───────────────────────────────────────────────────────────
+
+export interface ResumeContext {
+  agent_id: string;
+  time_since_last_activity_ms: number | null;
+  top_memories: Array<{
+    id: bigint;
+    content: string;
+    importance: number;
+    consolidated_at: Date;
+  }>;
+  active_procedures: Array<{
+    condition: string;
+    action: string;
+    confidence: number;
+  }>;
+  open_contradictions: string[];
+  memory_health: {
+    total_memories: number;
+    avg_importance: number;
+    avg_confidence: number;
+  };
+}
 
 // Re-export provider types for convenience
 export type { EmbeddingProvider, EmbeddingProviderType };

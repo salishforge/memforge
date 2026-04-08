@@ -29,6 +29,7 @@ import type {
   FeedbackResult,
   MetaReflectionResult,
   ActiveMemoryResult,
+  ResumeContext,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -174,6 +175,14 @@ export class MemForgeClient {
   /** Get memory health metrics. */
   async memoryHealth(agentId: string): Promise<MemoryHealth> {
     return this.get<MemoryHealth>(`/memory/${enc(agentId)}/health`);
+  }
+
+  /** Generate a session resumption context for an agent. */
+  async resume(agentId: string, limit?: number): Promise<ResumeContext> {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set('limit', String(limit));
+    const qs = params.toString();
+    return this.get<ResumeContext>(`/memory/${enc(agentId)}/resume${qs ? `?${qs}` : ''}`);
   }
 
   // ─── Feedback ──────────────────────────────────────────────────────────
@@ -337,6 +346,10 @@ export class ResilientMemForgeClient {
 
   async memoryHealth(agentId: string): Promise<MemoryHealth | null> {
     return this.safe('memoryHealth', () => this.client.memoryHealth(agentId), null);
+  }
+
+  async resume(agentId: string, limit?: number): Promise<ResumeContext | null> {
+    return this.safe('resume', () => this.client.resume(agentId, limit), null);
   }
 
   async feedback(agentId: string, retrievalIds: Array<number | bigint>, outcome: FeedbackOutcome, metadata?: Record<string, unknown>): Promise<FeedbackResult | null> {

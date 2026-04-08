@@ -266,13 +266,22 @@ export function createApp(deps: AppDependencies): express.Express {
    * POST /memory/:agentId/add
    */
   app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { content, metadata } = req.body as {
+    const { content, metadata, outcome_type } = req.body as {
       content?: string;
       metadata?: Record<string, unknown>;
+      outcome_type?: string;
     };
 
     if (!content || typeof content !== 'string') {
       fail(res, 400, '"content" (string) is required');
+      return;
+    }
+
+    // Validate outcome_type if provided
+    const VALID_OUTCOMES = ['error', 'success', 'decision', 'observation', 'neutral'];
+    const resolvedOutcome = outcome_type ?? 'neutral';
+    if (!VALID_OUTCOMES.includes(resolvedOutcome)) {
+      fail(res, 400, '"outcome_type" must be one of: error, success, decision, observation, neutral');
       return;
     }
 
@@ -290,7 +299,7 @@ export function createApp(deps: AppDependencies): express.Express {
     };
 
     try {
-      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata);
+      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral');
       void invalidateAgent(getAgentId(req));
       ok(res, {
         ...result,
@@ -332,8 +341,8 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    if (mode && !['keyword', 'semantic', 'hybrid'].includes(mode as string)) {
-      fail(res, 400, '"mode" must be one of: keyword, semantic, hybrid');
+    if (mode && !['keyword', 'semantic', 'hybrid', 'code'].includes(mode as string)) {
+      fail(res, 400, '"mode" must be one of: keyword, semantic, hybrid, code');
       return;
     }
 
@@ -679,6 +688,26 @@ export function createApp(deps: AppDependencies): express.Express {
     try {
       const health = await manager.health(getAgentId(req));
       ok(res, health);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * GET /memory/:agentId/resume?[limit=<n>]
+   * Generate context-injection prompt for agent session resumption.
+   */
+  app.get('/memory/:agentId/resume', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const limit = req.query['limit'];
+    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 5;
+    if (isNaN(limitNum) || limitNum < 1 || limitNum > 20) {
+      fail(res, 400, '"limit" must be an integer between 1 and 20');
+      return;
+    }
+
+    try {
+      const context = await manager.resume(getAgentId(req), limitNum);
+      ok(res, context);
     } catch (err) {
       fail(res, 500, (err as Error).message);
     }

@@ -43,6 +43,8 @@ import type {
   FeedbackResult,
   MetaReflectionResult,
   ActiveMemoryResult,
+  ResumeContext,
+  OutcomeType,
 } from './types.js';
 
 const DEFAULTS: MemForgeConfig = {
@@ -111,6 +113,7 @@ export class MemoryManager {
     agentId: string,
     content: string,
     metadata: Record<string, unknown> = {},
+    outcomeType: OutcomeType = 'neutral',
   ): Promise<AddResult> {
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
@@ -123,11 +126,24 @@ export class MemoryManager {
       await this.registerAgent(agentId);
     }
 
+    // Content deduplication — inspired by CCRider (MIT) BLAKE3 content dedup
+    const contentHash = createHash('sha256').update(content).digest('hex');
+    const dup = await this.pool.query<{ id: bigint; created_at: Date }>(
+      `SELECT id, created_at FROM hot_tier
+       WHERE agent_id = $1 AND content_hash = $2 AND created_at > now() - interval '1 hour'
+       LIMIT 1`,
+      [agentId, contentHash],
+    );
+    if (dup.rows[0]) {
+      await this.pool.query(`UPDATE hot_tier SET created_at = now() WHERE id = $1`, [dup.rows[0].id]);
+      return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
+    }
+
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata)
-       VALUES ($1, $2, $3)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash)
+       VALUES ($1, $2, $3, $4)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(metadata)],
+      [agentId, content, JSON.stringify(metadata), contentHash],
     );
 
     return rows[0]!;
@@ -170,6 +186,10 @@ export class MemoryManager {
     switch (mode) {
       case 'keyword':
         results = await this.queryKeyword(agentId, opts.q, resolvedLimit, opts.after, opts.before);
+        break;
+      case 'code':
+        // Code-preserving search — inspired by CCRider (MIT) dual tokenizer approach
+        results = await this.queryCode(agentId, opts.q, resolvedLimit, opts.after, opts.before);
         break;
       case 'semantic':
         results = await this.querySemantic(agentId, opts.q, resolvedLimit, opts.after, opts.before);
@@ -238,6 +258,44 @@ export class MemoryManager {
       params,
     );
 
+    if (rows.length === 0) {
+      return this.queryTrigram(agentId, searchText, limit, after, before);
+    }
+
+    return rows;
+  }
+
+  /**
+   * Code-preserving search using simple tokenizer (no stemming).
+   * Preserves camelCase, dots, underscores — inspired by CCRider (MIT) dual tokenizer approach.
+   */
+  private async queryCode(
+    agentId: string,
+    searchText: string,
+    limit: number,
+    after?: Date,
+    before?: Date,
+  ): Promise<QueryResult[]> {
+    const timeFilter = this.buildTimeFilter(after, before, 3);
+    const params: unknown[] = [agentId, searchText];
+    if (after) params.push(after);
+    if (before) params.push(before);
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<QueryResult>(
+      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+              ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
+       FROM warm_tier
+       WHERE agent_id = $1
+         AND content_code_tsv @@ plainto_tsquery('simple', $2)
+         ${timeFilter}
+       ORDER BY rank DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+
+    // Fall back to trigram if FTS returns nothing
     if (rows.length === 0) {
       return this.queryTrigram(agentId, searchText, limit, after, before);
     }
@@ -1480,6 +1538,82 @@ export class MemoryManager {
     };
   }
 
+  // ─── Session Resumption ───────────────────────────────────────────────────
+
+  /**
+   * Generate a resumption context for an agent starting a new session.
+   * Returns recent important memories, active procedures, and contradictions.
+   *
+   * Inspired by CCRider (MIT) resume prompt templates.
+   */
+  async resume(agentId: string, limit = 5): Promise<ResumeContext> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+    if (limit < 1 || limit > 20) {
+      throw new TypeError('limit must be between 1 and 20');
+    }
+
+    // Get agent last_seen
+    const agentRow = await this.pool.query<{ last_seen: Date }>(
+      `SELECT last_seen FROM agents WHERE id = $1`,
+      [agentId],
+    );
+    const lastSeen = agentRow.rows[0]?.last_seen ?? null;
+    const timeSinceMs = lastSeen ? Date.now() - lastSeen.getTime() : null;
+
+    // Top memories by importance
+    const memories = await this.pool.query<{ id: bigint; content: string; importance: number; consolidated_at: Date }>(
+      `SELECT id, content, importance, consolidated_at
+       FROM warm_tier WHERE agent_id = $1
+       ORDER BY importance DESC LIMIT $2`,
+      [agentId, limit],
+    );
+
+    // Active procedures
+    const procs = await this.pool.query<{ condition: string; action: string; confidence: number }>(
+      `SELECT condition, action, confidence
+       FROM procedures WHERE agent_id = $1 AND active = true
+       ORDER BY confidence DESC LIMIT 10`,
+      [agentId],
+    );
+
+    // Open contradictions from recent reflections
+    const reflections = await this.pool.query<{ contradictions: string[] }>(
+      `SELECT contradictions FROM reflections
+       WHERE agent_id = $1 AND array_length(contradictions, 1) > 0
+       ORDER BY created_at DESC LIMIT 3`,
+      [agentId],
+    );
+    const contradictions: string[] = [];
+    for (const r of reflections.rows) {
+      for (const c of r.contradictions) {
+        if (!contradictions.includes(c)) contradictions.push(c);
+      }
+    }
+
+    // Memory health summary
+    const healthRow = await this.pool.query<{ total: string; avg_imp: number; avg_conf: number }>(
+      `SELECT COUNT(*)::text as total, COALESCE(AVG(importance), 0) as avg_imp, COALESCE(AVG(confidence), 0) as avg_conf
+       FROM warm_tier WHERE agent_id = $1`,
+      [agentId],
+    );
+    const h = healthRow.rows[0];
+
+    return {
+      agent_id: agentId,
+      time_since_last_activity_ms: timeSinceMs,
+      top_memories: memories.rows,
+      active_procedures: procs.rows,
+      open_contradictions: contradictions,
+      memory_health: {
+        total_memories: parseInt(h?.total ?? '0', 10),
+        avg_importance: h?.avg_imp ?? 0,
+        avg_confidence: h?.avg_conf ?? 0,
+      },
+    };
+  }
+
   // ─── Downstream Outcome Feedback ─────────────────────────────────────────
 
   /**
@@ -1528,6 +1662,20 @@ export class MemoryManager {
            )`,
           [agentId, retrievalIds, delta],
         );
+      }
+
+      // Track retrieval success for graduation — inspired by claude-code-toolkit (MIT)
+      if (outcome === 'positive') {
+        void this.pool.query(
+          `UPDATE warm_tier SET
+             retrieval_success_count = retrieval_success_count + 1,
+             first_successful_retrieval = COALESCE(first_successful_retrieval, now())
+           WHERE id IN (
+             SELECT DISTINCT warm_tier_id FROM retrieval_log
+             WHERE agent_id = $1 AND id = ANY($2)
+           )`,
+          [agentId, retrievalIds],
+        ).catch((err) => log.error({ err }, 'retrieval success tracking failed'));
       }
     }
 
