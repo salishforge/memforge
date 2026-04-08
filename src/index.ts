@@ -9,6 +9,8 @@ export {
   createEmbeddingProvider,
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
+  LocalEmbeddingProvider,
+  ConcurrencyLimitedEmbeddingProvider,
   NoOpEmbeddingProvider,
 } from './embedding.js';
 export {
