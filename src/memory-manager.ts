@@ -12,6 +12,9 @@ import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT } from './llm.js'
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { SleepCycleEngine } from './sleep-cycle.js';
 import type { AuditChain } from './audit.js';
+import { getLogger } from './logger.js';
+
+const log = getLogger('memory-manager');
 import type {
   MemForgeConfig,
   ConsolidationMode,
@@ -191,7 +194,7 @@ export class MemoryManager {
            VALUES ($1, $2, $3, $4, $5)`,
           [agentId, r.id, opts.q, mode, idx + 1],
         ),
-      )).catch((err) => console.error('[memforge] retrieval log failed:', (err as Error).message));
+      )).catch((err) => log.error({ err }, 'retrieval log failed'));
     }
 
     return results;
@@ -521,13 +524,13 @@ export class MemoryManager {
               try {
                 return await this.llm!.summarize(batch.rawContent);
               } catch (err) {
-                console.error('[memforge] LLM summarization failed for batch, falling back to concat:', (err as Error).message);
+                log.error({ err }, 'LLM summarization failed for batch, falling back to concat');
                 return null;
               }
             }),
           );
         } catch (err) {
-          console.error('[memforge] LLM summarization failed, falling back to concat for all batches:', (err as Error).message);
+          log.error({ err }, 'LLM summarization failed, falling back to concat for all batches');
           summaries = null;
         }
       }
@@ -547,7 +550,7 @@ export class MemoryManager {
         try {
           embeddings = await this.embedder.embedBatch(finalContents);
         } catch (err) {
-          console.error('[memforge] embedding failed during consolidation:', (err as Error).message);
+          log.error({ err }, 'embedding failed during consolidation');
         }
       }
 
@@ -611,7 +614,7 @@ export class MemoryManager {
           if (summary.entities.length > 0) {
             const names = summary.entities.map((e) => e.name);
             const types = summary.entities.map((e) => e.type);
-            const entityRows = await client.query<{ id: bigint; name: string }>(
+            const entityRows = await client.query<{ id: bigint; name: string; entity_type: string }>(
               `INSERT INTO entities (agent_id, name, entity_type)
                SELECT $1, unnest($2::text[]), unnest($3::text[])
                ON CONFLICT (agent_id, name) DO UPDATE
@@ -621,11 +624,21 @@ export class MemoryManager {
                        WHEN entities.entity_type = 'other' THEN EXCLUDED.entity_type
                        ELSE entities.entity_type
                      END
-               RETURNING id, name`,
+               RETURNING id, name, entity_type`,
               [agentId, names, types],
             );
             for (const row of entityRows.rows) {
               entityIdMap.set(row.name, row.id);
+            }
+
+            if (this.audit) {
+              for (const row of entityRows.rows) {
+                void this.audit.record(
+                  agentId, 'entities', row.id, 'create',
+                  null, row.name, { entity_type: row.entity_type },
+                  'consolidation', this.llm?.model ?? null, client
+                ).catch((err: unknown) => log.error({ err }, 'audit entity error'));
+              }
             }
 
             // Batch link entities to this warm row
@@ -646,13 +659,24 @@ export class MemoryManager {
             const srcIds = validRels.map((r) => entityIdMap.get(r.source)!);
             const tgtIds = validRels.map((r) => entityIdMap.get(r.target)!);
             const relTypes = validRels.map((r) => r.relation);
-            await client.query(
+            const relResult = await client.query<{ id: bigint; source_entity_id: bigint; target_entity_id: bigint; relation_type: string }>(
               `INSERT INTO relationships (agent_id, source_entity_id, target_entity_id, relation_type)
                SELECT $1, unnest($2::bigint[]), unnest($3::bigint[]), unnest($4::text[])
                ON CONFLICT (agent_id, source_entity_id, target_entity_id, relation_type)
-               DO UPDATE SET weight = relationships.weight + 1, last_seen = now()`,
+               DO UPDATE SET weight = relationships.weight + 1, last_seen = now()
+               RETURNING id, source_entity_id, target_entity_id, relation_type`,
               [agentId, srcIds, tgtIds, relTypes],
             );
+            if (this.audit) {
+              for (const row of relResult.rows) {
+                void this.audit.record(
+                  agentId, 'relationships', row.id, 'create',
+                  null, `${row.source_entity_id} → ${row.target_entity_id}`,
+                  { relation_type: row.relation_type },
+                  'consolidation', this.llm?.model ?? null, client
+                ).catch((err: unknown) => log.error({ err }, 'audit relationship error'));
+              }
+            }
           }
         }
       }
@@ -1177,11 +1201,11 @@ export class MemoryManager {
         null, reflectionContent,
         { insights_count: keyInsights.length, contradictions_count: contradictions.length, trigger },
         'reflection', this.llm?.model ?? null,
-      ).catch((err) => console.error('[memforge:audit] reflect audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'reflect audit failed'));
     }
     if (keyInsights.length > 0) {
       void this.extractProcedures(agentId, reflectionId).catch((err) =>
-        console.error('[memforge] auto-procedure extraction failed:', (err as Error).message),
+        log.error({ err }, 'auto-procedure extraction failed'),
       );
     }
 
@@ -1246,7 +1270,7 @@ export class MemoryManager {
     try {
       responseText = await this.llm.chat(PROCEDURE_EXTRACTION_PROMPT, userPrompt);
     } catch (err) {
-      console.error('[memforge] procedure extraction failed:', (err as Error).message);
+      log.error({ err }, 'procedure extraction failed');
       return 0;
     }
 
@@ -1279,7 +1303,7 @@ export class MemoryManager {
           null, `${proc['condition'] as string} → ${proc['action'] as string}`,
           { confidence, source_reflection_id: String(reflectionId) },
           'reflection', this.llm?.model ?? null,
-        ).catch((err) => console.error('[memforge:audit] procedure audit failed:', (err as Error).message));
+        ).catch((err) => log.error({ err }, 'procedure audit failed'));
       }
     }
 
@@ -1361,7 +1385,7 @@ export class MemoryManager {
       try {
         await this.reflect(agentId, 'scheduled');
       } catch (err) {
-        console.error('[memforge] post-sleep reflection failed:', (err as Error).message);
+        log.error({ err }, 'post-sleep reflection failed');
       }
     }
 
@@ -1480,7 +1504,7 @@ export class MemoryManager {
       void this.audit.recordBatch(agentId, 'retrieval_log', 'feedback',
         { retrieval_ids: retrievalIds.map(String), outcome, updated },
         'feedback',
-      ).catch((err) => console.error('[memforge:audit] feedback audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'feedback audit failed'));
     }
 
     return { agent_id: agentId, updated, outcome };
@@ -1614,11 +1638,11 @@ Guidelines:
         null, content,
         { reflection_level: 2, insights_count: keyInsights.length, source_reflections: reflections.rows.length },
         'reflection', this.llm?.model ?? null,
-      ).catch((err) => console.error('[memforge:audit] metaReflect audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'metaReflect audit failed'));
     }
     if (keyInsights.length > 0) {
       void this.extractProcedures(agentId, metaReflectionId).catch((err) =>
-        console.error('[memforge] meta-reflection procedure extraction failed:', (err as Error).message),
+        log.error({ err }, 'meta-reflection procedure extraction failed'),
       );
     }
 
@@ -1748,7 +1772,7 @@ Guidelines:
             agentId, 'entities', keepId, 'merge',
             pair.mention_a >= pair.mention_b ? pair.name_b : pair.name_a,
             pair.mention_a >= pair.mention_b ? pair.name_a : pair.name_b,
-            { merged_entity_id: String(removeId), kept_entity_id: String(keepId) },
+            { merged_entity_id: String(removeId), kept_entity_id: String(keepId), warm_tier_entities_repointed: true, relationships_repointed: true },
             'dedup', null, client,
           );
         }
@@ -1758,7 +1782,7 @@ Guidelines:
         alreadyMerged.add(String(removeId));
       } catch (err) {
         await client.query('ROLLBACK');
-        console.error(`[memforge] entity dedup failed for pair ${pair.name_a}/${pair.name_b}:`, (err as Error).message);
+        log.error({ err, nameA: pair.name_a, nameB: pair.name_b }, 'entity dedup failed');
       } finally {
         client.release();
       }

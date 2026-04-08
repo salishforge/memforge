@@ -8,6 +8,8 @@
 //   content_hash  = HMAC-SHA256(key, content)
 //   chain_hash    = HMAC-SHA256(key, previous_hash + content_hash + operation + valid_from)
 //
+import { getLogger } from './logger.js';
+const log = getLogger('audit');
 // Verification: walk the chain for a target and verify each link.
 // A broken link means a record was tampered with, deleted, or reordered.
 
@@ -96,11 +98,7 @@ export class AuditChain {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
     if (!this.config.hmacKey) {
-      console.warn(
-        '[memforge:audit] WARNING: AUDIT_HMAC_KEY not set. Audit chain uses a default key — ' +
-        'this detects accidental modifications but NOT targeted tampering. ' +
-        'Set AUDIT_HMAC_KEY to a strong random value in production.',
-      );
+      log.warn('AUDIT_HMAC_KEY not set — using default key. Detects accidental modifications but NOT targeted tampering. Set AUDIT_HMAC_KEY in production.');
     }
   }
 

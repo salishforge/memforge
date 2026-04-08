@@ -12,6 +12,9 @@
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import { createHash } from 'crypto';
+import { getLogger } from './logger.js';
+
+const log = getLogger('cache');
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,25 +55,24 @@ export async function getRedis(): Promise<RedisClientType | null> {
       const client = createClient({ url }) as RedisClientType;
 
       client.on('error', (err: Error) => {
-        console.error('[cache] Redis error:', err.message);
+        log.error({ err }, 'Redis error');
         counters.errors++;
       });
       client.on('reconnecting', () => {
-        console.log('[cache] Redis reconnecting…');
+        log.info('Redis reconnecting');
       });
       client.on('end', () => {
-        console.log('[cache] Redis connection closed');
+        log.info('Redis connection closed');
         redisClient = null;
       });
 
       await client.connect();
-      // Redact credentials from log output
       const safeUrl = url.replace(/:\/\/[^@]*@/, '://*:*@');
-      console.log(`[cache] Redis connected at ${safeUrl}`);
+      log.info({ url: safeUrl }, 'Redis connected');
       redisClient = client;
       return client;
     } catch (err) {
-      console.error('[cache] Redis connection failed:', (err as Error).message, '— operating without cache');
+      log.error({ err }, 'Redis connection failed — operating without cache');
       return null;
     } finally {
       connectionPromise = null;
@@ -123,7 +125,7 @@ export async function cacheGet(key: string): Promise<unknown> {
     counters.misses++;
     return null;
   } catch (err) {
-    console.error('[cache] GET error:', (err as Error).message);
+    log.error({ err }, 'cache GET failed');
     counters.errors++;
     counters.misses++;
     return null;
@@ -138,7 +140,7 @@ export async function cacheSet(key: string, value: unknown, tier: CacheTier): Pr
     await redis.setEx(key, TTL_SECONDS[tier], JSON.stringify(value));
     counters.sets++;
   } catch (err) {
-    console.error('[cache] SET error:', (err as Error).message);
+    log.error({ err }, 'cache SET failed');
     counters.errors++;
   }
 }
@@ -166,7 +168,7 @@ export async function invalidatePattern(pattern: string): Promise<number> {
     counters.invalidations += deleted;
     return deleted;
   } catch (err) {
-    console.error('[cache] SCAN/DEL error:', (err as Error).message);
+    log.error({ err }, 'cache SCAN/DEL failed');
     counters.errors++;
     return 0;
   }

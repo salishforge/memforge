@@ -13,6 +13,9 @@ import type { LLMProvider } from './llm.js';
 import type { EmbeddingProvider } from './embedding.js';
 import type { SleepCycleConfig, SleepCycleResult, RevisionType } from './types.js';
 import type { AuditChain } from './audit.js';
+import { getLogger } from './logger.js';
+
+const log = getLogger('sleep-cycle');
 
 const DEFAULT_CONFIG: SleepCycleConfig = {
   tokenBudget: 100_000,
@@ -112,6 +115,12 @@ export class SleepCycleEngine {
       didReflect = await this.phaseReflection(agentId);
     }
 
+    // Phase 5b: Cold tier retention purge (optional)
+    let coldPurged = 0;
+    if (this.config.coldRetentionDays) {
+      coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
+    }
+
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
     if (this.audit) {
@@ -119,7 +128,7 @@ export class SleepCycleEngine {
         const archiveResult = await this.audit.archiveExpired(agentId);
         auditArchived = archiveResult.archived + archiveResult.pruned;
       } catch (err) {
-        console.error('[sleep-cycle] audit archive failed:', (err as Error).message);
+        log.error({ err }, 'audit archive failed');
       }
     }
 
@@ -133,6 +142,7 @@ export class SleepCycleEngine {
       phase4_edges_invalidated: edgesInvalidated,
       phase4_entities_merged: entitiesMerged,
       phase5_reflection: didReflect,
+      phase5b_cold_purged: coldPurged,
       audit_records_archived: auditArchived,
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
@@ -168,7 +178,7 @@ export class SleepCycleEngine {
       void this.audit.recordBatch(agentId, 'warm_tier', 'score',
         { rows_updated: rowCount, weights: this.config.weights },
         'sleep_cycle',
-      ).catch((err) => console.error('[memforge:audit] scoring audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'scoring audit failed'));
     }
 
     return rowCount ?? 0;
@@ -202,7 +212,7 @@ export class SleepCycleEngine {
       void this.audit.recordBatch(agentId, 'warm_tier', 'evict',
         { evicted_count: evicted, threshold: this.config.evictionThreshold },
         'sleep_cycle',
-      ).catch((err) => console.error('[memforge:audit] triage audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
     // Flag low-confidence memories for revision, ordered by highest importance first
@@ -286,7 +296,7 @@ ${relatedList || 'None'}`;
     try {
       responseText = await this.llm.chat(REVISION_SYSTEM_PROMPT, userPrompt);
     } catch (err) {
-      console.error(`[sleep-cycle] revision failed for warm_tier#${warmTierId}:`, (err as Error).message);
+      log.error({ err, warmTierId: String(warmTierId) }, 'revision failed');
       return 0;
     }
 
@@ -299,7 +309,7 @@ ${relatedList || 'None'}`;
       const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
       parsed = JSON.parse(cleaned) as Record<string, unknown>;
     } catch {
-      console.error(`[sleep-cycle] invalid JSON from revision LLM for warm_tier#${warmTierId}`);
+      log.error({ warmTierId: String(warmTierId) }, 'invalid JSON from revision LLM');
       return totalTokens;
     }
 
@@ -329,9 +339,10 @@ ${relatedList || 'None'}`;
     const nextRevision = (revNum.rows[0]?.max ?? 0) + 1;
 
     // Log the revision
-    await this.pool.query(
+    const revisionResult = await this.pool.query<{ id: bigint }>(
       `INSERT INTO memory_revisions (agent_id, warm_tier_id, revision_number, previous_content, new_content, revision_type, reason, delta_summary, confidence, model_used)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id`,
       [agentId, warmTierId, nextRevision, row.content, revisedContent, action as RevisionType, reason, deltaSummary, confidence, this.llm.model],
     );
 
@@ -363,7 +374,7 @@ ${relatedList || 'None'}`;
       const cHash = await this.audit.record(
         agentId, 'warm_tier', warmTierId, 'revise',
         row.content, revisedContent,
-        { revision_type: action, reason, delta_summary: deltaSummary, confidence, revision_number: nextRevision },
+        { revision_type: action, reason, delta_summary: deltaSummary, confidence, revision_number: nextRevision, revision_id: revisionResult.rows[0] ? String(revisionResult.rows[0].id) : undefined },
         'sleep_cycle', this.llm.model,
       );
       void this.pool.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [warmTierId, cHash]);
@@ -395,10 +406,17 @@ ${relatedList || 'None'}`;
 
     // Decay weight on stale edges
     const staleIds = stale.rows.map((r) => r.id);
-    await this.pool.query(
+    const decayResult = await this.pool.query(
       `UPDATE relationships SET weight = weight * 0.5 WHERE id = ANY($1)`,
       [staleIds],
     );
+    if (this.audit) {
+      void this.audit.recordBatch(
+        agentId, 'relationships', 'update',
+        { action: 'decay', decayed_count: decayResult.rowCount ?? 0 },
+        'sleep_cycle'
+      ).catch((err: unknown) => log.error({ err }, 'audit decay error'));
+    }
 
     // Invalidate (not delete) edges whose weight has decayed below threshold
     const { rowCount } = await this.pool.query(
@@ -411,7 +429,7 @@ ${relatedList || 'None'}`;
       void this.audit.recordBatch(agentId, 'relationships', 'evict',
         { edges_invalidated: rowCount, stale_edges_decayed: staleIds.length },
         'sleep_cycle',
-      ).catch((err) => console.error('[memforge:audit] graph maintenance audit failed:', (err as Error).message));
+      ).catch((err) => log.error({ err }, 'graph maintenance audit failed'));
     }
 
     return rowCount ?? 0;
@@ -496,13 +514,24 @@ ${relatedList || 'None'}`;
         alreadyMerged.add(String(removeId));
       } catch (err) {
         await client.query('ROLLBACK');
-        console.error(`[sleep-cycle] entity dedup failed:`, (err as Error).message);
+        log.error({ err }, 'entity dedup failed');
       } finally {
         client.release();
       }
     }
 
     return merged;
+  }
+
+  // ─── Phase 5b: Cold Tier Retention Purge ──────────────────────────────────
+
+  private async phaseColdPurge(agentId: string, retentionDays: number): Promise<number> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM cold_tier WHERE agent_id = $1 AND archived_at < $2`,
+      [agentId, cutoff],
+    );
+    return rowCount ?? 0;
   }
 
   // ─── Phase 5: Reflection ───────────────────────────────────────────────────

@@ -2,6 +2,9 @@
 // Calls the OAuth2 introspect endpoint, caches results 30s, enforces scopes.
 
 import type { Request, Response, NextFunction } from 'express';
+import { getLogger } from './logger.js';
+
+const log = getLogger('auth');
 
 // Extend Express Request type with oauth2 context
 declare global {
@@ -82,7 +85,7 @@ export async function bearerAuth(
     });
     data = (await response.json()) as typeof data;
   } catch (err) {
-    console.error('[memforge:auth] introspect failed:', (err as Error).message);
+    log.error({ err }, 'introspect failed');
     res.status(503).json({ ok: false, error: 'OAuth2 server unavailable' });
     return;
   }
@@ -116,9 +119,7 @@ export function requireScope(scope: string) {
       return;
     }
     const clientId = req.oauth2?.client_id ?? 'unknown';
-    console.warn(
-      `[memforge:scope] DENIED client=${clientId} required=${scope} granted=${req.oauth2?.scope ?? 'none'} ${req.method} ${req.path}`,
-    );
+    log.warn({ clientId, required: scope, granted: req.oauth2?.scope ?? 'none', method: req.method, path: req.path }, 'scope denied');
     res.status(403).json({
       ok: false,
       error: 'insufficient_scope',

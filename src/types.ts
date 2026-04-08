@@ -266,6 +266,7 @@ export interface SleepCycleResult {
   phase4_edges_invalidated: number;
   phase4_entities_merged: number;
   phase5_reflection: boolean;
+  phase5b_cold_purged: number;
   audit_records_archived: number;
   tokens_used: number;
   duration_ms: number;
@@ -280,6 +281,8 @@ export interface SleepCycleConfig {
   revisionThreshold: number;
   /** Whether to run Phase 5 (reflection) in this cycle (default true) */
   includeReflection: boolean;
+  /** Number of days to retain cold tier records; older records are deleted (optional) */
+  coldRetentionDays?: number;
   /** Importance score weights */
   weights: {
     recency: number;

@@ -57,13 +57,15 @@ npm run test:cache     # Cache tests only (requires Redis)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/memory-manager.ts` | ~1,600 | Core API — all memory operations |
-| `src/sleep-cycle.ts` | ~450 | Sleep cycle engine (5 phases) |
-| `src/server.ts` | ~790 | Express REST API (18 endpoints) |
+| `src/memory-manager.ts` | ~1,840 | Core API — all memory operations |
+| `src/app.ts` | ~875 | Express app factory (testable, no side effects) |
+| `src/sleep-cycle.ts` | ~555 | Sleep cycle engine (5 phases) |
+| `src/server.ts` | ~112 | Thin bootstrap — creates providers, calls createApp() |
 | `src/llm.ts` | ~325 | LLM providers + system prompts |
-| `src/types.ts` | ~340 | All TypeScript interfaces |
-| `src/client.ts` | ~250 | HTTP client SDK |
-| `src/mcp.ts` | ~400 | MCP server (17 tools) |
+| `src/types.ts` | ~360 | All TypeScript interfaces |
+| `src/client.ts` | ~360 | HTTP client SDK |
+| `src/mcp.ts` | ~440 | MCP server (17 tools) |
+| `src/logger.ts` | ~72 | Structured logging (pino) + request correlation IDs |
 | `schema/schema.sql` | ~230 | Complete database schema (12 tables) |
 
 ## When Adding New Features
@@ -93,6 +95,23 @@ npm run test:cache     # Cache tests only (requires Redis)
 - Cache tests require Redis at localhost:6379
 - Tests clean up after themselves — each describe block has before/after cleanup
 - Run `npm run type-check` before running tests — type errors will cause confusing failures
+
+## Model Routing Strategy
+
+When spawning subagents with the Agent tool, select the model tier based on task impact:
+
+| Model | Use For |
+|-------|---------|
+| **Opus 4.6** (`model: "opus"`) | Planning, architecture, security reviews, audit, integration design, complex multi-file coding |
+| **Sonnet 4.6** (`model: "sonnet"`) | Documentation, moderate coding, code review, test writing, refactoring |
+| **Haiku 4.5** (`model: "haiku"`) | Quick lookups, simple file searches, boilerplate generation, formatting |
+| **gemma4:31b-cloud** (via `ollama run`) | Parallel routine coding where output is easy to verify: scaffolding, repetitive transforms, bulk edits, simple implementations |
+
+**Principles:**
+- Use Claude models when output quality affects production results. Use gemma4 via Ollama CLI to preserve Anthropic API quota on commodity tasks.
+- Don't use Opus for tasks Sonnet handles well. Don't use Sonnet for tasks Haiku or gemma4 handles well.
+- Ollama models are invoked via shell (`ollama run gemma4:31b-cloud "prompt"`) — Claude Code does not support routing subagents to non-Anthropic providers.
+- Ollama API key is in `~/.claude/ollama.env`.
 
 ## Known Limitations & Open Issues
 

@@ -65,4 +65,6 @@ export type { Sensitivity, Classification, ClassificationResult, ContentClassifi
 export { SafeLLMProvider, wrapLLMProvider, getProviderLocality } from './llm-safety.js';
 export { AuditChain, contentHash } from './audit.js';
 export type { AuditEntry, AuditOperation, AuditTrigger, VerificationResult, AuditConfig } from './audit.js';
+export { createApp } from './app.js';
+export type { AppDependencies } from './app.js';
 export { VERSION } from './version.js';

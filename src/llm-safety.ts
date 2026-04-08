@@ -8,6 +8,9 @@
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import type { ClassifierRegistry } from './classifier.js';
 import { sanitizeForLLM } from './classifier.js';
+import { getLogger } from './logger.js';
+
+const log = getLogger('llm-safety');
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -31,11 +34,9 @@ export interface SafeLLMConfig {
 // ─── Default Warning ────────────────────────────────────────────────────────────
 
 function defaultRemoteWarning(model: string, operation: string): void {
-  console.warn(
-    `[memforge:security] WARNING: Memory content is being sent to external LLM provider ` +
-    `(model=${model}, operation=${operation}). This data leaves your infrastructure. ` +
-    `Set LLM_PROVIDER=ollama to keep memory processing local. ` +
-    `See THREAT_MODEL.md §1 "Data Exfiltration via LLM Providers" for risks.`,
+  log.warn(
+    { model, operation },
+    'Memory content sent to external LLM provider. Set LLM_PROVIDER=ollama to keep processing local. See THREAT_MODEL.md §1.',
   );
 }
 
