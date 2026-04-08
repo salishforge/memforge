@@ -586,12 +586,58 @@ export class MemoryManager {
         });
       }
 
+      // ── Heuristic pre-screening: skip LLM for high-overlap batches (#53) ──
+      // Inspired by hippo-memory (MIT) overlap merge + claude-code-toolkit (MIT)
+      // deterministic-vs-probabilistic philosophy.
+      const batchNeedsLlm = batches.map((batch) => {
+        if (resolvedMode !== 'summarize' || !this.llm) return false;
+        // Check intra-batch diversity via word-level Jaccard overlap
+        const rows = batch.rawContent.split('\n\n---\n\n');
+        if (rows.length < 2) return true; // single-row batch always needs LLM
+        // Sample pairwise overlap (truncate to 10K chars per row for DoS prevention)
+        const wordSets = rows.slice(0, 10).map((r) =>
+          new Set(r.slice(0, 10_000).toLowerCase().split(/\s+/).filter((w) => w.length > 2)),
+        );
+        let highOverlapCount = 0;
+        let comparisons = 0;
+        for (let i = 0; i < wordSets.length; i++) {
+          for (let j = i + 1; j < wordSets.length; j++) {
+            const a = wordSets[i]!;
+            const b = wordSets[j]!;
+            const intersection = [...a].filter((w) => b.has(w)).length;
+            const jaccard = intersection / Math.max(a.size, b.size, 1);
+            if (jaccard > 0.7) highOverlapCount++;
+            comparisons++;
+          }
+        }
+        // If >70% of sampled pairs have high overlap, skip LLM — concat is sufficient
+        return comparisons > 0 && highOverlapCount / comparisons < 0.7;
+      });
+
+      // Detect polarity contradictions within batches and flag as metadata
+      const POLARITY_PAIRS = [
+        ['enabled', 'disabled'], ['true', 'false'], ['added', 'removed'],
+        ['created', 'deleted'], ['started', 'stopped'], ['open', 'closed'],
+      ];
+      const batchContradictions = batches.map((batch) => {
+        const lower = batch.rawContent.toLowerCase();
+        const found: string[] = [];
+        for (const [a, b] of POLARITY_PAIRS) {
+          if (a && b && lower.includes(a) && lower.includes(b)) {
+            found.push(`${a}/${b}`);
+          }
+        }
+        return found;
+      });
+
       // ── Summarize mode: send each batch to LLM ──────────────────────────
       let summaries: Array<ConsolidationSummary | null> | null = null;
       if (resolvedMode === 'summarize' && this.llm) {
         try {
           summaries = await Promise.all(
-            batches.map(async (batch) => {
+            batches.map(async (batch, idx) => {
+              // Skip LLM for high-overlap batches (heuristic pre-screening)
+              if (!batchNeedsLlm[idx]) return null;
               try {
                 return await this.llm!.summarize(batch.rawContent);
               } catch (err) {
@@ -647,6 +693,15 @@ export class MemoryManager {
           metadata.entities = summary.entities;
           metadata.relationships = summary.relationships;
           metadata.sentiment = summary.sentiment;
+        }
+
+        // Add heuristic contradiction flags if detected
+        const contradictions = batchContradictions[i];
+        if (contradictions && contradictions.length > 0) {
+          metadata._contradictions = contradictions;
+        }
+        if (!batchNeedsLlm[i] && resolvedMode === 'summarize') {
+          metadata._llm_skipped = true;
         }
 
         const warmRow = await client.query<{ id: bigint }>(

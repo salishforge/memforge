@@ -82,6 +82,9 @@ export class SleepCycleEngine {
     const start = Date.now();
     let tokensUsed = 0;
 
+    // Phase 0: Autonomous weight adaptation — inspired by MH-FLOCKE (Apache 2.0)
+    await this.phaseWeightAdaptation(agentId);
+
     // Phase 1: Scoring
     const scoresUpdated = await this.phaseScoring(agentId);
 
@@ -155,10 +158,108 @@ export class SleepCycleEngine {
     };
   }
 
+  // ─── Phase 0: Autonomous Weight Adaptation ─────────────────────────────────
+  // Inspired by MH-FLOCKE (Apache 2.0) autonomous closed-loop parameter tuning.
+  // Uses simple count correlation: for each scoring dimension, check if positive-
+  // feedback memories have above-median values. Adjust weights toward dimensions
+  // that correlate with positive outcomes. Learning rate: 0.01 per cycle.
+
+  private async phaseWeightAdaptation(agentId: string): Promise<void> {
+    // Only adapt after 100+ feedback events
+    const feedbackCount = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text as count FROM retrieval_log WHERE agent_id = $1 AND outcome IS NOT NULL`,
+      [agentId],
+    );
+    if (parseInt(feedbackCount.rows[0]?.count ?? '0', 10) < 100) return;
+
+    // Get median importance for the agent's warm tier
+    const medianRow = await this.pool.query<{ median: number }>(
+      `SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY importance) as median
+       FROM warm_tier WHERE agent_id = $1`,
+      [agentId],
+    );
+    const median = medianRow.rows[0]?.median ?? 0.5;
+
+    // Count positive vs negative feedback for above-median and below-median memories
+    const correlation = await this.pool.query<{ above_positive: string; above_negative: string; below_positive: string; below_negative: string }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE w.importance >= $2 AND rl.outcome = 'positive')::text as above_positive,
+         COUNT(*) FILTER (WHERE w.importance >= $2 AND rl.outcome = 'negative')::text as above_negative,
+         COUNT(*) FILTER (WHERE w.importance < $2 AND rl.outcome = 'positive')::text as below_positive,
+         COUNT(*) FILTER (WHERE w.importance < $2 AND rl.outcome = 'negative')::text as below_negative
+       FROM retrieval_log rl
+       JOIN warm_tier w ON w.id = rl.warm_tier_id AND w.agent_id = $1
+       WHERE rl.agent_id = $1 AND rl.outcome IN ('positive', 'negative')`,
+      [agentId, median],
+    );
+
+    const c = correlation.rows[0];
+    if (!c) return;
+    const abovePositive = parseInt(c.above_positive, 10);
+    const belowPositive = parseInt(c.below_positive, 10);
+    const total = abovePositive + belowPositive + parseInt(c.above_negative, 10) + parseInt(c.below_negative, 10);
+    if (total < 50) return; // Not enough signal
+
+    // If high-importance memories get more positive feedback, current weights are working well
+    // If low-importance memories get more positive feedback, weights need adjustment
+    const importanceEffectiveness = total > 0 ? (abovePositive / Math.max(abovePositive + parseInt(c.above_negative, 10), 1)) : 0.5;
+
+    // Load current weights
+    const currentWeights = await this.pool.query<{ scoring_weights: Record<string, number> | null }>(
+      `SELECT scoring_weights FROM agents WHERE id = $1`, [agentId],
+    );
+    const w = currentWeights.rows[0]?.scoring_weights ?? {
+      recency: this.config.weights.recency,
+      frequency: this.config.weights.frequency,
+      centrality: this.config.weights.centrality,
+      reflection: this.config.weights.reflection,
+      stability: this.config.weights.stability,
+    };
+
+    // If effectiveness > 0.6, current weights are good — nudge recency up (recent = relevant)
+    // If effectiveness < 0.4, importance scoring is misleading — nudge centrality/reflection up
+    const LEARNING_RATE = 0.01;
+    if (importanceEffectiveness > 0.6) {
+      w['recency'] = Math.min(0.50, (w['recency'] ?? 0.25) + LEARNING_RATE);
+      w['frequency'] = Math.min(0.50, (w['frequency'] ?? 0.20) + LEARNING_RATE * 0.5);
+    } else if (importanceEffectiveness < 0.4) {
+      w['centrality'] = Math.min(0.50, (w['centrality'] ?? 0.20) + LEARNING_RATE);
+      w['reflection'] = Math.min(0.50, (w['reflection'] ?? 0.15) + LEARNING_RATE);
+      w['recency'] = Math.max(0.05, (w['recency'] ?? 0.25) - LEARNING_RATE);
+    }
+
+    // Normalize so weights sum to 1.0
+    const sum = Object.values(w).reduce((a, b) => (a as number) + (b as number), 0) as number;
+    if (sum > 0) {
+      for (const key of Object.keys(w)) {
+        w[key] = (w[key] as number) / sum;
+      }
+    }
+
+    // Store updated weights
+    await this.pool.query(
+      `UPDATE agents SET scoring_weights = $2 WHERE id = $1`,
+      [agentId, JSON.stringify(w)],
+    );
+  }
+
   // ─── Phase 1: Scoring ──────────────────────────────────────────────────────
 
   private async phaseScoring(agentId: string): Promise<number> {
-    const w = this.config.weights;
+    // Load per-agent weights if available, fall back to global defaults
+    const agentWeights = await this.pool.query<{ scoring_weights: Record<string, number> | null }>(
+      `SELECT scoring_weights FROM agents WHERE id = $1`, [agentId],
+    );
+    const stored = agentWeights.rows[0]?.scoring_weights;
+    const w = stored
+      ? {
+          recency: Math.min(0.50, Math.max(0.05, stored['recency'] ?? this.config.weights.recency)),
+          frequency: Math.min(0.50, Math.max(0.05, stored['frequency'] ?? this.config.weights.frequency)),
+          centrality: Math.min(0.50, Math.max(0.05, stored['centrality'] ?? this.config.weights.centrality)),
+          reflection: Math.min(0.50, Math.max(0.05, stored['reflection'] ?? this.config.weights.reflection)),
+          stability: Math.min(0.50, Math.max(0.05, stored['stability'] ?? this.config.weights.stability)),
+        }
+      : this.config.weights;
 
     // Single SQL update that computes composite importance from multiple signals.
     // Outcome multiplier inspired by MH-FLOCKE (Apache 2.0) embodied emotions
