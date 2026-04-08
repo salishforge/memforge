@@ -28,6 +28,7 @@ export function loadConfig(): BenchmarkConfig {
     agentPrefix: 'bench-lme-',
     concurrency: parseInt(process.env['BENCHMARK_CONCURRENCY'] ?? '5', 10),
     consolidationMode: (process.env['BENCHMARK_CONSOLIDATION'] ?? 'concat') as 'concat' | 'summarize',
+    consolidationBatchSize: parseInt(process.env['CONSOLIDATION_INNER_BATCH_SIZE'] ?? '50', 10),
     cleanupAfter: process.env['BENCHMARK_CLEANUP'] !== 'false',
   };
 }

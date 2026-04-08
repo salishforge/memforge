@@ -6,7 +6,7 @@ Generated: 2026-04-08
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-04-08T17:34:17.337Z
+- Timestamp: 2026-04-08T19:58:21.493Z
 
 ### Retrieval Quality
 
@@ -34,8 +34,8 @@ Generated: 2026-04-08
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 28ms | 38ms | 28ms |
-| Ingest (per question) | 414ms | 586ms | 427ms |
+| Query | 39ms | 50ms | 39ms |
+| Ingest (per question) | 432ms | 568ms | 440ms |
 
 ---
 
