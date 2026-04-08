@@ -3,7 +3,7 @@
 // Pluggable interface for summarizing memory batches during consolidation.
 // Ships with Anthropic, OpenAI-compatible, and Ollama providers.
 
-import { safeParseLLMResponse, ConsolidationSummarySchema } from './schemas.js';
+import { safeParseLLMResponse, ConsolidationSummarySchema, validateProviderUrl } from './schemas.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,8 @@ export interface LLMProvider {
  * Escapes any literal closing tags in the content.
  */
 export function wrapUserContent(tag: string, content: string): string {
-  const escaped = content.replaceAll(`</${tag}>`, `&lt;/${tag}&gt;`);
+  // Escape all < to prevent content from injecting or closing any XML-like tags
+  const escaped = content.replaceAll('<', '&lt;');
   return `<${tag}>\n${escaped}\n</${tag}>`;
 }
 
@@ -213,7 +214,7 @@ export class OpenAILLMProvider implements LLMProvider {
   private readonly maxTokens: number;
 
   constructor(config: OpenAILLMConfig = {}) {
-    this.baseUrl = (config.baseUrl ?? process.env['OPENAI_API_BASE_URL'] ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OPENAI_API_BASE_URL'] ?? 'https://api.openai.com/v1', 'OpenAI LLM');
     this.apiKey = config.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.model = config.model ?? process.env['LLM_MODEL'] ?? 'gpt-4o-mini';
     this.maxTokens = config.maxTokens ?? 4096;
@@ -273,7 +274,7 @@ export class OllamaLLMProvider implements LLMProvider {
   readonly model: string;
 
   constructor(config: OllamaLLMConfig = {}) {
-    this.baseUrl = (config.baseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434').replace(/\/$/, '');
+    this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434', 'Ollama LLM', true);
     this.model = config.model ?? process.env['LLM_MODEL'] ?? 'llama3.2';
   }
 

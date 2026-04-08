@@ -11,6 +11,7 @@ import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
+import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema } from './schemas.js';
 import { SleepCycleEngine } from './sleep-cycle.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
@@ -61,6 +62,11 @@ const DEFAULTS: MemForgeConfig = {
 };
 
 const MAX_TOKEN_BUDGET = 200_000;
+
+/** Escape PostgreSQL LIKE/ILIKE wildcard characters in user input. */
+function escapeLike(input: string): string {
+  return input.replace(/[%_\\]/g, '\\$&');
+}
 
 export class MemoryManager {
   private readonly pool: Pool;
@@ -246,7 +252,7 @@ export class MemoryManager {
     after?: Date,
     before?: Date,
   ): Promise<QueryResult[]> {
-    const params: unknown[] = [agentId, searchText, `%${searchText}%`];
+    const params: unknown[] = [agentId, searchText, `%${escapeLike(searchText)}%`];
     const timeFilter = this.buildTimeFilter(after, before, 4);
     if (after) params.push(after);
     if (before) params.push(before);
@@ -895,7 +901,7 @@ export class MemoryManager {
     const clauses: string[] = [];
 
     if (query) {
-      params.push(`%${query}%`);
+      params.push(`%${escapeLike(query)}%`);
       clauses.push(`AND e.name ILIKE $${params.length}`);
     }
     if (type) {
@@ -1159,25 +1165,12 @@ export class MemoryManager {
 
     const responseText = await this.llm.chat(REFLECTION_SYSTEM_PROMPT, userPrompt);
 
-    // Parse the LLM response
-    const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
-      throw new Error(`Reflection LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
-    }
-
-    const reflectionContent = typeof parsed['reflection'] === 'string' ? parsed['reflection'] : '';
-    const keyInsights = Array.isArray(parsed['key_insights'])
-      ? (parsed['key_insights'] as unknown[]).filter((i): i is string => typeof i === 'string')
-      : [];
-    const contradictions = Array.isArray(parsed['contradictions'])
-      ? (parsed['contradictions'] as unknown[]).filter((c): c is string => typeof c === 'string')
-      : [];
-    const reinforcedPatterns = Array.isArray(parsed['reinforced_patterns'])
-      ? (parsed['reinforced_patterns'] as unknown[]).filter((p): p is string => typeof p === 'string')
-      : [];
+    // Parse and validate the LLM response
+    const parsed = safeParseLLMResponse(ReflectionResponseSchema, responseText);
+    const reflectionContent = parsed.reflection;
+    const keyInsights = parsed.key_insights;
+    const contradictions = parsed.contradictions;
+    const reinforcedPatterns = parsed.reinforced_patterns;
 
     const sourceWarmIds = recentMemories.rows.map((r) => r.id);
 
@@ -1296,26 +1289,23 @@ export class MemoryManager {
       return 0;
     }
 
-    let parsed: Record<string, unknown>;
+    let parsed;
     try {
-      const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      parsed = safeParseLLMResponse(ProcedureExtractionSchema, responseText);
     } catch {
       return 0;
     }
 
-    const procedures = Array.isArray(parsed['procedures']) ? parsed['procedures'] as Array<Record<string, unknown>> : [];
     let created = 0;
 
-    for (const proc of procedures) {
-      if (typeof proc['condition'] !== 'string' || typeof proc['action'] !== 'string') continue;
-      const confidence = typeof proc['confidence'] === 'number' ? proc['confidence'] : 0.5;
+    for (const proc of parsed.procedures) {
+      const confidence = proc.confidence;
 
       const procRow = await this.pool.query<{ id: bigint }>(
         `INSERT INTO procedures (agent_id, condition, action, source_reflection_id, confidence)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        [agentId, proc['condition'], proc['action'], reflectionId, confidence],
+        [agentId, proc.condition, proc.action, reflectionId, confidence],
       );
       created++;
 
@@ -1345,7 +1335,7 @@ export class MemoryManager {
     let filter = '';
 
     if (query) {
-      params.push(`%${query}%`);
+      params.push(`%${escapeLike(query)}%`);
       filter = `AND (condition ILIKE $${params.length} OR action ILIKE $${params.length})`;
     }
 
@@ -1633,24 +1623,11 @@ Guidelines:
 
     const responseText = await this.llm.chat(META_REFLECTION_SYSTEM_PROMPT, userPrompt);
 
-    const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
-      throw new Error(`Meta-reflection LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
-    }
-
-    const content = typeof parsed['reflection'] === 'string' ? parsed['reflection'] : '';
-    const keyInsights = Array.isArray(parsed['key_insights'])
-      ? (parsed['key_insights'] as unknown[]).filter((i): i is string => typeof i === 'string')
-      : [];
-    const contradictions = Array.isArray(parsed['contradictions'])
-      ? (parsed['contradictions'] as unknown[]).filter((c): c is string => typeof c === 'string')
-      : [];
-    const reinforcedPatterns = Array.isArray(parsed['reinforced_patterns'])
-      ? (parsed['reinforced_patterns'] as unknown[]).filter((p): p is string => typeof p === 'string')
-      : [];
+    const parsed = safeParseLLMResponse(ReflectionResponseSchema, responseText);
+    const content = parsed.reflection;
+    const keyInsights = parsed.key_insights;
+    const contradictions = parsed.contradictions;
+    const reinforcedPatterns = parsed.reinforced_patterns;
 
     const sourceReflectionIds = reflections.rows.map((r) => r.id);
 

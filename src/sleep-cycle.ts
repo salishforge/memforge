@@ -11,6 +11,7 @@
 import type { Pool } from 'pg';
 import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
+import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
 import type { EmbeddingProvider } from './embedding.js';
 import type { SleepCycleConfig, SleepCycleResult, RevisionType } from './types.js';
 import type { AuditChain } from './audit.js';
@@ -306,18 +307,17 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     const estimatedOutputTokens = Math.ceil(responseText.length / 4);
     const totalTokens = estimatedInputTokens + estimatedOutputTokens;
 
-    // Parse response
-    let parsed: Record<string, unknown>;
+    // Parse and validate response
+    let parsed;
     try {
-      const cleaned = responseText.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      parsed = safeParseLLMResponse(RevisionResponseSchema, responseText);
     } catch {
-      log.error({ warmTierId: String(warmTierId) }, 'invalid JSON from revision LLM');
+      log.error({ warmTierId: String(warmTierId) }, 'invalid revision response from LLM');
       return totalTokens;
     }
 
-    const action = parsed['action'] as string;
-    const confidence = typeof parsed['confidence'] === 'number' ? parsed['confidence'] : 0.5;
+    const action = parsed.action;
+    const confidence = parsed.confidence;
 
     if (action === 'none') {
       // Memory is fine — bump confidence
@@ -328,9 +328,9 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
       return totalTokens;
     }
 
-    const revisedContent = parsed['revised_content'] as string;
-    const reason = (parsed['reason'] as string) ?? '';
-    const deltaSummary = (parsed['delta_summary'] as string) ?? '';
+    const revisedContent = parsed.revised_content;
+    const reason = parsed.reason;
+    const deltaSummary = parsed.delta_summary;
 
     if (!revisedContent) return totalTokens;
 

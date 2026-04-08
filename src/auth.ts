@@ -22,6 +22,16 @@ declare global {
 const INTROSPECT_URL =
   process.env['OAUTH2_INTROSPECT_URL'] ?? 'http://localhost:3005/oauth2/introspect';
 
+// Validate introspect URL at startup
+try {
+  const parsed = new URL(INTROSPECT_URL);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('must use http or https');
+  }
+} catch (err) {
+  throw new Error(`Invalid OAUTH2_INTROSPECT_URL: ${(err as Error).message}`);
+}
+
 const REQUIRED = process.env['OAUTH2_REQUIRED'] !== 'false';
 
 interface TokenInfo {

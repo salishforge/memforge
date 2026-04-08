@@ -164,11 +164,12 @@ export function createApp(deps: AppDependencies): express.Express {
 <head>
   <meta charset="UTF-8" />
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://unpkg.com; style-src https://unpkg.com; connect-src 'self'; img-src 'self' data:;" />
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css" />
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
   <script>
     SwaggerUIBundle({
       url: '${escapeJsString(specUrl)}',
@@ -829,6 +830,10 @@ export function createApp(deps: AppDependencies): express.Express {
       fail(res, 400, '"targetTable" must be one of: warm_tier, entities, relationships, reflections, procedures');
       return;
     }
+    if (!/^\d+$/.test(targetId)) {
+      fail(res, 400, '"targetId" must be a numeric ID');
+      return;
+    }
 
     try {
       const history = await auditChain.history(getAgentId(req), targetTable, BigInt(targetId));
@@ -851,6 +856,10 @@ export function createApp(deps: AppDependencies): express.Express {
     const targetId = req.params['targetId'] ?? '';
     const t = req.query['t'] as string | undefined;
 
+    if (!/^\d+$/.test(targetId)) {
+      fail(res, 400, '"targetId" must be a numeric ID');
+      return;
+    }
     if (!t) {
       fail(res, 400, '"t" query param (ISO 8601 timestamp) is required');
       return;

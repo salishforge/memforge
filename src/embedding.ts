@@ -3,6 +3,8 @@
 // Pluggable interface for generating vector embeddings.
 // Ships with OpenAI-compatible, Ollama, and no-op providers.
 
+import { validateProviderUrl } from './schemas.js';
+
 export interface EmbeddingProvider {
   /** Generate an embedding vector for the given text. */
   embed(text: string): Promise<number[]>;
@@ -34,7 +36,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
 
   constructor(config: OpenAIEmbeddingConfig = {}) {
-    this.baseUrl = (config.baseUrl ?? process.env['OPENAI_API_BASE_URL'] ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OPENAI_API_BASE_URL'] ?? 'https://api.openai.com/v1', 'OpenAI Embedding');
     this.apiKey = config.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '1536', 10);
@@ -98,7 +100,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
 
   constructor(config: OllamaEmbeddingConfig = {}) {
-    this.baseUrl = (config.baseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434').replace(/\/$/, '');
+    this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434', 'Ollama Embedding', true);
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'nomic-embed-text';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '768', 10);
   }

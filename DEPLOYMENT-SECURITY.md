@@ -583,6 +583,7 @@ Copy and check off before going live:
 - [ ] `DATABASE_URL` includes `?sslmode=require` (or `verify-full`)
 - [ ] `REDIS_URL` includes AUTH password: `redis://:password@host:6379`
 - [ ] `migration-v2.2.sql` applied (audit chain tables and `content_hash` column)
+- [ ] `migration-v2.3.sql` applied (RLS policies, audit delete trigger, statement timeout)
 - [ ] Reverse proxy with TLS termination in front of MemForge (nginx or Caddy)
 - [ ] MemForge port (3333) not exposed on public network interface
 - [ ] PostgreSQL not reachable from public network; TLS enabled; dedicated app role created
