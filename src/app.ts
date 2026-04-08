@@ -266,10 +266,11 @@ export function createApp(deps: AppDependencies): express.Express {
    * POST /memory/:agentId/add
    */
   app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { content, metadata, outcome_type } = req.body as {
+    const { content, metadata, outcome_type, hints } = req.body as {
       content?: string;
       metadata?: Record<string, unknown>;
       outcome_type?: string;
+      hints?: Record<string, unknown>;
     };
 
     if (!content || typeof content !== 'string') {
@@ -299,7 +300,7 @@ export function createApp(deps: AppDependencies): express.Express {
     };
 
     try {
-      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral');
+      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral', hints as import('./types.js').MemoryHints | undefined);
       void invalidateAgent(getAgentId(req));
       ok(res, {
         ...result,

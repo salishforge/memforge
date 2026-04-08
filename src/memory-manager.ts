@@ -45,6 +45,7 @@ import type {
   ActiveMemoryResult,
   ResumeContext,
   OutcomeType,
+  MemoryHints,
 } from './types.js';
 
 const DEFAULTS: MemForgeConfig = {
@@ -69,6 +70,29 @@ const DEFAULTS: MemForgeConfig = {
 };
 
 const MAX_TOKEN_BUDGET = 200_000;
+
+// Preference pattern extraction — inspired by MemPalace (MIT)
+const PREFERENCE_PATTERNS: RegExp[] = [
+  /I (?:always |usually |typically )?prefer\s+(.{5,80})/i,
+  /I (?:always |usually )?use\s+(.{5,80}?)[.!,]/i,
+  /I (?:don'?t |never )?like\s+(.{5,80}?)[.!,]/i,
+  /I find (.{5,40}) (?:more |better|easier)/i,
+  /I (?:always |usually )?go with\s+(.{5,60})/i,
+  /my (?:preferred|favorite|go-to) (?:\w+ )?is\s+(.{5,60})/i,
+  /I tend to (?:use|choose|pick)\s+(.{5,60})/i,
+  /I(?:'m| am) (?:a fan of|partial to)\s+(.{5,60})/i,
+  /I (?:would rather|'d rather)\s+(.{5,60})/i,
+  /(?:I )?(?:switched|moved|migrated) (?:to|from)\s+(.{5,60})/i,
+  /I(?:'ve| have) been using\s+(.{5,60})/i,
+  /I recommend\s+(.{5,60})/i,
+];
+
+// Update/correction detection patterns
+const CORRECTION_PATTERNS: RegExp[] = [
+  /(?:changed|updated|switched|migrated|moved)\s+(?:from\s+)?(.{3,40})\s+to\s+(.{3,40})/i,
+  /(?:no longer|not anymore|stopped)\s+(?:using|doing)\s+(.{3,60})/i,
+  /(?:now uses?|now with|replaced .+ with)\s+(.{3,60})/i,
+];
 
 /** Escape PostgreSQL LIKE/ILIKE wildcard characters in user input. */
 function escapeLike(input: string): string {
@@ -119,6 +143,7 @@ export class MemoryManager {
     content: string,
     metadata: Record<string, unknown> = {},
     outcomeType: OutcomeType = 'neutral',
+    hints?: MemoryHints,
   ): Promise<AddResult> {
     if (!agentId || typeof agentId !== 'string') {
       throw new TypeError('agentId must be a non-empty string');
@@ -144,10 +169,33 @@ export class MemoryManager {
       return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
     }
 
-    // Store outcome_type in metadata so it propagates to warm_tier during consolidation
-    const enrichedMetadata = outcomeType !== 'neutral'
-      ? { ...metadata, _outcome_type: outcomeType }
-      : metadata;
+    // Build enriched metadata from outcome_type and agent-provided hints
+    const enrichedMetadata: Record<string, unknown> = { ...metadata };
+    if (outcomeType !== 'neutral') enrichedMetadata['_outcome_type'] = outcomeType;
+    if (hints) {
+      if (hints.importance !== undefined) enrichedMetadata['_hint_importance'] = Math.min(1, Math.max(0, hints.importance));
+      if (hints.topic) enrichedMetadata['_hint_topic'] = String(hints.topic).slice(0, 200);
+      if (hints.entities?.length) enrichedMetadata['_hint_entities'] = hints.entities.slice(0, 20).map((e) => String(e).slice(0, 200));
+      if (hints.retention) enrichedMetadata['_hint_retention'] = hints.retention;
+      if (hints.type) enrichedMetadata['_hint_type'] = hints.type;
+      if (hints.supersedes) enrichedMetadata['_hint_supersedes'] = String(hints.supersedes);
+    }
+
+    // Preference pattern extraction — inspired by MemPalace (MIT) preference regex approach
+    const preferences: string[] = [];
+    for (const pattern of PREFERENCE_PATTERNS) {
+      const match = pattern.exec(content);
+      if (match?.[1]) preferences.push(match[1].trim());
+    }
+    if (preferences.length > 0) enrichedMetadata['_preferences'] = preferences;
+
+    // Correction detection
+    for (const pattern of CORRECTION_PATTERNS) {
+      if (pattern.test(content)) {
+        enrichedMetadata['_correction_detected'] = true;
+        break;
+      }
+    }
 
     const { rows } = await this.pool.query<AddResult>(
       `INSERT INTO hot_tier (agent_id, content, metadata, content_hash)
@@ -156,7 +204,72 @@ export class MemoryManager {
       [agentId, content, JSON.stringify(enrichedMetadata), contentHash],
     );
 
-    return rows[0]!;
+    const result = rows[0]!;
+
+    // Async post-ingest: supersession handling
+    if (hints?.supersedes) {
+      void this.pool.query(
+        `UPDATE warm_tier SET confidence = LEAST(confidence, 0.3),
+           metadata = metadata || '{"_superseded": true}'::jsonb
+         WHERE id = $1 AND agent_id = $2`,
+        [hints.supersedes, agentId],
+      ).catch((err) => log.error({ err }, 'supersession failed'));
+    }
+
+    // Async post-ingest: similarity scan + entity extraction (fire-and-forget)
+    if (this.embeddingsEnabled) {
+      void this.postIngestAnalysis(agentId, result.id, content).catch((err) =>
+        log.error({ err }, 'post-ingest analysis failed'),
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Async post-ingest analysis: embed content, find similar warm-tier memories,
+   * extract entities via regex. Results stored back in hot-tier metadata.
+   */
+  private async postIngestAnalysis(agentId: string, hotRowId: bigint, content: string): Promise<void> {
+    // Embed and find most similar warm-tier memory
+    const embedding = await this.embedder.embed(content);
+    if (embedding.length > 0) {
+      const vectorLiteral = `[${embedding.join(',')}]`;
+      const similar = await this.pool.query<{ id: bigint; content: string }>(
+        `SELECT id, LEFT(content, 200) as content FROM warm_tier
+         WHERE agent_id = $1 AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2::vector LIMIT 1`,
+        [agentId, vectorLiteral],
+      );
+      if (similar.rows[0]) {
+        void this.pool.query(
+          `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
+          [hotRowId, JSON.stringify({ _similar_to: String(similar.rows[0].id) })],
+        ).catch(() => {});
+      }
+    }
+
+    // Regex entity extraction: proper nouns, @mentions, file paths
+    const entityPatterns = [
+      /\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+\b/g,  // Multi-word proper nouns
+      /@[\w.-]+/g,                               // @mentions
+      /(?:\/[\w.-]+){2,}/g,                     // File paths
+    ];
+    const extractedEntities: string[] = [];
+    for (const pattern of entityPatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null && extractedEntities.length < 10) {
+        if (match[0] && !extractedEntities.includes(match[0])) {
+          extractedEntities.push(match[0]);
+        }
+      }
+    }
+    if (extractedEntities.length > 0) {
+      void this.pool.query(
+        `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
+        [hotRowId, JSON.stringify({ _extracted_entities: extractedEntities })],
+      ).catch(() => {});
+    }
   }
 
   // ─── query ────────────────────────────────────────────────────────────────
