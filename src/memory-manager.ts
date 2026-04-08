@@ -223,7 +223,45 @@ export class MemoryManager {
       );
     }
 
+    // Optional LLM-assisted ingest analysis (opt-in via ENABLE_LLM_INGEST=true)
+    if (this.config.enableLlmIngest && this.llm) {
+      void this.llmIngestAnalysis(agentId, result.id, content).catch((err) =>
+        log.error({ err }, 'LLM ingest analysis failed'),
+      );
+    }
+
     return result;
+  }
+
+  /**
+   * Optional LLM-assisted ingest analysis. Classifies memory type, extracts
+   * entities, detects contradictions. Activated by ENABLE_LLM_INGEST=true.
+   * Adds ~500 tokens per add() call.
+   */
+  private async llmIngestAnalysis(agentId: string, hotRowId: bigint, content: string): Promise<void> {
+    if (!this.llm) return;
+
+    const response = await this.llm.chat(
+      'You classify memories for an AI agent. Respond with ONLY valid JSON.',
+      `Classify this memory:\n\n${wrapUserContent('memory', content.slice(0, 2000))}\n\nJSON format: {"type":"fact|event|decision|preference|correction|error","entities":["name1","name2"],"importance":0.0-1.0}`,
+    );
+
+    try {
+      const cleaned = response.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+      const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      const updates: Record<string, unknown> = {};
+      if (typeof parsed['type'] === 'string') updates['_llm_type'] = parsed['type'];
+      if (Array.isArray(parsed['entities'])) updates['_llm_entities'] = parsed['entities'].slice(0, 10);
+      if (typeof parsed['importance'] === 'number') updates['_llm_importance'] = Math.min(1, Math.max(0, parsed['importance']));
+      if (Object.keys(updates).length > 0) {
+        await this.pool.query(
+          `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
+          [hotRowId, JSON.stringify(updates)],
+        );
+      }
+    } catch {
+      // LLM returned non-JSON — skip silently
+    }
   }
 
   /**
@@ -269,6 +307,61 @@ export class MemoryManager {
         `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
         [hotRowId, JSON.stringify({ _extracted_entities: extractedEntities })],
       ).catch(() => {});
+    }
+  }
+
+  /**
+   * Optional LLM-based reranking of retrieval results.
+   * Activated by ENABLE_LLM_RERANK=true. Sends top results + question to LLM
+   * for relevance-based reordering. Adds ~2K tokens per query.
+   */
+  private async rerankWithLlm(question: string, results: QueryResult[]): Promise<QueryResult[]> {
+    if (!this.llm || results.length <= 1) return results;
+
+    const numbered = results
+      .slice(0, 20) // Cap at 20 for token efficiency
+      .map((r, i) => `[${i + 1}] ${r.content.slice(0, 300)}`)
+      .join('\n\n');
+
+    const prompt = `Given this question: "${question}"
+
+Rank these memory excerpts by relevance to the question. Return ONLY a comma-separated list of numbers in order of relevance (most relevant first).
+
+${numbered}
+
+Ranking (numbers only):`;
+
+    try {
+      const response = await this.llm.chat(
+        'You are a relevance ranking engine. Return only comma-separated numbers.',
+        prompt,
+      );
+      const rankOrder = response.match(/\d+/g)?.map(Number) ?? [];
+      if (rankOrder.length === 0) return results;
+
+      const reranked: QueryResult[] = [];
+      const seen = new Set<number>();
+      for (const idx of rankOrder) {
+        const i = idx - 1; // 1-indexed to 0-indexed
+        if (i >= 0 && i < results.length && !seen.has(i)) {
+          const r = results[i];
+          if (r) {
+            reranked.push({ ...r, rank: results.length - reranked.length });
+            seen.add(i);
+          }
+        }
+      }
+      // Append any results not mentioned in the ranking
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (!seen.has(i) && r) {
+          reranked.push(r);
+        }
+      }
+      return reranked;
+    } catch (err) {
+      log.error({ err }, 'LLM reranking failed, returning original order');
+      return results;
     }
   }
 
@@ -346,6 +439,11 @@ export class MemoryManager {
         return { ...r, rank: r.rank * (1 + boost) };
       });
       results.sort((a, b) => b.rank - a.rank);
+    }
+
+    // Optional LLM reranking (opt-in via ENABLE_LLM_RERANK=true)
+    if (this.config.enableLlmRerank && this.llm && results.length > 1) {
+      results = await this.rerankWithLlm(opts.q, results);
     }
 
     // Log retrieval events and update access counts (fire-and-forget)
