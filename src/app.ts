@@ -365,6 +365,12 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
+    const maxTokensNum = maxTokens !== undefined ? parseInt(maxTokens as string, 10) : undefined;
+    if (maxTokensNum !== undefined && (isNaN(maxTokensNum) || maxTokensNum < 1)) {
+      fail(res, 400, '"max_tokens" must be a positive integer');
+      return;
+    }
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -373,8 +379,8 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    // Cache key includes all query parameters
-    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}`;
+    // Cache key includes all query parameters (including max_tokens to prevent budget mismatch)
+    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}`;
     const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
     const cached = await cacheGet(key);
     if (cached !== null) {
@@ -393,7 +399,7 @@ export function createApp(deps: AppDependencies): express.Express {
         after: afterDate,
         before: beforeDate,
         decayRate,
-        maxTokens: maxTokens !== undefined ? parseInt(maxTokens as string, 10) : undefined,
+        maxTokens: maxTokensNum,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
