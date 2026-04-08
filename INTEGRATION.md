@@ -89,9 +89,14 @@ Record what happened so the agent can learn from it:
 // Store the interaction
 await client.add(agentId, `User asked: ${userMessage}\nAgent responded: ${response}`);
 
-// If you know the outcome was good or bad, record feedback
+// Optionally pass hints to bias future retrieval for this content
+await client.add(agentId, 'User prefers dark mode', {
+  hints: { keywords: ['dark mode', 'ui preferences'], entities: ['User'] },
+});
+
+// If you know the outcome was good or bad, record feedback with structured tags
 // (retrievalIds come from Step 1's query results)
-await client.feedback(agentId, retrievalIds, 'positive');
+await client.feedback(agentId, retrievalIds, 'positive', ['task_completed']);
 ```
 
 ### Step 4: Sleep (when the agent is idle)
@@ -107,6 +112,101 @@ await client.sleep(agentId, { tokenBudget: 50000 });
 ```
 
 This can be triggered by a cron job, an idle timer, or manually. See the [Scheduling Sleep Cycles](README.md#scheduling-sleep-cycles) section in the README.
+
+---
+
+## Active Ingest
+
+Starting in v2.2.0, agents can participate directly in their own memory management rather than being passive content producers. Active ingest has four mechanisms:
+
+### 1. Hints API
+
+Submit retrieval hints that bias future search scoring for an agent — without writing a memory:
+
+```typescript
+// REST
+curl -X POST http://localhost:3333/memory/agent-1/hints \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keywords": ["authentication", "OAuth2", "JWT"],
+    "entities": ["AuthService", "User"],
+    "temporalAnchor": "2026-04-08T00:00:00Z"
+  }'
+
+// TypeScript SDK
+await client.hints(agentId, {
+  keywords: ['authentication', 'OAuth2'],
+  entities: ['AuthService'],
+});
+```
+
+Hints persist for the duration of the next sleep cycle and are incorporated into importance scoring. Use them when you know what's relevant but don't want to store a full memory event.
+
+### 2. Preference Extraction
+
+When `ENABLE_LLM_INGEST=true`, consolidation automatically extracts user preferences from stored content and tags them for priority retrieval. No code changes needed — enable the feature flag and preferences are detected and weighted automatically.
+
+### 3. Supersession
+
+Mark a prior memory as superseded when storing a newer version:
+
+```typescript
+await client.add(agentId, 'User now prefers light mode (changed from dark mode)', {
+  supersedesId: previousMemoryId,
+});
+```
+
+The superseded memory's confidence decays and its graph edges are invalidated during the next sleep cycle. Useful when an agent knows an earlier fact is now stale.
+
+### 4. Entity Detection at Ingest
+
+When `ENABLE_LLM_INGEST=true`, named entities are extracted from content at write time and linked to the knowledge graph immediately, without waiting for consolidation. Useful for time-sensitive graph queries.
+
+---
+
+## Agent Resumption
+
+When an agent loses its context window (conversation reset, restart, or failover), the resume endpoint provides a compact context bundle for fast warm-start:
+
+```bash
+GET /memory/:agentId/resume
+```
+
+Returns:
+- **recent** — Last 5 warm-tier memories (most recent first)
+- **entities** — Top active entities from the knowledge graph
+- **procedures** — All active condition→action rules
+- **latestReflection** — Most recent reflection, if any
+
+```typescript
+// TypeScript SDK
+const ctx = await client.resume(agentId);
+
+// Inject into new system prompt
+const systemPrompt = `
+You are resuming after a context reset.
+
+Recent memories:
+${ctx.recent.map(m => m.content).join('\n')}
+
+Active entities: ${ctx.entities.map(e => e.name).join(', ')}
+
+Learned rules:
+${ctx.procedures.map(p => `- When ${p.condition}: ${p.action}`).join('\n')}
+`;
+```
+
+```python
+# Python / REST
+r = httpx.get(
+    f"{MEMFORGE_URL}/memory/{AGENT_ID}/resume",
+    headers=headers,
+    timeout=5.0,
+)
+ctx = r.json()["data"]
+recent_memories = [m["content"] for m in ctx["recent"]]
+```
 
 ---
 
@@ -148,9 +248,38 @@ const memory = new MemForgeClient({
 
 await memory.add('my-agent', 'User prefers dark mode');
 const results = await memory.query('my-agent', { q: 'user preferences' });
+
+// v2.2.0 additions
+await memory.hints('my-agent', { keywords: ['dark mode'], entities: ['User'] });
+const ctx = await memory.resume('my-agent');
+await memory.feedback('my-agent', [id], 'positive', ['task_completed']);
 ```
 
 **Use when:** Your agent is TypeScript/JavaScript and you want type-safe access.
+
+**Full client method list (v2.2.0):**
+
+| Method | Description |
+|--------|-------------|
+| `add(agentId, content, opts?)` | Store a memory event. `opts.hints`, `opts.supersedesId` supported. |
+| `query(agentId, params)` | Search warm-tier memory |
+| `consolidate(agentId, mode?)` | Trigger hot→warm consolidation |
+| `timeline(agentId, params?)` | Retrieve memories chronologically |
+| `stats(agentId)` | Tier statistics |
+| `clear(agentId)` | Archive to cold tier |
+| `sleep(agentId, opts?)` | Run a full sleep cycle |
+| `health(agentId)` | Memory health metrics |
+| `reflect(agentId)` | Trigger LLM reflection |
+| `reflections(agentId)` | List stored reflections |
+| `metaReflect(agentId)` | Second-order reflection |
+| `procedures(agentId)` | List learned condition→action rules |
+| `entities(agentId, params?)` | Search knowledge graph entities |
+| `graph(agentId, entity)` | Traverse graph from an entity |
+| `deduplicateEntities(agentId)` | Merge duplicate entities |
+| `feedback(agentId, ids, outcome, tags?)` | Record retrieval outcome feedback |
+| `activeRecall(agentId, context)` | Proactively surface relevant memories |
+| `hints(agentId, hints)` | Submit retrieval hints (v2.2.0) |
+| `resume(agentId)` | Get warm-start context bundle (v2.2.0) |
 
 ### Option C: MCP Tools (Claude Code, Cursor, MCP-compatible tools)
 

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Node.js** >= 20 (tested with 22)
+- **Node.js** >= 22
 - **PostgreSQL** 16+ with extensions:
   - `pgvector` — vector similarity search
   - `pg_trgm` — trigram fuzzy matching (used for entity dedup and search fallback)
@@ -27,14 +27,24 @@ createdb memforge
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS vector;"
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
-# Apply schema
+# Apply schema (fresh install)
 psql memforge -f schema/schema.sql
 
-# If upgrading, apply migrations in order:
+# If upgrading from v2.1.x, apply migrations in order:
+psql memforge -f schema/migration-v2.2.sql   # dedup, confidence graduation, outcome tagging
+psql memforge -f schema/migration-v2.3.sql   # RLS policies (requires superuser)
+psql memforge -f schema/migration-v2.4.sql   # hints table, supersession, weight adaptation
+
+# Full migration sequence from v1.x:
 psql memforge -f schema/migration-v1.2.sql
 psql memforge -f schema/migration-v1.3.sql
-# ... etc
+psql memforge -f schema/migration-v1.4.sql
+psql memforge -f schema/migration-v1.6.sql
+psql memforge -f schema/migration-v2.0.sql
 psql memforge -f schema/migration-v2.1.sql
+psql memforge -f schema/migration-v2.2.sql
+psql memforge -f schema/migration-v2.3.sql
+psql memforge -f schema/migration-v2.4.sql
 ```
 
 ### Environment
@@ -75,6 +85,11 @@ Tests use Node.js built-in `node:test` runner with `tsx` for TypeScript executio
 npm test                  # All tests
 npm run test:integration  # Database tests (requires PostgreSQL)
 npm run test:cache        # Cache tests (requires Redis)
+npm run test:llm          # Mock LLM path tests (no API keys needed)
+npm run test:http         # HTTP API endpoint tests (in-process, no port binding)
+npm run test:load         # Load tests (p95 latency targets)
+npm run test:security     # Security / input-validation tests
+npm run benchmark         # LongMemEval harness (requires dataset in benchmarks/data/)
 ```
 
 ### Integration Tests
@@ -94,17 +109,37 @@ npm run test:cache        # Cache tests (requires Redis)
 | Active recall | Memory+procedure surfacing, empty context rejection |
 | Memory health | All metric fields present and typed |
 | Input validation | Empty agentId, empty content, empty query |
+| Hints API | Hint submission, retrieval influence |
+| Agent resumption | Context bundle fields, empty-state handling |
+| Content dedup | Near-duplicate suppression at ingest |
 
-### What's NOT Tested (Gaps)
+### Mock LLM Tests (`tests/llm-mock.test.ts`)
 
-These require LLM calls and need mocked providers:
+Tests all LLM-dependent paths using an in-process mock provider — no API keys required:
 
-- **Summarize consolidation** — LLM-driven distillation, entity/relationship extraction
-- **Reflection** — LLM synthesis of insights, contradiction detection
-- **Meta-reflection** — Second-order reflection synthesis
-- **Sleep cycle Phase 3** — LLM memory revision (augment/correct/merge/compress)
-- **Procedural extraction** — LLM extraction of condition→action rules
-- **Semantic/hybrid search** — Requires embedding provider
+- **Summarize consolidation** — entity/relationship extraction, summary format
+- **Reflection** — insight synthesis, contradiction detection
+- **Meta-reflection** — second-order synthesis from multiple reflections
+- **Sleep cycle Phase 3** — revision decisions (augment/correct/merge/compress/leave)
+- **Procedural extraction** — condition→action rule format
+
+### HTTP API Tests (`tests/http.test.ts`)
+
+Exercises all 18 REST endpoints via supertest against the `createApp()` factory. Covers:
+- Authentication (valid token, missing token, wrong token)
+- Zod validation errors (400 responses with structured messages)
+- Route-level error propagation (404, 500)
+
+### Load Tests (`tests/load.test.ts`)
+
+Validates p95 latency targets under 50 concurrent requests:
+- Query endpoint: p95 < 100 ms
+- Add endpoint: p95 < 50 ms
+
+### What's Still NOT Tested
+
+- **Semantic/hybrid search** — Requires a live embedding provider (no mock yet)
+- **RLS enforcement** — Requires Postgres running with per-agent roles configured
 
 ### Writing Tests
 
@@ -150,6 +185,69 @@ const mockLlm: LLMProvider = {
   },
 };
 ```
+
+## Configuration Reference
+
+All configuration is via environment variables. Copy `.env.example` to `.env` to start.
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string, e.g. `postgresql://localhost:5432/memforge` |
+
+### LLM Providers
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `none` | `anthropic`, `openai`, `ollama`, or `none` |
+| `ANTHROPIC_API_KEY` | — | Required when `LLM_PROVIDER=anthropic` |
+| `OPENAI_API_KEY` | — | Required when `LLM_PROVIDER=openai` (also used for embeddings) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
+| `LLM_MODEL` | provider default | Model name override |
+| `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
+| `EMBEDDING_PROVIDER` | `none` | `openai`, `ollama`, or `none` |
+| `EMBEDDING_MODEL` | provider default | Embedding model name override |
+| `CONSOLIDATION_MODE` | `concat` | `concat` (fast, no LLM) or `summarize` (LLM-driven) |
+
+### Retrieval Tuning
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KEYWORD_OVERLAP_BOOST` | `0.3` | Score boost applied when query tokens overlap memory keywords |
+| `TEMPORAL_PROXIMITY_DAYS` | `7` | Days window for temporal proximity scoring boost |
+| `CONSOLIDATION_INNER_BATCH_SIZE` | `50` | Hot-tier rows processed per inner consolidation loop |
+| `TEMPORAL_DECAY_RATE` | `0` | Score decay per hour for older memories (0 = disabled) |
+
+### LLM Opt-In Features
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_LLM_RERANK` | `false` | Enable LLM post-retrieval reranking of top-k results |
+| `ENABLE_LLM_INGEST` | `false` | Enable LLM entity/tag extraction at write time |
+
+### Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMFORGE_TOKEN` | required | Bearer token for all `/memory/*` routes |
+| `ADMIN_TOKEN` | (open) | Bearer token for `/admin/*` routes |
+| `AUDIT_HMAC_KEY` | — | HMAC key for audit chain integrity (required in production) |
+| `OAUTH2_REQUIRED` | `false` | Require OAuth2 JWT on all `/memory/*` routes |
+| `OAUTH2_JWKS_URI` | — | JWKS endpoint URI when `OAUTH2_REQUIRED=true` |
+| `OAUTH2_AUDIENCE` | — | Expected JWT audience when `OAUTH2_REQUIRED=true` |
+| `ALLOWED_LLM_HOSTS` | (none) | Comma-separated allowlist for outbound LLM/embedding hosts (SSRF prevention) |
+
+### Operations
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3333` | HTTP listen port |
+| `LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error` |
+| `REDIS_URL` | `redis://localhost:6379` | Redis URL (optional — graceful degradation if absent) |
+| `DB_POOL_MAX` | `10` | PostgreSQL connection pool size |
+| `RATE_LIMIT_MAX` | `100` | Max requests per minute per IP (0 = disabled) |
+| `SLEEP_CYCLE_TOKEN_BUDGET` | `100000` | Max tokens consumed per sleep cycle |
 
 ## Architecture Overview
 

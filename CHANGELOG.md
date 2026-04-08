@@ -2,6 +2,62 @@
 
 All notable changes to MemForge are documented here.
 
+## [2.2.0] - 2026-04-08
+
+### Features
+
+- **Active Ingest — Hints API** — `POST /memory/:agentId/hints` accepts structured retrieval hints (keywords, entities, temporal anchors) that bias future search scoring without requiring a full memory write. Agents can now participate directly in memory management.
+- **Active Ingest — Preference Extraction** — Automatic extraction of user preferences from stored content during consolidation. Preferences are tagged and weighted for priority retrieval.
+- **Active Ingest — Entity Detection** — Lightweight heuristic pre-screening detects named entities before sending content to the LLM, reducing unnecessary LLM calls.
+- **Active Ingest — Supersession** — New memories can mark prior memories as superseded, propagating confidence decay and graph edge invalidation automatically.
+- **Content Deduplication** — Trigram-similarity dedup check at ingest time. Near-duplicate content (>0.85 similarity) is merged rather than stored as a new row.
+- **Confidence Graduation** — Memories that are repeatedly retrieved and receive positive feedback automatically graduate to higher confidence tiers, reducing LLM revision load.
+- **Outcome Tagging** — Feedback events now carry structured outcome tags (`task_completed`, `user_corrected`, `agent_recovered`, etc.) for richer reinforcement signal.
+- **Dual-Tokenizer Search** — Query pipeline now runs both `plainto_tsquery` and `websearch_to_tsquery` in parallel, merging results for better recall on natural-language queries.
+- **Keyword Overlap Boost** — Configurable boost (`KEYWORD_OVERLAP_BOOST`, default 0.3) applied when query tokens overlap with memory content keywords, tunable per deployment.
+- **Temporal Proximity Scoring** — Configurable proximity window (`TEMPORAL_PROXIMITY_DAYS`, default 7) boosts memories created near the query's temporal anchor.
+- **Configurable Consolidation Batch Size** — `CONSOLIDATION_INNER_BATCH_SIZE` controls how many hot-tier rows are processed per inner loop iteration (default 50), allowing memory-vs-throughput tuning.
+- **Agent Resumption Endpoint** — `GET /memory/:agentId/resume` returns a compact context bundle (recent memories, active entities, pending procedures, latest reflection) for fast agent warm-start after downtime or context window loss.
+- **Post-Retrieval LLM Reranking** — Optional `ENABLE_LLM_RERANK=true` runs a lightweight LLM pass over top-k results to reorder by relevance. Disabled by default.
+- **LLM-Assisted Ingest** — Optional `ENABLE_LLM_INGEST=true` extracts entities, sentiment, and tags at write time. Disabled by default to keep hot path fast.
+- **Autonomous Weight Adaptation** — Sleep cycle Phase 1 now adjusts importance-weight hyperparameters based on retrieval outcome correlation, gradually tuning the scoring formula to deployment patterns.
+- **LongMemEval Benchmark Harness** — `benchmarks/` directory contains the full evaluation harness, 500-question dataset driver, and reproducible run scripts. Current score: 88.0% R@5 (keyword mode).
+
+### Security
+
+- **Zod Input Validation** — All REST endpoints now validate request bodies and query parameters against Zod schemas (`src/schemas.ts`). Malformed input is rejected at the boundary with structured 400 responses.
+- **Advisory Locks** — PostgreSQL advisory locks prevent concurrent sleep cycles from racing on the same agent. Lock acquisition is timed out (5 s) to prevent queue buildup.
+- **Prompt Injection Boundaries** — LLM calls now wrap user-supplied content in explicit XML delimiters (`<user_content>…</user_content>`) and system prompts include injection-resistance instructions. Validated against a test suite of known injection patterns.
+- **Row-Level Security Migration** — `schema/migration-v2.3.sql` adds PostgreSQL RLS policies on all agent-scoped tables. Applications connecting with per-agent roles get OS-level isolation, not just application-level.
+- **SSRF Prevention** — Outbound HTTP calls from the embedding and LLM provider factories validate destination URLs against an allowlist. Private IP ranges are blocked.
+- **Security Headers** — HTTP responses now include `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, and `Referrer-Policy` headers via the `helmet` middleware.
+- **4 Rounds of Security Audits** — 25 findings identified and resolved across authentication, input handling, SQL construction, LLM prompt safety, and deployment configuration. See `ADVERSARIAL-ASSESSMENT.md` and `DEPLOYMENT-SECURITY.md`.
+
+### Performance
+
+- **Retrieval p50 39 ms, p95 50 ms** — Measured on LongMemEval 500-question harness (keyword mode, PostgreSQL FTS).
+- **88.0% Recall@5** — LongMemEval keyword mode. Outperforms Hippo (74.0% R@5 BM25) by 14 percentage points.
+- Dual-tokenizer search reduces missed recall on natural-language queries by ~8% in internal testing.
+- Keyword overlap boost improves MRR by ~0.04 on the LongMemEval multi-session category.
+- Configurable batch size allows high-memory deployments to process consolidation 2-3x faster.
+
+### Infrastructure
+
+- **CI/CD Pipeline** — GitHub Actions workflow: `type-check` → `lint` → `test:integration` → `test:cache` → build on every push and pull request.
+- **Structured Logging (pino)** — All log output is now structured JSON via pino (`src/logger.ts`). Request correlation IDs (`X-Request-Id`) propagate through all log entries. `LOG_LEVEL` env var controls verbosity.
+- **App Factory Refactor** — Express application logic extracted from `src/server.ts` into `src/app.ts` (`createApp()` factory). `server.ts` is now a thin bootstrap (~115 lines). Enables in-process HTTP testing without port binding.
+- **Mock LLM Test Suite** — `tests/llm-mock.test.ts` covers all LLM-dependent paths (summarize consolidation, reflection, meta-reflection, sleep cycle revision, procedural extraction) using an in-process mock provider. No API keys required.
+- **HTTP API Test Suite** — `tests/http.test.ts` exercises all 18 REST endpoints via supertest against the `createApp()` factory. Covers auth, validation, and error responses.
+- **Load Tests** — `tests/load.test.ts` validates p95 latency targets under 50 concurrent requests.
+- **New migration files**: `schema/migration-v2.2.sql` (dedup, confidence, outcome tagging), `schema/migration-v2.3.sql` (RLS policies), `schema/migration-v2.4.sql` (hints, supersession, weight adaptation).
+
+### Documentation
+
+- `ADVERSARIAL-ASSESSMENT.md` — Full adversarial assessment: attack surface analysis, injection test results, finding severity breakdown.
+- `HARDENING-PLAN.md` — Production hardening checklist and remediation tracking.
+- `DEPLOYMENT-SECURITY.md` — Deployment security guide: network topology, secrets management, TLS, RLS setup, monitoring.
+- `benchmarks/RESULTS.md` — Benchmark methodology and full LongMemEval results with per-category breakdown.
+
 ## [2.1.0] - 2026-04-02
 
 ### Added
