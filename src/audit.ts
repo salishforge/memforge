@@ -353,38 +353,44 @@ export class AuditChain {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - this.config.retentionDays);
 
-    if (this.config.archiveOnExpiry) {
-      // Move to cold_audit (preserving hashes for historical verification)
-      const { rowCount: archived } = await this.pool.query(
-        `WITH expired AS (
-           SELECT * FROM audit_chain
-           WHERE agent_id = $1 AND created_at < $2
-           AND valid_until IS NOT NULL  -- only archive closed records
-         ),
-         moved AS (
-           INSERT INTO cold_audit
-             (agent_id, target_table, target_id, operation, valid_from, valid_until,
-              content_hash, chain_hash, triggered_by, original_created_at)
-           SELECT agent_id, target_table, target_id, operation, valid_from, valid_until,
-                  content_hash, chain_hash, triggered_by, created_at
-           FROM expired
-           RETURNING id
-         )
-         DELETE FROM audit_chain
+    if (!this.config.archiveOnExpiry) {
+      log.warn('archiveOnExpiry=false is deprecated — records will always be archived to cold_audit before deletion');
+    }
+
+    // Always archive to cold_audit before deleting (preserving hashes for historical verification)
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rowCount: archived } = await client.query(
+        `INSERT INTO cold_audit
+           (agent_id, target_table, target_id, operation, valid_from, valid_until,
+            content_hash, chain_hash, triggered_by, original_created_at)
+         SELECT agent_id, target_table, target_id, operation, valid_from, valid_until,
+                content_hash, chain_hash, triggered_by, created_at
+         FROM audit_chain
          WHERE agent_id = $1 AND created_at < $2
          AND valid_until IS NOT NULL`,
         [agentId, cutoff],
       );
-      return { archived: archived ?? 0, pruned: 0 };
-    } else {
-      // Just delete expired closed records
-      const { rowCount: pruned } = await this.pool.query(
+
+      // Set session variable so the audit_chain_no_delete trigger allows this deletion
+      await client.query("SET LOCAL memforge.archive_in_progress = 'true'");
+
+      await client.query(
         `DELETE FROM audit_chain
          WHERE agent_id = $1 AND created_at < $2
          AND valid_until IS NOT NULL`,
         [agentId, cutoff],
       );
-      return { archived: 0, pruned: pruned ?? 0 };
+
+      await client.query('COMMIT');
+      return { archived: archived ?? 0, pruned: 0 };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
   }
 }

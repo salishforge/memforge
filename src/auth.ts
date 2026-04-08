@@ -4,6 +4,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { createHash } from 'crypto';
 import { getLogger } from './logger.js';
+import { OAuthIntrospectSchema } from './schemas.js';
+import type { ValidatedOAuthIntrospect } from './schemas.js';
 
 const log = getLogger('auth');
 
@@ -77,7 +79,7 @@ export async function bearerAuth(
   }
 
   // Introspect
-  let data: { active: boolean; client_id: string; scope: string };
+  let data: ValidatedOAuthIntrospect;
   try {
     const response = await fetch(INTROSPECT_URL, {
       method: 'POST',
@@ -85,7 +87,14 @@ export async function bearerAuth(
       body: `token=${encodeURIComponent(token)}`,
       signal: AbortSignal.timeout(5000),
     });
-    data = (await response.json()) as typeof data;
+    const raw = await response.json();
+    const parseResult = OAuthIntrospectSchema.safeParse(raw);
+    if (!parseResult.success) {
+      log.error({ issues: parseResult.error.issues }, 'invalid introspect response');
+      res.status(503).json({ ok: false, error: 'OAuth2 server returned invalid response' });
+      return;
+    }
+    data = parseResult.data;
   } catch (err) {
     log.error({ err }, 'introspect failed');
     res.status(503).json({ ok: false, error: 'OAuth2 server unavailable' });

@@ -247,9 +247,53 @@ const TOOLS: MCPToolDefinition[] = [
   },
 ];
 
+// ─── Input Validation ────────────────────────────────────────────────────────
+
+const AGENT_ID_RE = /^[\w.@:=-]+$/;
+
+function validateToolArgs(name: string, args: Record<string, unknown>): void {
+  // agent_id: required string, 1-256 chars, safe pattern
+  const agentId = args['agent_id'];
+  if (typeof agentId !== 'string' || agentId.length < 1 || agentId.length > 256 || !AGENT_ID_RE.test(agentId)) {
+    throw new Error('agent_id must be a string of 1-256 characters matching /^[\\w.@:=-]+$/');
+  }
+
+  // q param: string, max 10000 chars
+  if ('q' in args && args['q'] !== undefined) {
+    if (typeof args['q'] !== 'string' || args['q'].length > 10000) {
+      throw new Error('q must be a string of at most 10000 characters');
+    }
+  }
+
+  // limit param: number, 1-200
+  if ('limit' in args && args['limit'] !== undefined) {
+    const limit = args['limit'];
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new Error('limit must be an integer between 1 and 200');
+    }
+  }
+
+  // content param: string, max 100000 chars (100KB)
+  if ('content' in args && args['content'] !== undefined) {
+    if (typeof args['content'] !== 'string' || args['content'].length > 100000) {
+      throw new Error('content must be a string of at most 100000 characters');
+    }
+  }
+
+  // memforge_sleep tokenBudget: max 200000
+  if (name === 'memforge_sleep' && 'token_budget' in args && args['token_budget'] !== undefined) {
+    const tokenBudget = args['token_budget'];
+    if (typeof tokenBudget !== 'number' || tokenBudget > 200000) {
+      throw new Error('token_budget must be a number no greater than 200000');
+    }
+  }
+}
+
 // ─── Tool Executor ───────────────────────────────────────────────────────────
 
 async function executeTool(client: MemForgeClient, name: string, args: Record<string, unknown>): Promise<unknown> {
+  validateToolArgs(name, args);
+
   const agentId = args['agent_id'] as string;
 
   switch (name) {

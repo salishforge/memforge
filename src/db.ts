@@ -19,10 +19,12 @@ export function getPool(databaseUrl?: string): Pool {
 
   const config: PoolConfig = {
     connectionString: url,
-    max: parseInt(process.env['DB_POOL_MAX'] ?? '10', 10),
-    min: parseInt(process.env['DB_POOL_MIN'] ?? '2', 10),
+    max: Math.min(Math.max(parseInt(process.env['DB_POOL_MAX'] ?? '10', 10), 1), 50),
+    min: Math.min(Math.max(parseInt(process.env['DB_POOL_MIN'] ?? '2', 10), 0), 10),
     idleTimeoutMillis: parseInt(process.env['DB_POOL_IDLE_TIMEOUT_MS'] ?? '30000', 10),
     connectionTimeoutMillis: parseInt(process.env['DB_POOL_CONNECTION_TIMEOUT_MS'] ?? '5000', 10),
+    statement_timeout: parseInt(process.env['DB_STATEMENT_TIMEOUT_MS'] ?? '30000', 10),
+    query_timeout: parseInt(process.env['DB_QUERY_TIMEOUT_MS'] ?? '30000', 10),
   };
 
   _pool = new Pool(config);

@@ -65,6 +65,19 @@ export function createApp(deps: AppDependencies): express.Express {
 
   const app = express();
   app.use(express.json({ limit: '100kb' }));
+
+  // Security headers
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  });
+
   app.use(requestIdMiddleware);
   app.use(requestLogMiddleware);
 
@@ -97,6 +110,16 @@ export function createApp(deps: AppDependencies): express.Express {
   // ─── Rate limiting ──────────────────────────────────────────────────────
 
   if (rateLimitMax > 0) {
+    // Global rate limit — covers all routes including admin, api docs, etc.
+    app.use(rateLimit({
+      windowMs: rateLimitWindowMs,
+      max: rateLimitMax * 5,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      message: { ok: false, error: 'Too many requests' },
+      skip: (req) => req.path === '/health',
+    }));
+
     app.use('/memory', rateLimit({
       windowMs: rateLimitWindowMs,
       max: rateLimitMax,

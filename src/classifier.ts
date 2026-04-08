@@ -147,9 +147,9 @@ interface PIIPatternDef {
 const PII_PATTERNS: PIIPatternDef[] = [
   {
     id: 'ssn', pattern: /\b\d{3}-\d{2}-\d{4}\b/g, type: 'ssn',
-    sensitivity: 'restricted', baseConfidence: 0.5,
+    sensitivity: 'restricted', baseConfidence: 0.7,
     contextWords: ['ssn', 'social security', 'social sec'],
-    contextBoost: 0.45,
+    contextBoost: 0.3,
   },
   {
     id: 'ssn-dotted', pattern: /\b\d{3}\.\d{2}\.\d{4}\b/g, type: 'ssn',
@@ -165,15 +165,15 @@ const PII_PATTERNS: PIIPatternDef[] = [
   },
   {
     id: 'credit-card-visa', pattern: /\b4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, type: 'credit_card',
-    sensitivity: 'restricted', baseConfidence: 0.6,
+    sensitivity: 'restricted', baseConfidence: 0.75,
     contextWords: ['card', 'visa', 'credit', 'payment', 'cc'],
-    contextBoost: 0.35,
+    contextBoost: 0.25,
   },
   {
     id: 'credit-card-mc', pattern: /\b5[1-5]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, type: 'credit_card',
-    sensitivity: 'restricted', baseConfidence: 0.6,
+    sensitivity: 'restricted', baseConfidence: 0.75,
     contextWords: ['card', 'mastercard', 'credit', 'payment', 'cc'],
-    contextBoost: 0.35,
+    contextBoost: 0.25,
   },
   {
     id: 'phone-us', pattern: /\b(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, type: 'phone',
@@ -207,8 +207,11 @@ export class PIIPatternClassifier implements ContentClassifier {
       def.pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = def.pattern.exec(content)) !== null) {
-        // Context word boosting: check if any context word appears near the match
-        const hasContext = def.contextWords.some((w) => contentLower.includes(w));
+        // Context word boosting: check if any context word appears near the match (word boundary)
+        const hasContext = def.contextWords.some((w) => {
+          const re = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          return re.test(content);
+        });
         const confidence = Math.min(1.0, def.baseConfidence + (hasContext ? def.contextBoost : 0));
 
         // Only report if confidence meets threshold
