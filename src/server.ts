@@ -58,6 +58,11 @@ const manager = new MemoryManager({
   revisionLlmProvider,
   consolidationMode: (process.env['CONSOLIDATION_MODE'] as ConsolidationMode) ?? 'concat',
   temporalDecayRate: parseFloat(process.env['TEMPORAL_DECAY_RATE'] ?? '0'),
+  consolidationInnerBatchSize: parseInt(process.env['CONSOLIDATION_INNER_BATCH_SIZE'] ?? '50', 10),
+  keywordOverlapBoost: parseFloat(process.env['KEYWORD_OVERLAP_BOOST'] ?? '0.3'),
+  temporalProximityDays: parseFloat(process.env['TEMPORAL_PROXIMITY_DAYS'] ?? '7'),
+  enableLlmRerank: process.env['ENABLE_LLM_RERANK'] === 'true',
+  enableLlmIngest: process.env['ENABLE_LLM_INGEST'] === 'true',
   sleepCycle: {
     tokenBudget: parseInt(process.env['SLEEP_CYCLE_TOKEN_BUDGET'] ?? '100000', 10),
     evictionThreshold: parseFloat(process.env['SLEEP_CYCLE_EVICTION_THRESHOLD'] ?? '0.1'),

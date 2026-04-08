@@ -354,12 +354,38 @@ export interface MemForgeConfig {
   consolidationMode: ConsolidationMode;
   /** Temporal decay rate per hour for query ranking (default 0 = no decay) */
   temporalDecayRate: number;
+  /** Inner batch size for consolidation grouping (default 50, set to 1 for verbatim mode) */
+  consolidationInnerBatchSize: number;
+  /** Keyword overlap boost factor for hybrid search (default 0.3, 0 = disabled). Inspired by MemPalace (MIT). */
+  keywordOverlapBoost: number;
+  /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). Inspired by MemPalace (MIT). */
+  temporalProximityDays: number;
+  /** Enable LLM post-retrieval reranking (default false — opt-in, adds ~2K tokens/query) */
+  enableLlmRerank: boolean;
+  /** Enable LLM-assisted ingest analysis (default false — opt-in, adds ~500 tokens/add) */
+  enableLlmIngest: boolean;
   /** LLM provider for sleep cycle revision (can differ from consolidation LLM) */
   revisionLlmProvider?: LLMProvider | null;
   /** Sleep cycle configuration */
   sleepCycle: SleepCycleConfig;
   /** Audit chain instance for recording mutations (optional) */
   auditChain?: AuditChain | null;
+}
+
+/** Agent-provided memory hints for active ingest participation */
+export interface MemoryHints {
+  /** Agent's importance assessment (0-1) */
+  importance?: number;
+  /** Topic/category this memory relates to */
+  topic?: string;
+  /** Warm-tier memory ID that this content updates/corrects */
+  supersedes?: string;
+  /** Pre-extracted entity names */
+  entities?: string[];
+  /** Retention policy hint */
+  retention?: 'normal' | 'important' | 'permanent';
+  /** Memory classification */
+  type?: 'fact' | 'event' | 'decision' | 'preference' | 'correction' | 'error';
 }
 
 export type DeepPartial<T> = {

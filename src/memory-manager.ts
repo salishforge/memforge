@@ -54,6 +54,11 @@ const DEFAULTS: MemForgeConfig = {
   autoRegisterAgents: true,
   consolidationMode: 'concat',
   temporalDecayRate: 0,
+  consolidationInnerBatchSize: 50,
+  keywordOverlapBoost: 0.3,
+  temporalProximityDays: 7,
+  enableLlmRerank: false,
+  enableLlmIngest: false,
   sleepCycle: {
     tokenBudget: 100_000,
     evictionThreshold: 0.1,
@@ -210,6 +215,22 @@ export class MemoryManager {
       results = results.map((r) => {
         const ageHours = (now - new Date(r.consolidated_at).getTime()) / (1000 * 60 * 60);
         return { ...r, rank: r.rank * Math.exp(-decayRate * ageHours) };
+      });
+      results.sort((a, b) => b.rank - a.rank);
+    }
+
+    // Temporal proximity boost — inspired by MemPalace (MIT) hybrid v2
+    // When time filters are present, boost memories near the reference date
+    const proximityDays = this.config.temporalProximityDays ?? 0;
+    if (proximityDays > 0 && (opts.after || opts.before)) {
+      const refDate = opts.after && opts.before
+        ? new Date((opts.after.getTime() + opts.before.getTime()) / 2)
+        : (opts.after ?? opts.before!);
+      const sigmaMs = proximityDays * 24 * 60 * 60 * 1000;
+      results = results.map((r) => {
+        const dt = new Date(r.consolidated_at).getTime() - refDate.getTime();
+        const boost = Math.exp(-(dt * dt) / (2 * sigmaMs * sigmaMs));
+        return { ...r, rank: r.rank * (1 + boost) };
       });
       results.sort((a, b) => b.rank - a.rank);
     }
@@ -421,6 +442,20 @@ export class MemoryManager {
       }
     });
 
+    // Keyword overlap boost — inspired by MemPalace (MIT) hybrid v1 scoring
+    const overlapAlpha = this.config.keywordOverlapBoost ?? 0;
+    if (overlapAlpha > 0) {
+      const queryWords = new Set(searchText.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+      if (queryWords.size > 0) {
+        for (const entry of scores.values()) {
+          const contentLower = entry.row.content.slice(0, 10_000).toLowerCase();
+          const matchCount = [...queryWords].filter((w) => contentLower.includes(w)).length;
+          const overlap = matchCount / queryWords.size;
+          entry.score *= (1 + overlapAlpha * overlap);
+        }
+      }
+    }
+
     return Array.from(scores.values())
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
@@ -570,8 +605,8 @@ export class MemoryManager {
         };
       }
 
-      // Group hot rows into sub-batches
-      const BATCH_SIZE = 50;
+      // Group hot rows into sub-batches (configurable for verbatim mode)
+      const BATCH_SIZE = Math.max(1, this.config.consolidationInnerBatchSize ?? 50);
       const batches: Array<{
         rawContent: string;
         ids: bigint[];
