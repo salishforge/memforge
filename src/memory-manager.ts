@@ -139,11 +139,16 @@ export class MemoryManager {
       return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
     }
 
+    // Store outcome_type in metadata so it propagates to warm_tier during consolidation
+    const enrichedMetadata = outcomeType !== 'neutral'
+      ? { ...metadata, _outcome_type: outcomeType }
+      : metadata;
+
     const { rows } = await this.pool.query<AddResult>(
       `INSERT INTO hot_tier (agent_id, content, metadata, content_hash)
        VALUES ($1, $2, $3, $4)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(metadata), contentHash],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash],
     );
 
     return rows[0]!;
@@ -704,9 +709,25 @@ export class MemoryManager {
           metadata._llm_skipped = true;
         }
 
+        // Determine dominant outcome_type from hot-tier rows in this batch
+        const batchRows = hotRows.rows.filter((r) => batch.ids.includes(r.id));
+        const outcomeCounts = new Map<string, number>();
+        for (const r of batchRows) {
+          const ot = (r.metadata as Record<string, unknown>)?.['_outcome_type'] as string | undefined ?? 'neutral';
+          outcomeCounts.set(ot, (outcomeCounts.get(ot) ?? 0) + 1);
+        }
+        let dominantOutcome = 'neutral';
+        let maxCount = 0;
+        for (const [ot, count] of outcomeCounts) {
+          if (count > maxCount || (count === maxCount && ['error', 'decision'].includes(ot))) {
+            dominantOutcome = ot;
+            maxCount = count;
+          }
+        }
+
         const warmRow = await client.query<{ id: bigint }>(
-          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, embedding, time_start, time_end)
-           VALUES ($1, $2, $3, $4, $5::vector, $6, $7)
+          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
+           VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)
            RETURNING id`,
           [
             agentId,
@@ -716,6 +737,7 @@ export class MemoryManager {
             vectorLiteral,
             batch.oldest,
             batch.newest,
+            dominantOutcome,
           ],
         );
         const warmRowId = warmRow.rows[0]!.id;
