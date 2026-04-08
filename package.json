@@ -1,6 +1,6 @@
 {
   "name": "@salishforge/memforge",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Neuroscience-inspired agent memory — sleep cycles, memory revision, knowledge graph, procedural learning, vector search, and MCP integration",
   "type": "module",
   "main": "./dist/index.js",
