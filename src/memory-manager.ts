@@ -441,9 +441,55 @@ Ranking (numbers only):`;
       results.sort((a, b) => b.rank - a.rank);
     }
 
+    // Structure-aware scoring — boost results linked to entities mentioned in query
+    // Inspired by FABLE (arXiv 2601.18116) structure-aware propagation
+    if (results.length > 0) {
+      const queryUpper = opts.q;
+      const queryEntityCandidates = queryUpper.match(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b/g) ?? [];
+      if (queryEntityCandidates.length > 0) {
+        const entityNames = new Set(queryEntityCandidates.map((e) => e.toLowerCase()));
+        const resultIds = results.map((r) => r.id);
+        const entityLinks = await this.pool.query<{ warm_tier_id: bigint; name: string }>(
+          `SELECT wte.warm_tier_id, e.name FROM warm_tier_entities wte
+           JOIN entities e ON e.id = wte.entity_id
+           WHERE wte.warm_tier_id = ANY($1) AND e.agent_id = $2`,
+          [resultIds, agentId],
+        );
+        const entityCountByRow = new Map<string, number>();
+        for (const row of entityLinks.rows) {
+          if (entityNames.has(row.name.toLowerCase())) {
+            const key = String(row.warm_tier_id);
+            entityCountByRow.set(key, (entityCountByRow.get(key) ?? 0) + 1);
+          }
+        }
+        if (entityCountByRow.size > 0) {
+          results = results.map((r) => {
+            const matches = entityCountByRow.get(String(r.id)) ?? 0;
+            const boost = matches > 0 ? 1 + 0.2 * (matches / entityNames.size) : 1;
+            return { ...r, rank: r.rank * boost };
+          });
+          results.sort((a, b) => b.rank - a.rank);
+        }
+      }
+    }
+
     // Optional LLM reranking (opt-in via ENABLE_LLM_RERANK=true)
     if (this.config.enableLlmRerank && this.llm && results.length > 1) {
       results = await this.rerankWithLlm(opts.q, results);
+    }
+
+    // Budget-controlled retrieval — trim results to fit within token budget
+    // Inspired by FABLE (arXiv 2601.18116) adaptive budget control
+    if (opts.maxTokens && opts.maxTokens > 0) {
+      let tokenCount = 0;
+      const budgeted: QueryResult[] = [];
+      for (const r of results) {
+        const estimatedTokens = Math.ceil(r.content.length / 4);
+        if (tokenCount + estimatedTokens > opts.maxTokens && budgeted.length > 0) break;
+        budgeted.push(r);
+        tokenCount += estimatedTokens;
+      }
+      results = budgeted;
     }
 
     // Log retrieval events and update access counts (fire-and-forget)
@@ -484,7 +530,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
               ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -521,7 +567,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -555,7 +601,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -592,7 +638,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
               (1 - (embedding <=> $2::vector)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -971,9 +1017,12 @@ Ranking (numbers only):`;
           }
         }
 
+        // Store summary alongside verbatim content — inspired by FABLE/MemPalace closets/drawers
+        const summaryText = summary ? summary.summary : null;
+
         const warmRow = await client.query<{ id: bigint }>(
-          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
-           VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)
+          `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
+           VALUES ($1, $2, $9, $3, $4, $5::vector, $6, $7, $8)
            RETURNING id`,
           [
             agentId,
@@ -984,6 +1033,7 @@ Ranking (numbers only):`;
             batch.oldest,
             batch.newest,
             dominantOutcome,
+            summaryText,
           ],
         );
         const warmRowId = warmRow.rows[0]!.id;

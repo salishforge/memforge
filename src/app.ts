@@ -330,6 +330,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const after = req.query['after'];
     const before = req.query['before'];
     const decay = req.query['decay'];
+    const maxTokens = req.query['max_tokens'];
 
     if (!q || typeof q !== 'string') {
       fail(res, 400, '"q" query param (string) is required');
@@ -392,6 +393,7 @@ export function createApp(deps: AppDependencies): express.Express {
         after: afterDate,
         before: beforeDate,
         decayRate,
+        maxTokens: maxTokens !== undefined ? parseInt(maxTokens as string, 10) : undefined,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);

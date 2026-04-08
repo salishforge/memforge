@@ -51,6 +51,8 @@ export interface WarmRow {
 export interface QueryResult {
   id: bigint;
   content: string;
+  /** One-line summary (populated when consolidation uses LLM mode). Inspired by FABLE/MemPalace closets/drawers. */
+  summary?: string;
   metadata: Record<string, unknown>;
   consolidated_at: Date;
   time_start: Date | null;
@@ -76,6 +78,8 @@ export interface QueryOptions {
   before?: Date;
   /** Temporal decay rate per hour (0 = no decay, default from config) */
   decayRate?: number;
+  /** Token budget — return results fitting within this many tokens (estimate: content.length/4). Inspired by FABLE (arXiv 2601.18116). */
+  maxTokens?: number;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
