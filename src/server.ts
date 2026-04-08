@@ -64,7 +64,7 @@ const manager = new MemoryManager({
     revisionThreshold: parseFloat(process.env['SLEEP_CYCLE_REVISION_THRESHOLD'] ?? '0.4'),
     includeReflection: process.env['SLEEP_CYCLE_INCLUDE_REFLECTION'] !== 'false',
     coldRetentionDays: process.env['COLD_TIER_RETENTION_DAYS']
-      ? parseInt(process.env['COLD_TIER_RETENTION_DAYS'], 10)
+      ? Math.max(1, parseInt(process.env['COLD_TIER_RETENTION_DAYS'], 10))
       : undefined,
     weights: {
       recency: 0.25,

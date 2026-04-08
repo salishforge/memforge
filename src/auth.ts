@@ -2,6 +2,7 @@
 // Calls the OAuth2 introspect endpoint, caches results 30s, enforces scopes.
 
 import type { Request, Response, NextFunction } from 'express';
+import { createHash } from 'crypto';
 import { getLogger } from './logger.js';
 
 const log = getLogger('auth');
@@ -61,9 +62,10 @@ export async function bearerAuth(
   }
 
   const token = authHeader.slice(7);
+  const tokenKey = createHash('sha256').update(token).digest('hex');
 
-  // Cache hit
-  const cached = TOKEN_CACHE.get(token);
+  // Cache hit (keyed by hash to avoid storing cleartext tokens in memory)
+  const cached = TOKEN_CACHE.get(tokenKey);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     if (!cached.active) {
       res.status(401).json({ ok: false, error: 'Token expired or revoked' });
@@ -96,7 +98,7 @@ export async function bearerAuth(
     if (firstKey !== undefined) TOKEN_CACHE.delete(firstKey);
   }
 
-  TOKEN_CACHE.set(token, { ...data, cachedAt: Date.now() });
+  TOKEN_CACHE.set(tokenKey, { ...data, cachedAt: Date.now() });
 
   if (!data.active) {
     res.status(401).json({ ok: false, error: 'Token expired or revoked' });

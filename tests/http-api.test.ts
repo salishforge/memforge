@@ -117,8 +117,15 @@ describe('Health and system endpoints', () => {
     assert.equal(body.status, 'ok');
   });
 
-  it('GET /metrics returns Prometheus format', async () => {
+  it('GET /metrics requires admin token', async () => {
     const res = await get('/metrics');
+    assert.equal(res.status, 401);
+  });
+
+  it('GET /metrics returns Prometheus format with admin token', async () => {
+    const res = await fetch(`${baseUrl}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes('http_requests_total') || text.includes('HELP'), 'metrics contain Prometheus data');
@@ -281,8 +288,9 @@ describe('Response format', () => {
   it('success responses have { ok: true, data: ... }', async () => {
     const res = await get('/health');
     const body = await res.json() as Record<string, unknown>;
-    // /health doesn't use the ok/data wrapper — it returns { status, ts, ... }
+    // /health returns { status, ts } — no capability flags exposed
     assert.ok('status' in body);
+    assert.ok(!('embeddings' in body), 'health should not expose capability flags');
   });
 
   it('error responses have { ok: false, error: ... }', async () => {

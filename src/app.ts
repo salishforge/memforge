@@ -64,17 +64,31 @@ export function createApp(deps: AppDependencies): express.Express {
   const log = getLogger('app');
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '100kb' }));
   app.use(requestIdMiddleware);
   app.use(requestLogMiddleware);
 
   // ─── CORS ───────────────────────────────────────────────────────────────
 
   if (corsOrigin) {
+    if (corsOrigin === '*') {
+      log.warn('CORS_ORIGIN=* allows all origins — restrict to specific origins in production');
+    }
+    // Support comma-separated allow-list: "https://a.com,https://b.com"
+    const allowedOrigins = corsOrigin === '*' ? null : new Set(corsOrigin.split(',').map((o) => o.trim()));
+
     app.use((req: Request, res: Response, next: NextFunction) => {
-      res.header('Access-Control-Allow-Origin', corsOrigin);
-      res.header('Access-Control-Allow-Methods', corsMethods ?? 'GET,POST,OPTIONS');
-      res.header('Access-Control-Allow-Headers', corsHeaders ?? 'Content-Type,Authorization');
+      const requestOrigin = req.headers['origin'];
+      const effectiveOrigin = allowedOrigins === null
+        ? '*'
+        : (requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : '');
+
+      if (effectiveOrigin) {
+        res.header('Access-Control-Allow-Origin', effectiveOrigin);
+        res.header('Access-Control-Allow-Methods', corsMethods ?? 'GET,POST,OPTIONS');
+        res.header('Access-Control-Allow-Headers', corsHeaders ?? 'Content-Type,Authorization');
+        if (allowedOrigins !== null) res.header('Vary', 'Origin');
+      }
       if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
       next();
     });
@@ -97,7 +111,7 @@ export function createApp(deps: AppDependencies): express.Express {
   app.use((req: Request, res: Response, next: NextFunction) => {
     const start = Date.now();
     res.on('finish', () => {
-      const route = (req.route?.path as string | undefined) ?? req.path;
+      const route = (req.route?.path as string | undefined) ?? 'unmatched';
       const labels = {
         method: req.method,
         route,
@@ -149,7 +163,7 @@ export function createApp(deps: AppDependencies): express.Express {
 
   function adminAuth(req: Request, res: Response, next: NextFunction): void {
     if (!adminToken) {
-      next();
+      res.status(403).json({ ok: false, error: 'Admin endpoints disabled — set ADMIN_TOKEN to enable' });
       return;
     }
 
@@ -208,15 +222,10 @@ export function createApp(deps: AppDependencies): express.Express {
   // ─── Routes ────────────────────────────────────────────────────────────
 
   app.get('/health', (_req, res) => {
-    res.json({
-      status: 'ok',
-      ts: new Date().toISOString(),
-      embeddings: manager.embeddingsEnabled,
-      summarization: manager.summarizationEnabled,
-    });
+    res.json({ status: 'ok', ts: new Date().toISOString() });
   });
 
-  app.get('/metrics', async (_req, res) => {
+  app.get('/metrics', adminAuth, async (_req, res) => {
     res.set('Content-Type', registry.contentType);
     res.send(await registry.metrics());
   });

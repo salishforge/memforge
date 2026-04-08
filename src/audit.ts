@@ -98,6 +98,9 @@ export class AuditChain {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
     if (!this.config.hmacKey) {
+      if (process.env['NODE_ENV'] === 'production') {
+        throw new Error('AUDIT_HMAC_KEY is required in production — set it to a strong random value');
+      }
       log.warn('AUDIT_HMAC_KEY not set — using default key. Detects accidental modifications but NOT targeted tampering. Set AUDIT_HMAC_KEY in production.');
     }
   }

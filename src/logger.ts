@@ -37,8 +37,11 @@ export function getLogger(component: string): pino.Logger {
 
 // ─── Express middleware — attach request correlation ID ─────────────────────
 
+const REQUEST_ID_PATTERN = /^[\w\-]{1,128}$/;
+
 export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const requestId = (req.headers['x-request-id'] as string | undefined) ?? crypto.randomUUID();
+  const header = req.headers['x-request-id'] as string | undefined;
+  const requestId = (header && REQUEST_ID_PATTERN.test(header)) ? header : crypto.randomUUID();
   res.setHeader('X-Request-Id', requestId);
   requestContext.run({ requestId }, () => next());
 }
