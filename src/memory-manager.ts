@@ -337,7 +337,7 @@ export class MemoryManager {
       const similar = await this.pool.query<{ id: bigint; content: string }>(
         `SELECT id, LEFT(content, 200) as content FROM warm_tier
          WHERE agent_id = $1 AND embedding IS NOT NULL
-         ORDER BY embedding <=> $2::vector LIMIT 1`,
+         ORDER BY embedding <=> $2::halfvec LIMIT 1`,
         [agentId, vectorLiteral],
       );
       if (similar.rows[0]) {
@@ -786,12 +786,12 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
-              (1 - (embedding <=> $2::vector)) * (0.5 + 0.5 * importance) AS rank
+              (1 - (embedding <=> $2::halfvec)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
          AND embedding IS NOT NULL
          ${timeFilter}
-       ORDER BY embedding <=> $2::vector
+       ORDER BY embedding <=> $2::halfvec
        LIMIT $${limitIdx}`,
       params,
     );
@@ -1171,7 +1171,7 @@ Ranking (numbers only):`;
 
         const warmRow = await client.query<{ id: bigint }>(
           `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
-           VALUES ($1, $2, $9, $3, $4, $5::vector, $6, $7, $8)
+           VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8)
            RETURNING id`,
           [
             agentId,

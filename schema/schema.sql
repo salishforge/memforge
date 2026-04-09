@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   agent_id            TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   content             TEXT        NOT NULL,
   content_tsv         TSVECTOR    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
-  embedding           vector,     -- pgvector column, dimensions set by provider
+  embedding           halfvec,    -- pgvector float16 column — 2x compression vs vector (float32)
   source_hot_ids      BIGINT[]    NOT NULL DEFAULT '{}',
   metadata            JSONB       NOT NULL DEFAULT '{}',
   consolidated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS warm_tier (
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx ON warm_tier (agent_id);
 CREATE INDEX IF NOT EXISTS warm_tier_tsv_idx      ON warm_tier USING GIN (content_tsv);
 CREATE INDEX IF NOT EXISTS warm_tier_hot_ids_idx  ON warm_tier USING GIN (source_hot_ids);
-CREATE INDEX IF NOT EXISTS warm_tier_embedding_idx ON warm_tier USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS warm_tier_embedding_idx ON warm_tier USING hnsw (embedding halfvec_cosine_ops);
 CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time_start, time_end);
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
 
