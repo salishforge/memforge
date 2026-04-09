@@ -626,9 +626,15 @@ Ranking (numbers only):`;
     }
 
     // Knowledge gap detection (#77) — track queries that return no results
+    // Dedup by query text hash + cap at 1000 per agent (fixes A4 spam risk)
     if (results.length === 0) {
       void this.pool.query(
-        `INSERT INTO knowledge_gaps (agent_id, query_text, gap_type) VALUES ($1, $2, 'no_results')`,
+        `INSERT INTO knowledge_gaps (agent_id, query_text, gap_type)
+         SELECT $1, $2, 'no_results'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM knowledge_gaps WHERE agent_id = $1 AND query_text = $2 AND NOT resolved
+         )
+         AND (SELECT count(*) FROM knowledge_gaps WHERE agent_id = $1 AND NOT resolved) < 1000`,
         [agentId, searchText.slice(0, 500)],
       ).catch(() => {});
     }
@@ -641,14 +647,14 @@ Ranking (numbers only):`;
          WHERE id = ANY($1)`,
         [ids],
       );
-      // Log individual retrieval events for reinforcement analysis
-      void Promise.all(results.map((r, idx) =>
-        this.pool.query(
-          `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [agentId, r.id, opts.q, mode, idx + 1],
-        ),
-      )).catch((err) => log.error({ err }, 'retrieval log failed'));
+      // Batch-insert retrieval events (single query instead of N, fixes B3)
+      const warmIds = results.map((r) => r.id);
+      const positions = results.map((_, idx) => idx + 1);
+      void this.pool.query(
+        `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position)
+         SELECT $1, unnest($2::bigint[]), $3, $4, unnest($5::int[])`,
+        [agentId, warmIds, opts.q, mode, positions],
+      ).catch((err) => log.error({ err }, 'retrieval log failed'));
     }
 
     return results;
@@ -1193,7 +1199,7 @@ Ranking (numbers only):`;
            ORDER BY w.time_end DESC LIMIT 1
            ON CONFLICT DO NOTHING`,
           [agentId, warmRowId, batch.oldest],
-        ).catch(() => {});
+        ).catch((err) => log.error({ err }, 'temporal sequence link failed'));
 
         // Audit: record warm-tier creation
         if (this.audit) {
@@ -2190,10 +2196,11 @@ Ranking (numbers only):`;
       throw new TypeError('outcome must be one of: positive, negative, neutral');
     }
 
+    // Only update retrieval events that haven't already received feedback (dedup, fixes A3)
     const { rowCount } = await this.pool.query(
       `UPDATE retrieval_log
        SET outcome = $3, feedback_at = now(), feedback_metadata = $4
-       WHERE agent_id = $1 AND id = ANY($2)`,
+       WHERE agent_id = $1 AND id = ANY($2) AND outcome IS NULL`,
       [agentId, retrievalIds, outcome, JSON.stringify(metadata)],
     );
 

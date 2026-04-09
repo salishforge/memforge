@@ -579,44 +579,42 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
         metadata: Record<string, unknown>;
       }>(
         `SELECT id, consolidated_at, retrieval_success_count, confidence, metadata
-         FROM warm_tier WHERE id IN ($1, $2)`,
-        [conflict.warm_tier_id_a, conflict.warm_tier_id_b],
+         FROM warm_tier WHERE id IN ($1, $2) AND agent_id = $3`,
+        [conflict.warm_tier_id_a, conflict.warm_tier_id_b, agentId],
       );
 
       if (memories.rows.length < 2) continue;
       const [a, b] = memories.rows as [typeof memories.rows[0] & object, typeof memories.rows[0] & object];
       if (!a || !b) continue;
 
-      // Determine winner
-      let winnerId: bigint;
-      let strategy: string;
+      // Determine winner via multi-factor scoring (not cascading)
+      // Each factor contributes points; highest total score wins
+      let scoreA = 0;
+      let scoreB = 0;
 
-      // Supersession takes priority
-      if ((a.metadata as Record<string, unknown>)?.['_superseded']) {
-        winnerId = b.id;
-        strategy = 'supersession';
-      } else if ((b.metadata as Record<string, unknown>)?.['_superseded']) {
-        winnerId = a.id;
-        strategy = 'supersession';
-      // Temporal: newer wins
-      } else if (a.consolidated_at > b.consolidated_at) {
-        winnerId = a.id;
-        strategy = 'temporal_precedence';
-      } else if (b.consolidated_at > a.consolidated_at) {
-        winnerId = b.id;
-        strategy = 'temporal_precedence';
-      // Corroboration: more positive feedback wins
-      } else if (a.retrieval_success_count > b.retrieval_success_count) {
-        winnerId = a.id;
-        strategy = 'corroboration';
-      } else if (b.retrieval_success_count > a.retrieval_success_count) {
-        winnerId = b.id;
-        strategy = 'corroboration';
-      // Confidence: higher wins
-      } else {
-        winnerId = a.confidence >= b.confidence ? a.id : b.id;
-        strategy = 'confidence';
+      // Supersession is absolute
+      if ((a.metadata as Record<string, unknown>)?.['_superseded']) { scoreB += 100; }
+      if ((b.metadata as Record<string, unknown>)?.['_superseded']) { scoreA += 100; }
+
+      // Temporal recency (0-3 points)
+      if (a.consolidated_at > b.consolidated_at) scoreA += 3;
+      else if (b.consolidated_at > a.consolidated_at) scoreB += 3;
+
+      // Corroboration (0-5 points based on retrieval success ratio)
+      const totalSuccess = a.retrieval_success_count + b.retrieval_success_count;
+      if (totalSuccess > 0) {
+        scoreA += Math.round(5 * a.retrieval_success_count / totalSuccess);
+        scoreB += Math.round(5 * b.retrieval_success_count / totalSuccess);
       }
+
+      // Confidence (0-2 points)
+      scoreA += Math.round(2 * a.confidence);
+      scoreB += Math.round(2 * b.confidence);
+
+      const winnerId = scoreA >= scoreB ? a.id : b.id;
+      const strategy = scoreA >= scoreB
+        ? `multi_factor(A=${scoreA},B=${scoreB})`
+        : `multi_factor(A=${scoreA},B=${scoreB})`;
 
       const loserId = winnerId === a.id ? b.id : a.id;
 
@@ -627,12 +625,12 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
         [conflict.id, winnerId, strategy],
       );
 
-      // Reduce loser's confidence
+      // Reduce loser's confidence (agent-scoped for defense-in-depth)
       await this.pool.query(
         `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
            metadata = metadata || '{"_conflict_loser": true}'::jsonb
-         WHERE id = $1`,
-        [loserId],
+         WHERE id = $1 AND agent_id = $2`,
+        [loserId, agentId],
       );
 
       resolved++;
