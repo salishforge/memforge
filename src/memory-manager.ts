@@ -2837,6 +2837,15 @@ Guidelines:
     return { score: rows[0]?.score ?? 0.7 }; // Default: neutral
   }
 
+  async deletePool(poolId: string): Promise<{ deleted: boolean }> {
+    // Cascade deletes shared_memories and pool_memberships via FK
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM shared_pools WHERE id = $1`,
+      [poolId],
+    );
+    return { deleted: (rowCount ?? 0) > 0 };
+  }
+
   // ─── Export/Import ──────────────────────────────────────────────────────
 
   /**

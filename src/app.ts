@@ -1051,6 +1051,13 @@ export function createApp(deps: AppDependencies): express.Express {
     }
   });
 
+  app.delete('/pool/:poolId', adminAuth, async (req: Request, res: Response) => {
+    try {
+      const result = await manager.deletePool(req.params['poolId'] ?? '');
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
   app.post('/pool/:poolId/sleep', adminAuth, async (req: Request, res: Response) => {
     try {
       const { SharedPoolSleepCycle } = await import('./sleep-cycle.js');
