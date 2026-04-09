@@ -30,7 +30,7 @@ All notable changes to MemForge are documented here.
 - **Post-Retrieval LLM Reranking** — Optional `ENABLE_LLM_RERANK=true` runs a lightweight LLM pass over top-k results to reorder by relevance. Disabled by default.
 - **LLM-Assisted Ingest** — Optional `ENABLE_LLM_INGEST=true` extracts entities, sentiment, and tags at write time. Disabled by default to keep hot path fast.
 - **Autonomous Weight Adaptation** — Sleep cycle Phase 1 now adjusts importance-weight hyperparameters based on retrieval outcome correlation, gradually tuning the scoring formula to deployment patterns.
-- **LongMemEval Benchmark Harness** — `benchmarks/` directory contains the full evaluation harness, 500-question dataset driver, and reproducible run scripts. Current score: 88.0% R@5 (keyword mode).
+- **LongMemEval Benchmark Harness** — `benchmarks/` directory contains the full evaluation harness, 500-question dataset driver, reproducible run scripts, retry logic with incremental manifest saving. Current score: 93.2% R@5 (hybrid mode), 35.0% R@5 (keyword mode).
 
 ### Security
 
@@ -44,8 +44,8 @@ All notable changes to MemForge are documented here.
 
 ### Performance
 
-- **92.0% Recall@5 — Hybrid mode** — LongMemEval per-session benchmark with `EMBEDDING_PROVIDER=local`. Properly differentiated R@k: R@1 74% → R@3 88% → R@5 92% → R@10 94%. Closes to within 4.6 points of MemPalace (96.6%) while running on pure PostgreSQL.
-- **88.0% Recall@5 — Keyword mode** — LongMemEval keyword-only baseline. No embedding provider required. Outperforms Hippo (74.0% R@5 BM25) by 14 percentage points.
+- **93.2% Recall@5 — Hybrid mode** — LongMemEval 500-question benchmark with `EMBEDDING_PROVIDER=local`. Full R@k: R@1 81.0% → R@3 90.8% → R@5 93.2% → R@10 96.4%. Per-category: knowledge-update 97.4% R@5 / 100.0% R@10, multi-session 96.2% / 98.5%, single-session-assistant 100.0% / 100.0%, temporal-reasoning 91.0% / 94.7%, single-session-user 87.1% / 90.0%, single-session-preference 80.0% / 93.3%. Closes to within 3.4 points of MemPalace (96.6%) while running on pure PostgreSQL.
+- **35.0% Recall@5 — Keyword mode** — LongMemEval per-session keyword baseline. No embedding provider required. Lower score is expected — FTS is weak on short per-session rows. Use hybrid mode for best results.
 - **Local embedding throughput** — `@xenova/transformers` with bge-small-en-v1.5: 7.3 ms/embed, ~137 embeds/sec on CPU, in-process with no network overhead.
 - **Hybrid mode latency** — p50 32 ms, p95 47 ms per query (local PostgreSQL with local embeddings).
 - **Keyword mode latency** — p50 39 ms, p95 50 ms per query (PostgreSQL FTS).

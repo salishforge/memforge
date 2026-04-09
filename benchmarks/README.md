@@ -80,7 +80,7 @@ All via environment variables:
 
 - **keyword**: PostgreSQL full-text search + trigram fallback. No embedding provider needed.
 - **semantic**: pgvector cosine similarity. Requires `EMBEDDING_PROVIDER=local`, `ollama`, or `openai`.
-- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 92.0% R@5 with `EMBEDDING_PROVIDER=local`.
+- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 93.2% R@5 / 96.4% R@10 with `EMBEDDING_PROVIDER=local`.
 
 ### Output
 
@@ -95,11 +95,11 @@ Each session is tagged with `[SESSION_ID:xxx]` during ingestion. After consolida
 
 ### Baselines
 
-| System | R@5 | Notes |
-|--------|-----|-------|
-| MemPalace | 96.6% | Dedicated graph-memory system, requires Neo4j |
-| **MemForge (hybrid)** | **92.0%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
-| **MemForge (keyword)** | **88.0%** | Pure PostgreSQL, no embedding provider needed |
-| Hippo (BM25) | 74.0% | Zero dependencies, keyword only |
-| Zep | Hippo +18.5% | Temporal knowledge graph |
-| Letta | 74.0% | LoCoMo benchmark, GPT-4o-mini |
+| System | R@5 | R@10 | Notes |
+|--------|-----|------|-------|
+| MemPalace | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
+| **MemForge (hybrid)** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (keyword)** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
+| Hippo (BM25) | 74.0% | — | Zero dependencies, keyword only |
+| Zep | Hippo +18.5% | — | Temporal knowledge graph |
+| Letta | 74.0% | — | LoCoMo benchmark, GPT-4o-mini |

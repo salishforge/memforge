@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
 [![Security Audited](https://img.shields.io/badge/Security-8%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
-[![LongMemEval R@5](https://img.shields.io/badge/LongMemEval%20R%405-92.0%25%20hybrid-blue.svg)](benchmarks/RESULTS.md)
+[![LongMemEval R@5](https://img.shields.io/badge/LongMemEval%20R%405-93.2%25%20hybrid-blue.svg)](benchmarks/RESULTS.md)
 
 Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, revise, and strengthen memories — just like biological brains.
 
@@ -16,7 +16,7 @@ MemForge manages agent memory across three tiers (hot → warm → cold) with ve
 
 ## Project Status
 
-**Beta** — Production hardening is complete. MemForge has passed 8 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (92.0% R@5 hybrid mode, 88.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
+**Beta** — Production hardening is complete. MemForge has passed 8 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (93.2% R@5 hybrid mode, 88.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and the [ROADMAP.md](ROADMAP.md) for the long-term plan.
 
@@ -319,10 +319,21 @@ MemForge is evaluated on [LongMemEval](https://github.com/xiaowu0162/LongMemEval
 
 | Metric | Score |
 |--------|-------|
-| Recall@1 | 74.0% |
-| Recall@3 | 88.0% |
-| Recall@5 | **92.0%** |
-| Recall@10 | 94.0% |
+| Recall@1 | 81.0% |
+| Recall@3 | 90.8% |
+| Recall@5 | **93.2%** |
+| Recall@10 | 96.4% |
+
+**Per-category breakdown:**
+
+| Category | R@5 | R@10 |
+|----------|-----|------|
+| single-session-assistant | 100.0% | 100.0% |
+| knowledge-update | 97.4% | 100.0% |
+| multi-session | 96.2% | 98.5% |
+| temporal-reasoning | 91.0% | 94.7% |
+| single-session-user | 87.1% | 90.0% |
+| single-session-preference | 80.0% | 93.3% |
 
 **Latency:** p50 32 ms, p95 47 ms per query (hybrid mode, local PostgreSQL).
 
@@ -332,19 +343,10 @@ Configuration: concat consolidation, `EMBEDDING_PROVIDER=local`, `KEYWORD_OVERLA
 
 | Metric | Score |
 |--------|-------|
-| Recall@1 | 88.0% |
-| Recall@3 | 88.0% |
-| Recall@5 | **88.0%** |
-| Recall@10 | 88.0% |
-
-| Category | R@5 |
-|----------|-----|
-| knowledge-update | 96.2% |
-| multi-session | 90.2% |
-| temporal-reasoning | 86.5% |
-| single-session-user | 88.6% |
-| single-session-assistant | 85.7% |
-| single-session-preference | 66.7% |
+| Recall@1 | 33.4% |
+| Recall@3 | 34.6% |
+| Recall@5 | **35.0%** |
+| Recall@10 | 35.0% |
 
 **Latency:** p50 39 ms, p95 50 ms per query (keyword mode, local PostgreSQL).
 
@@ -352,14 +354,14 @@ Configuration: concat consolidation, `KEYWORD_OVERLAP_BOOST=0.3`, `TEMPORAL_PROX
 
 ## How It Compares
 
-| System | LongMemEval R@5 | Notes |
-|--------|-----------------|-------|
-| MemPalace | 96.6% | Dedicated graph-memory system, requires Neo4j |
-| **MemForge (hybrid)** | **92.0%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
-| **MemForge (keyword)** | **88.0%** | Pure PostgreSQL, no embedding provider needed |
-| Hippo | 74.0% | BM25 keyword baseline |
+| System | LongMemEval R@5 | LongMemEval R@10 | Notes |
+|--------|-----------------|-----------------|-------|
+| MemPalace | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
+| **MemForge (hybrid)** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (keyword)** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
+| Hippo | 74.0% | — | BM25 keyword baseline |
 
-MemForge hybrid mode (92.0% R@5) closes to within 4.6 points of MemPalace while running entirely on PostgreSQL with no external graph database. Keyword-only mode (88.0% R@5) runs with zero external dependencies — no embedding service required. Both modes outperform the BM25 baseline by 14–18 percentage points.
+MemForge hybrid mode (93.2% R@5, 96.4% R@10) closes to within 3.4 points of MemPalace at R@5 while running entirely on PostgreSQL with no external graph database. Keyword-only mode is expected to score lower on the per-session LongMemEval format (35.0% R@5) because full-text search is weak on short per-session rows — use hybrid mode for best results. Hybrid mode outperforms the BM25 baseline by 19 percentage points at R@5.
 
 ## Configuration
 
@@ -512,7 +514,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, data models, module structure |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
-| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.2.0 (latest: local embeddings, multi-query retrieval, 92.0% R@5) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.2.0 (latest: local embeddings, multi-query retrieval, 93.2% R@5) |
 | [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges |

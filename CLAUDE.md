@@ -408,7 +408,7 @@ const mockLlm: LLMProvider = {
 - Temporal proximity scoring (`TEMPORAL_PROXIMITY_DAYS`)
 - Configurable consolidation batch size (`CONSOLIDATION_INNER_BATCH_SIZE`)
 - Optional LLM post-retrieval reranking (`ENABLE_LLM_RERANK`)
-- LongMemEval benchmark: 92.0% R@5 hybrid mode (per-session + local embeddings); 88.0% R@5 keyword baseline (vs. Hippo 74.0%)
+- LongMemEval benchmark: 93.2% R@5 / 96.4% R@10 hybrid mode (500 questions, local embeddings); 35.0% R@5 keyword baseline (per-session FTS, expected — weak on short rows; vs. Hippo 74.0% on full-context BM25)
 
 ### Community Enhancements
 
