@@ -9,7 +9,7 @@
 -- ─── Part A: Row-Level Security ─────────────────────────────────────────────────
 
 ALTER TABLE hot_tier ENABLE ROW LEVEL SECURITY;
-ALTER TABLE hot_tier -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for hot_tier.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -19,7 +19,7 @@ CREATE POLICY hot_tier_agent_isolation ON hot_tier
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE warm_tier ENABLE ROW LEVEL SECURITY;
-ALTER TABLE warm_tier -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for warm_tier.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -29,7 +29,7 @@ CREATE POLICY warm_tier_agent_isolation ON warm_tier
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE cold_tier ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cold_tier -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for cold_tier.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -39,7 +39,7 @@ CREATE POLICY cold_tier_agent_isolation ON cold_tier
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE consolidation_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE consolidation_log -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for consolidation_log.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -49,7 +49,7 @@ CREATE POLICY consolidation_log_agent_isolation ON consolidation_log
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE entities -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for entities.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -59,7 +59,7 @@ CREATE POLICY entities_agent_isolation ON entities
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE relationships ENABLE ROW LEVEL SECURITY;
-ALTER TABLE relationships -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for relationships.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -69,7 +69,7 @@ CREATE POLICY relationships_agent_isolation ON relationships
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE reflections ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reflections -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for reflections.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -79,7 +79,7 @@ CREATE POLICY reflections_agent_isolation ON reflections
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE retrieval_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE retrieval_log -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for retrieval_log.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -89,7 +89,7 @@ CREATE POLICY retrieval_log_agent_isolation ON retrieval_log
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE memory_revisions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE memory_revisions -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for memory_revisions.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -99,7 +99,7 @@ CREATE POLICY memory_revisions_agent_isolation ON memory_revisions
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE procedures ENABLE ROW LEVEL SECURITY;
-ALTER TABLE procedures -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for procedures.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -109,7 +109,7 @@ CREATE POLICY procedures_agent_isolation ON procedures
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE audit_chain ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_chain -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for audit_chain.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -119,7 +119,7 @@ CREATE POLICY audit_chain_agent_isolation ON audit_chain
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
 ALTER TABLE cold_audit ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cold_audit -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for cold_audit.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.
@@ -130,7 +130,7 @@ CREATE POLICY cold_audit_agent_isolation ON cold_audit
 
 -- warm_tier_entities has no agent_id column — join through warm_tier
 ALTER TABLE warm_tier_entities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE warm_tier_entities -- Note: FORCE ROW LEVEL SECURITY intentionally omitted.
+-- Note: FORCE ROW LEVEL SECURITY intentionally omitted for warm_tier_entities.
 -- RLS applies to non-owner roles only (e.g., read-only analyst access).
 -- The application role (table owner or memforge_app member) bypasses RLS.
 -- See DEPLOYMENT-SECURITY.md for details.

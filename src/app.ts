@@ -148,40 +148,9 @@ export function createApp(deps: AppDependencies): express.Express {
 
   const openApiSpec = buildOpenApiSpec(port);
 
-  // ─── Swagger UI HTML helper ─────────────────────────────────────────────
-
-  function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function escapeJsString(s: string): string {
-    return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\x3c');
-  }
-
-  function swaggerUiHtml(specUrl: string, title: string): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>${escapeHtml(title)}</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://unpkg.com; style-src https://unpkg.com; connect-src 'self'; img-src 'self' data:;" />
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css" />
-</head>
-<body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
-  <script>
-    SwaggerUIBundle({
-      url: '${escapeJsString(specUrl)}',
-      dom_id: '#swagger-ui',
-      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-      layout: 'BaseLayout',
-      deepLinking: true,
-    });
-  </script>
-</body>
-</html>`;
-  }
+  // Swagger UI removed — supply chain risk from loading JS via unpkg.com CDN.
+  // The OpenAPI spec at /api/spec.json can be used with any OpenAPI viewer
+  // (Swagger Editor, Postman, etc.) without external CDN dependencies.
 
   // ─── Admin middleware ───────────────────────────────────────────────────
 
@@ -259,7 +228,7 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   app.get('/api/docs', (_req, res) => {
-    res.type('html').send(swaggerUiHtml('/api/spec.json', 'MemForge API Docs'));
+    res.redirect('/api/spec.json');
   });
 
   /**

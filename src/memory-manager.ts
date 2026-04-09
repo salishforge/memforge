@@ -72,29 +72,6 @@ const DEFAULTS: MemForgeConfig = {
 
 const MAX_TOKEN_BUDGET = 200_000;
 
-// Preference pattern extraction — inspired by MemPalace (MIT)
-const PREFERENCE_PATTERNS: RegExp[] = [
-  /I (?:always |usually |typically )?prefer\s+(.{5,80})/i,
-  /I (?:always |usually )?use\s+(.{5,80}?)[.!,]/i,
-  /I (?:don'?t |never )?like\s+(.{5,80}?)[.!,]/i,
-  /I find (.{5,40}) (?:more |better|easier)/i,
-  /I (?:always |usually )?go with\s+(.{5,60})/i,
-  /my (?:preferred|favorite|go-to) (?:\w+ )?is\s+(.{5,60})/i,
-  /I tend to (?:use|choose|pick)\s+(.{5,60})/i,
-  /I(?:'m| am) (?:a fan of|partial to)\s+(.{5,60})/i,
-  /I (?:would rather|'d rather)\s+(.{5,60})/i,
-  /(?:I )?(?:switched|moved|migrated) (?:to|from)\s+(.{5,60})/i,
-  /I(?:'ve| have) been using\s+(.{5,60})/i,
-  /I recommend\s+(.{5,60})/i,
-];
-
-// Update/correction detection patterns
-const CORRECTION_PATTERNS: RegExp[] = [
-  /(?:changed|updated|switched|migrated|moved)\s+(?:from\s+)?(.{3,40})\s+to\s+(.{3,40})/i,
-  /(?:no longer|not anymore|stopped)\s+(?:using|doing)\s+(.{3,60})/i,
-  /(?:now uses?|now with|replaced .+ with)\s+(.{3,60})/i,
-];
-
 /** Escape PostgreSQL LIKE/ILIKE wildcard characters in user input. */
 function escapeLike(input: string): string {
   return input.replace(/[%_\\]/g, '\\$&');
@@ -250,22 +227,6 @@ export class MemoryManager {
       if (hints.supersedes) enrichedMetadata['_hint_supersedes'] = String(hints.supersedes);
     }
 
-    // Preference pattern extraction — inspired by MemPalace (MIT) preference regex approach
-    const preferences: string[] = [];
-    for (const pattern of PREFERENCE_PATTERNS) {
-      const match = pattern.exec(content);
-      if (match?.[1]) preferences.push(match[1].trim());
-    }
-    if (preferences.length > 0) enrichedMetadata['_preferences'] = preferences;
-
-    // Correction detection
-    for (const pattern of CORRECTION_PATTERNS) {
-      if (pattern.test(content)) {
-        enrichedMetadata['_correction_detected'] = true;
-        break;
-      }
-    }
-
     const { rows } = await this.pool.query<AddResult>(
       `INSERT INTO hot_tier (agent_id, content, metadata, content_hash)
        VALUES ($1, $2, $3, $4)
@@ -285,99 +246,13 @@ export class MemoryManager {
       ).catch((err) => log.error({ err }, 'supersession failed'));
     }
 
-    // Async post-ingest: similarity scan + entity extraction (fire-and-forget)
-    if (this.embeddingsEnabled) {
-      void this.postIngestAnalysis(agentId, result.id, content).catch((err) =>
-        log.error({ err }, 'post-ingest analysis failed'),
-      );
-    }
-
-    // Optional LLM-assisted ingest analysis (opt-in via ENABLE_LLM_INGEST=true)
-    if (this.config.enableLlmIngest && this.llm) {
-      void this.llmIngestAnalysis(agentId, result.id, content).catch((err) =>
-        log.error({ err }, 'LLM ingest analysis failed'),
-      );
-    }
-
     return result;
   }
 
-  /**
-   * Optional LLM-assisted ingest analysis. Classifies memory type, extracts
-   * entities, detects contradictions. Activated by ENABLE_LLM_INGEST=true.
-   * Adds ~500 tokens per add() call.
-   */
-  private async llmIngestAnalysis(agentId: string, hotRowId: bigint, content: string): Promise<void> {
-    if (!this.llm) return;
-
-    const response = await this.llm.chat(
-      'You classify memories for an AI agent. Respond with ONLY valid JSON.',
-      `Classify this memory:\n\n${wrapUserContent('memory', content.slice(0, 2000))}\n\nJSON format: {"type":"fact|event|decision|preference|correction|error","entities":["name1","name2"],"importance":0.0-1.0}`,
-    );
-
-    try {
-      const cleaned = response.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-      const parsed = JSON.parse(cleaned) as Record<string, unknown>;
-      const updates: Record<string, unknown> = {};
-      if (typeof parsed['type'] === 'string') updates['_llm_type'] = parsed['type'];
-      if (Array.isArray(parsed['entities'])) updates['_llm_entities'] = parsed['entities'].slice(0, 10);
-      if (typeof parsed['importance'] === 'number') updates['_llm_importance'] = Math.min(1, Math.max(0, parsed['importance']));
-      if (Object.keys(updates).length > 0) {
-        await this.pool.query(
-          `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
-          [hotRowId, JSON.stringify(updates)],
-        );
-      }
-    } catch {
-      // LLM returned non-JSON — skip silently
-    }
-  }
-
-  /**
-   * Async post-ingest analysis: embed content, find similar warm-tier memories,
-   * extract entities via regex. Results stored back in hot-tier metadata.
-   */
-  private async postIngestAnalysis(agentId: string, hotRowId: bigint, content: string): Promise<void> {
-    // Embed and find most similar warm-tier memory
-    const embedding = await this.embedder.embed(content);
-    if (embedding.length > 0) {
-      const vectorLiteral = `[${embedding.join(',')}]`;
-      const similar = await this.pool.query<{ id: bigint; content: string }>(
-        `SELECT id, LEFT(content, 200) as content FROM warm_tier
-         WHERE agent_id = $1 AND embedding IS NOT NULL
-         ORDER BY embedding <=> $2::halfvec LIMIT 1`,
-        [agentId, vectorLiteral],
-      );
-      if (similar.rows[0]) {
-        void this.pool.query(
-          `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
-          [hotRowId, JSON.stringify({ _similar_to: String(similar.rows[0].id) })],
-        ).catch(() => {});
-      }
-    }
-
-    // Regex entity extraction: proper nouns, @mentions, file paths
-    const entityPatterns = [
-      /\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+\b/g,  // Multi-word proper nouns
-      /@[\w.-]+/g,                               // @mentions
-      /(?:\/[\w.-]+){2,}/g,                     // File paths
-    ];
-    const extractedEntities: string[] = [];
-    for (const pattern of entityPatterns) {
-      let match;
-      while ((match = pattern.exec(content)) !== null && extractedEntities.length < 10) {
-        if (match[0] && !extractedEntities.includes(match[0])) {
-          extractedEntities.push(match[0]);
-        }
-      }
-    }
-    if (extractedEntities.length > 0) {
-      void this.pool.query(
-        `UPDATE hot_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
-        [hotRowId, JSON.stringify({ _extracted_entities: extractedEntities })],
-      ).catch(() => {});
-    }
-  }
+  // Dead code removed: postIngestAnalysis and llmIngestAnalysis were writing
+  // metadata keys (_similar_to, _extracted_entities, _llm_type, _llm_entities,
+  // _llm_importance) that were never read during retrieval or scoring.
+  // Re-add with read-side implementation when these signals are used.
 
   /**
    * Optional LLM-based reranking of retrieval results.
@@ -694,7 +569,7 @@ Ranking (numbers only):`;
          )
          AND (SELECT count(*) FROM knowledge_gaps WHERE agent_id = $1 AND NOT resolved) < 1000`,
         [agentId, searchText.slice(0, 500)],
-      ).catch(() => {});
+      ).catch((err) => log.error({ err }, 'async operation failed'));
     }
 
     // Log retrieval events and update access counts (fire-and-forget)
@@ -2291,23 +2166,7 @@ Ranking (numbers only):`;
           [agentId, retrievalIds],
         ).catch((err) => log.error({ err }, 'retrieval success tracking failed'));
 
-        // Term-memory affinity: store which query terms led to positive feedback.
-        // Future queries with matching terms get a boost from these memories.
-        void this.pool.query<{ query_text: string; warm_tier_id: bigint }>(
-          `SELECT query_text, warm_tier_id FROM retrieval_log
-           WHERE agent_id = $1 AND id = ANY($2) AND query_text IS NOT NULL`,
-          [agentId, retrievalIds],
-        ).then((logRows) => {
-          for (const row of logRows.rows) {
-            const terms = row.query_text.toLowerCase().split(/\s+/).filter((w) => w.length > 3).slice(0, 5);
-            if (terms.length > 0) {
-              void this.pool.query(
-                `UPDATE warm_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
-                [row.warm_tier_id, JSON.stringify({ _affinity_terms: terms })],
-              ).catch(() => {});
-            }
-          }
-        }).catch((err) => log.error({ err }, 'term-memory affinity tracking failed'));
+        // Dead code removed: _affinity_terms was written but never read during retrieval.
       }
     }
 
@@ -2358,10 +2217,10 @@ Ranking (numbers only):`;
                  score = LEAST(1.0, GREATEST(0.1, agent_reputation.score + $3)),
                  last_updated = now()`,
               [sourceAgent, 0.7 + delta, delta],
-            ).catch(() => {});
+            ).catch((err) => log.error({ err }, 'async operation failed'));
           }
         }
-      }).catch(() => {});
+      }).catch((err) => log.error({ err }, 'async operation failed'));
     }
 
     // Audit: record feedback event
@@ -2806,7 +2665,7 @@ Guidelines:
         void this.pool.query(
           `UPDATE shared_memories SET corroboration_count = corroboration_count + 1 WHERE id = $1`,
           [similar.rows[0].id],
-        ).catch(() => {});
+        ).catch((err) => log.error({ err }, 'async operation failed'));
         for (const corrAgentId of [agentId, similar.rows[0].source_agent_id]) {
           void this.pool.query(
             `INSERT INTO agent_reputation (agent_id, domain, corroboration_count, score)
@@ -2816,7 +2675,7 @@ Guidelines:
                score = LEAST(1.0, agent_reputation.score + 0.02),
                last_updated = now()`,
             [corrAgentId],
-          ).catch(() => {});
+          ).catch((err) => log.error({ err }, 'async operation failed'));
         }
       }
 
