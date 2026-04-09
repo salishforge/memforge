@@ -142,24 +142,50 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 }
 
 // ─── Local in-process provider (no external service) ────────────────────────
-// Uses @xenova/transformers (ONNX Runtime) to run all-MiniLM-L6-v2 in-process.
+// Uses @xenova/transformers (ONNX Runtime) for in-process embeddings.
 // Inspired by hippo-memory (MIT) which ships with local embeddings.
-// ~22MB model, 384 dimensions, ~50-100 embeds/sec on CPU.
+//
+// Default: Xenova/all-MiniLM-L6-v2 (~22MB, 384 dimensions, ~50-100 embeds/sec)
+// Configurable via EMBEDDING_MODEL and EMBEDDING_DIMENSIONS env vars.
+//
+// Compatible models (any ONNX model on Hugging Face that supports feature-extraction):
+//   Xenova/all-MiniLM-L6-v2       — 384 dim, 22MB, general-purpose (default)
+//   Xenova/all-MiniLM-L12-v2      — 384 dim, 33MB, higher quality
+//   Xenova/bge-small-en-v1.5      — 384 dim, 33MB, strong retrieval
+//   Xenova/bge-base-en-v1.5       — 768 dim, 110MB, best quality
+//   Xenova/nomic-embed-text-v1    — 768 dim, 135MB, matches Ollama nomic-embed-text
+//   Xenova/gte-small              — 384 dim, 30MB, multilingual
+
+export interface LocalEmbeddingConfig {
+  /** Model identifier — any Xenova/* ONNX model on Hugging Face (default: Xenova/all-MiniLM-L6-v2) */
+  model?: string;
+  /** Vector dimensions — must match the model's output (default: 384) */
+  dimensions?: number;
+  /** Use quantized model weights for smaller download + faster inference (default: true) */
+  quantized?: boolean;
+}
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
-  readonly dimensions = 384;
+  readonly dimensions: number;
+  private readonly model: string;
+  private readonly quantized: boolean;
   private pipeline: unknown = null;
   private loading: Promise<unknown> | null = null;
+
+  constructor(config: LocalEmbeddingConfig = {}) {
+    this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'Xenova/all-MiniLM-L6-v2';
+    this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '384', 10);
+    this.quantized = config.quantized ?? true;
+  }
 
   private async getPipeline(): Promise<unknown> {
     if (this.pipeline) return this.pipeline;
     if (this.loading) return this.loading;
 
     this.loading = (async () => {
-      // Dynamic import — @xenova/transformers is an optional dependency
       const { pipeline } = await import('@xenova/transformers');
-      this.pipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-        quantized: true,
+      this.pipeline = await pipeline('feature-extraction', this.model, {
+        quantized: this.quantized,
       });
       return this.pipeline;
     })();
