@@ -1,0 +1,268 @@
+"""MemForge Python SDK — async HTTP client.
+
+Mirrors the TypeScript MemForgeClient with 18 methods covering all API endpoints.
+
+Usage:
+    from memforge import MemForgeClient
+
+    client = MemForgeClient(base_url="http://localhost:3333", token="...")
+    result = await client.add("agent-1", "User prefers dark mode")
+    results = await client.query("agent-1", q="preferences", mode="hybrid")
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+import httpx
+
+from .types import (
+    AddResult, QueryResult, ConsolidateResult, ClearResult, AgentStats,
+    MemoryHealth, ResumeContext, FeedbackResult, SleepCycleResult,
+    ReflectionResult, MemoryHints,
+)
+
+
+class MemForgeError(Exception):
+    """Raised when the MemForge API returns an error response."""
+
+    def __init__(self, message: str, status_code: int = 0):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class MemForgeClient:
+    """Async HTTP client for the MemForge memory API.
+
+    All methods are async and require an ``await``.
+    For synchronous usage, wrap calls with ``asyncio.run()``.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        timeout: float = 60.0,
+    ):
+        self.base_url = (base_url or os.environ.get("MEMFORGE_URL", "http://localhost:3333")).rstrip("/")
+        self.token = token or os.environ.get("MEMFORGE_TOKEN")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=timeout)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def __aenter__(self) -> "MemForgeClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        resp = await self._client.get(path, params={k: v for k, v in (params or {}).items() if v is not None})
+        data = resp.json()
+        if not data.get("ok"):
+            raise MemForgeError(data.get("error", "Unknown error"), resp.status_code)
+        return data.get("data")
+
+    async def _post(self, path: str, body: dict[str, Any] | None = None) -> Any:
+        resp = await self._client.post(path, json=body or {})
+        data = resp.json()
+        if not data.get("ok"):
+            raise MemForgeError(data.get("error", "Unknown error"), resp.status_code)
+        return data.get("data")
+
+    # ── Memory Operations ────────────────────────────────────────────────
+
+    async def add(
+        self,
+        agent_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        outcome_type: str = "neutral",
+        hints: MemoryHints | None = None,
+    ) -> AddResult:
+        """Store a memory event in the hot tier."""
+        body: dict[str, Any] = {"content": content}
+        if metadata:
+            body["metadata"] = metadata
+        if outcome_type != "neutral":
+            body["outcome_type"] = outcome_type
+        if hints:
+            body["hints"] = {k: v for k, v in hints.__dict__.items() if v is not None}
+        raw = await self._post(f"/memory/{agent_id}/add", body)
+        return AddResult(**{k: raw[k] for k in ("id", "agent_id", "created_at") if k in raw})
+
+    async def query(
+        self,
+        agent_id: str,
+        *,
+        q: str,
+        limit: int = 10,
+        mode: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        decay: float | None = None,
+        max_tokens: int | None = None,
+    ) -> list[QueryResult]:
+        """Search warm-tier memory."""
+        params: dict[str, Any] = {"q": q, "limit": limit}
+        if mode:
+            params["mode"] = mode
+        if after:
+            params["after"] = after
+        if before:
+            params["before"] = before
+        if decay is not None:
+            params["decay"] = decay
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        raw = await self._get(f"/memory/{agent_id}/query", params)
+        return [QueryResult(**r) for r in raw] if isinstance(raw, list) else []
+
+    async def timeline(
+        self,
+        agent_id: str,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve memories in chronological order."""
+        params: dict[str, Any] = {"limit": limit}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        return await self._get(f"/memory/{agent_id}/timeline", params)
+
+    async def consolidate(self, agent_id: str, mode: str | None = None) -> ConsolidateResult:
+        """Trigger hot→warm consolidation."""
+        body: dict[str, Any] = {}
+        if mode:
+            body["mode"] = mode
+        raw = await self._post(f"/memory/{agent_id}/consolidate", body)
+        return ConsolidateResult(**raw)
+
+    async def clear(self, agent_id: str) -> ClearResult:
+        """Archive all hot+warm memory to cold tier."""
+        raw = await self._post(f"/memory/{agent_id}/clear")
+        return ClearResult(**raw)
+
+    async def stats(self, agent_id: str) -> AgentStats:
+        """Get memory tier statistics."""
+        raw = await self._get(f"/memory/{agent_id}/stats")
+        return AgentStats(**raw)
+
+    # ── Knowledge Graph ──────────────────────────────────────────────────
+
+    async def search_entities(
+        self, agent_id: str, *, q: str | None = None, type: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search knowledge graph entities."""
+        params: dict[str, Any] = {"limit": limit}
+        if q:
+            params["q"] = q
+        if type:
+            params["type"] = type
+        return await self._get(f"/memory/{agent_id}/entities", params)
+
+    async def graph_traverse(self, agent_id: str, entity: str, depth: int = 2) -> dict[str, Any]:
+        """Traverse knowledge graph from an entity."""
+        return await self._get(f"/memory/{agent_id}/graph", {"entity": entity, "depth": depth})
+
+    # ── Reflection & Learning ────────────────────────────────────────────
+
+    async def reflect(
+        self, agent_id: str, *, trigger: str = "manual", limit: int = 20
+    ) -> ReflectionResult:
+        """Trigger LLM reflection on recent memories."""
+        raw = await self._post(f"/memory/{agent_id}/reflect", {"trigger": trigger, "limit": limit})
+        return ReflectionResult(**raw)
+
+    async def get_reflections(self, agent_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Retrieve stored reflections."""
+        return await self._get(f"/memory/{agent_id}/reflections", {"limit": limit})
+
+    async def meta_reflect(self, agent_id: str, limit: int = 10) -> dict[str, Any]:
+        """Trigger second-order meta-reflection."""
+        return await self._post(f"/memory/{agent_id}/meta-reflect", {"limit": limit})
+
+    async def get_procedures(
+        self, agent_id: str, *, q: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Retrieve learned condition→action rules."""
+        params: dict[str, Any] = {"limit": limit}
+        if q:
+            params["q"] = q
+        return await self._get(f"/memory/{agent_id}/procedures", params)
+
+    # ── Sleep & Maintenance ──────────────────────────────────────────────
+
+    async def sleep(
+        self,
+        agent_id: str,
+        *,
+        token_budget: int | None = None,
+        eviction_threshold: float | None = None,
+        revision_threshold: float | None = None,
+        include_reflection: bool | None = None,
+    ) -> SleepCycleResult:
+        """Run a full sleep cycle."""
+        body: dict[str, Any] = {}
+        if token_budget is not None:
+            body["tokenBudget"] = token_budget
+        if eviction_threshold is not None:
+            body["evictionThreshold"] = eviction_threshold
+        if revision_threshold is not None:
+            body["revisionThreshold"] = revision_threshold
+        if include_reflection is not None:
+            body["includeReflection"] = include_reflection
+        raw = await self._post(f"/memory/{agent_id}/sleep", body)
+        return SleepCycleResult(**raw)
+
+    async def memory_health(self, agent_id: str) -> MemoryHealth:
+        """Get memory health metrics."""
+        raw = await self._get(f"/memory/{agent_id}/health")
+        return MemoryHealth(**raw)
+
+    async def resume(self, agent_id: str, limit: int = 5) -> ResumeContext:
+        """Get session resumption context bundle."""
+        raw = await self._get(f"/memory/{agent_id}/resume", {"limit": limit})
+        return ResumeContext(**raw)
+
+    # ── Feedback ─────────────────────────────────────────────────────────
+
+    async def feedback(
+        self,
+        agent_id: str,
+        retrieval_ids: list[int],
+        outcome: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> FeedbackResult:
+        """Record retrieval outcome feedback."""
+        body: dict[str, Any] = {"retrieval_ids": retrieval_ids, "outcome": outcome}
+        if metadata:
+            body["metadata"] = metadata
+        raw = await self._post(f"/memory/{agent_id}/feedback", body)
+        return FeedbackResult(**raw)
+
+    async def active_recall(self, agent_id: str, context: str, limit: int = 5) -> dict[str, Any]:
+        """Proactively surface relevant memories for a context."""
+        return await self._post(f"/memory/{agent_id}/active-recall", {"context": context, "limit": limit})
+
+    async def deduplicate_entities(self, agent_id: str, threshold: float = 0.7) -> dict[str, Any]:
+        """Merge duplicate entities in the knowledge graph."""
+        return await self._post(f"/memory/{agent_id}/dedup-entities", {"threshold": threshold})
+
+    # ── System ───────────────────────────────────────────────────────────
+
+    async def health(self) -> dict[str, Any]:
+        """Check server health."""
+        resp = await self._client.get("/health")
+        return resp.json()
