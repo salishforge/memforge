@@ -121,16 +121,28 @@ Hot tier fills on every `add()` call. Consolidation (concat or LLM summarize) pr
 ### Retrieval Pipeline
 
 ```
-Query text
-  ├─► plainto_tsquery (FTS)    ─┐
-  ├─► websearch_to_tsquery (FTS) ├─► RRF merge ─► keyword overlap boost
-  └─► pgvector HNSW (semantic) ─┘              ─► temporal proximity boost
-                                               ─► importance * score
-                                               ─► [optional LLM rerank]
-                                               ─► top-k results
+Raw query text
+  ├─► Query preprocessing
+  │     ├─► strip question scaffolding ("what is", "tell me about", …)
+  │     ├─► extract time references (yesterday, last week → after/before filters)
+  │     └─► compound query splitting (at conjunctions → up to 3 sub-queries)
+  │
+  └─► Per sub-query (multi-query retrieval, results merged by highest rank)
+        ├─► plainto_tsquery (FTS)        ─┐
+        ├─► websearch_to_tsquery (FTS)    ├─► asymmetric RRF (semantic 1.5×)
+        └─► pgvector HNSW (semantic)     ─┘
+              ─► result dedup (first 100 chars fingerprint)
+              ─► min quality threshold (≥10% of top score)
+              ─► entity detection boost (terms in knowledge graph)
+              ─► keyword overlap boost
+              ─► temporal proximity boost
+              ─► importance × score
+              ─► term-memory affinity (query terms → memory associations)
+              ─► [optional LLM rerank]
+              ─► top-k results
 ```
 
-Keyword and semantic results run in parallel and are fused via Reciprocal Rank Fusion. Two tokenizer strategies (plainto and websearch) improve recall on natural-language queries. Configurable boosts tune scoring per deployment.
+Query preprocessing normalises natural-language phrasing and auto-applies time filters. Compound queries are split at conjunctions and run as independent sub-queries, with results merged by best rank (up to 3 sub-queries). Asymmetric RRF weights semantic results 1.5× higher than keyword to improve precision in hybrid mode. Result deduplication and a minimum quality threshold prevent noise from polluting top-k results. Configurable boosts tune scoring per deployment.
 
 ### Active Ingest
 
@@ -165,11 +177,11 @@ All log output is structured JSON via pino. Request correlation IDs (`X-Request-
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/memory-manager.ts` | ~2,333 | Core API — all memory operations |
-| `src/app.ts` | ~946 | Express app factory (`createApp()`) — all routes, middleware, validation |
+| `src/memory-manager.ts` | ~2,535 | Core API — all memory operations |
+| `src/app.ts` | ~954 | Express app factory (`createApp()`) — all routes, middleware, validation |
 | `src/sleep-cycle.ts` | ~682 | Sleep cycle engine (5 phases) |
 | `src/server.ts` | ~117 | Thin bootstrap — creates providers, calls `createApp()`, binds port |
-| `src/types.ts` | ~421 | All TypeScript interfaces |
+| `src/types.ts` | ~425 | All TypeScript interfaces |
 | `src/client.ts` | ~374 | HTTP client SDK (`MemForgeClient`, `ResilientMemForgeClient`) |
 | `src/mcp.ts` | ~484 | MCP server (17 tools, stdio transport, no external SDK) |
 | `src/llm.ts` | ~334 | LLM providers + system prompts |
@@ -177,7 +189,7 @@ All log output is structured JSON via pino. Request correlation IDs (`X-Request-
 | `src/logger.ts` | ~75 | Pino logger + request correlation ID middleware |
 | `src/tool-definitions.ts` | ~236 | LLM tool definitions (Anthropic + OpenAI formats) |
 | `src/openapi.ts` | ~409 | OpenAPI 3.0 spec |
-| `src/embedding.ts` | ~175 | Embedding providers |
+| `src/embedding.ts` | ~295 | Embedding providers (local in-process, Ollama, OpenAI, concurrency limiter) |
 | `src/db.ts` | ~70 | PostgreSQL pool setup |
 | `schema/schema.sql` | ~230 | Canonical "from scratch" schema (12 tables) |
 
@@ -200,8 +212,10 @@ All log output is structured JSON via pino. Request correlation IDs (`X-Request-
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LLM_MODEL` | provider default | Model name override |
 | `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
-| `EMBEDDING_PROVIDER` | `none` | `openai`, `ollama`, or `none` |
-| `EMBEDDING_MODEL` | provider default | Embedding model name override |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` uses in-process @xenova/transformers (zero external dependency). |
+| `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
+| `EMBEDDING_DIMENSIONS` | provider default | Override output embedding dimensions (required if model differs from default). |
+| `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Fixes request pileup under load. |
 | `CONSOLIDATION_MODE` | `concat` | `concat` (fast) or `summarize` (LLM) |
 
 ### Retrieval Tuning
@@ -364,9 +378,14 @@ const mockLlm: LLMProvider = {
 - HTTP API test suite covers all 18 endpoints via supertest
 - Load tests validate p95 latency targets
 
+### Embeddings
+
+- **In-process local embeddings** (`EMBEDDING_PROVIDER=local`) — uses `@xenova/transformers` with `Xenova/bge-small-en-v1.5` by default (7.3 ms/embed, ~137 embeds/sec on CPU). No external service required. Model configurable via `EMBEDDING_MODEL`.
+- **Concurrency-limited external embeddings** — `ConcurrencyLimitedEmbeddingProvider` wraps Ollama/OpenAI with a semaphore (`EMBEDDING_CONCURRENCY_LIMIT`, default 3). Prevents request pileup under consolidation bursts (fixes #67).
+
 ### Security
 
-- 4 rounds of security audit, 25 findings resolved
+- 8 rounds of security audit, all clean at MEDIUM+
 - Zod validation on all request boundaries (`src/schemas.ts`)
 - PostgreSQL advisory locks prevent concurrent sleep cycle races
 - Prompt injection boundaries: user content wrapped in XML delimiters + injection-resistance instructions
@@ -377,12 +396,19 @@ const mockLlm: LLMProvider = {
 
 ### Retrieval Quality
 
+- Query preprocessing: strip question scaffolding, extract time references, split compound queries
+- Multi-query retrieval: compound queries split and run independently (up to 3 sub-queries)
+- Asymmetric RRF: semantic results weighted 1.5× in hybrid mode
+- Result deduplication: first-100-char fingerprint prevents duplicate warm-tier rows in top-k
+- Minimum quality threshold: results below 10% of top score are discarded
+- Entity detection boost: terms matched in knowledge graph entities are scored higher
+- Term-memory affinity: query terms → memory associations stored for future retrieval improvement
 - Dual-tokenizer search (plainto + websearch) reduces missed recall
 - Configurable keyword overlap boost (`KEYWORD_OVERLAP_BOOST`)
 - Temporal proximity scoring (`TEMPORAL_PROXIMITY_DAYS`)
 - Configurable consolidation batch size (`CONSOLIDATION_INNER_BATCH_SIZE`)
 - Optional LLM post-retrieval reranking (`ENABLE_LLM_RERANK`)
-- LongMemEval benchmark: 88.0% R@5 keyword mode (vs. Hippo 74.0%)
+- LongMemEval benchmark: 92.0% R@5 hybrid mode (per-session + local embeddings); 88.0% R@5 keyword baseline (vs. Hippo 74.0%)
 
 ### Community Enhancements
 

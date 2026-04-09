@@ -5,8 +5,8 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
-[![Security Audited](https://img.shields.io/badge/Security-4%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
-[![LongMemEval R@5](https://img.shields.io/badge/LongMemEval%20R%405-88.0%25-blue.svg)](benchmarks/RESULTS.md)
+[![Security Audited](https://img.shields.io/badge/Security-8%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
+[![LongMemEval R@5](https://img.shields.io/badge/LongMemEval%20R%405-92.0%25%20hybrid-blue.svg)](benchmarks/RESULTS.md)
 
 Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, revise, and strengthen memories — just like biological brains.
 
@@ -16,7 +16,7 @@ MemForge manages agent memory across three tiers (hot → warm → cold) with ve
 
 ## Project Status
 
-**Beta** — Production hardening is complete. MemForge has passed 4 rounds of security audit (25 findings resolved), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (88.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
+**Beta** — Production hardening is complete. MemForge has passed 8 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (92.0% R@5 hybrid mode, 88.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and the [ROADMAP.md](ROADMAP.md) for the long-term plan.
 
@@ -34,7 +34,9 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 ## Features
 
 - **Tiered Memory** — Hot (raw events) → Warm (consolidated, searchable, scored) → Cold (archived audit trail)
-- **Hybrid Search** — Dual-tokenizer keyword (PostgreSQL FTS + trigram), semantic (pgvector HNSW), and reciprocal rank fusion with keyword overlap boost and temporal proximity scoring
+- **Hybrid Search** — Dual-tokenizer keyword (PostgreSQL FTS + trigram), semantic (pgvector HNSW), and asymmetric reciprocal rank fusion (semantic 1.5×) with keyword overlap boost, temporal proximity scoring, result deduplication, quality threshold, and entity detection
+- **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@xenova/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. Zero external dependency — no Ollama or OpenAI required for semantic search.
+- **Query Understanding** — Strips question scaffolding, auto-extracts time references as date filters, splits compound queries into independent sub-queries for multi-query retrieval
 - **Knowledge Graph** — Entities and relationships extracted during consolidation, traversable via recursive CTEs
 - **Sleep Cycles** — 5-phase background processor: scoring → triage → revision → graph maintenance → reflection. Includes autonomous weight adaptation.
 - **Memory Revision** — LLM rewrites low-confidence memories (augment, correct, merge, compress)
@@ -50,7 +52,7 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 - **Entity Deduplication** — Trigram-based duplicate entity detection and merge
 - **Temporal Intelligence** — Time-bounded queries, decay scoring, timeline view
 - **Multi-Tenant** — All operations scoped by agent ID
-- **Security Hardened** — Zod validation, advisory locks, prompt injection boundaries, RLS, SSRF prevention, security headers. 4 audits, 25 findings fixed.
+- **Security Hardened** — Zod validation, advisory locks, prompt injection boundaries, RLS, SSRF prevention, security headers. 8 audit rounds, all clean at MEDIUM+.
 - **MCP Server** — 17 tools for Claude Code, Cursor, and MCP-compatible AI tools
 - **TypeScript SDK** — Zero-dependency HTTP client for any JS runtime
 - **LLM Opt-In** — Post-retrieval reranking and LLM-assisted ingest available but off by default
@@ -313,13 +315,26 @@ const response = await openai.chat.completions.create({
 
 MemForge is evaluated on [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (ICLR 2025) — a 500-question benchmark measuring session-level recall across multi-session and temporal reasoning tasks.
 
-### LongMemEval — Keyword Mode (v2.2.0)
+### LongMemEval — Hybrid Mode (v2.2.0, recommended)
+
+| Metric | Score |
+|--------|-------|
+| Recall@1 | 74.0% |
+| Recall@3 | 88.0% |
+| Recall@5 | **92.0%** |
+| Recall@10 | 94.0% |
+
+**Latency:** p50 32 ms, p95 47 ms per query (hybrid mode, local PostgreSQL).
+
+Configuration: concat consolidation, `EMBEDDING_PROVIDER=local`, `KEYWORD_OVERLAP_BOOST=0.3`, `TEMPORAL_PROXIMITY_DAYS=7`.
+
+### LongMemEval — Keyword Mode (v2.2.0, no embedding provider needed)
 
 | Metric | Score |
 |--------|-------|
 | Recall@1 | 88.0% |
 | Recall@3 | 88.0% |
-| Recall@5 | 88.0% |
+| Recall@5 | **88.0%** |
 | Recall@10 | 88.0% |
 
 | Category | R@5 |
@@ -340,10 +355,11 @@ Configuration: concat consolidation, `KEYWORD_OVERLAP_BOOST=0.3`, `TEMPORAL_PROX
 | System | LongMemEval R@5 | Notes |
 |--------|-----------------|-------|
 | MemPalace | 96.6% | Dedicated graph-memory system, requires Neo4j |
-| **MemForge** | **88.0%** | Pure PostgreSQL, keyword mode |
+| **MemForge (hybrid)** | **92.0%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (keyword)** | **88.0%** | Pure PostgreSQL, no embedding provider needed |
 | Hippo | 74.0% | BM25 keyword baseline |
 
-MemForge sits 14 points above the BM25 keyword baseline and 8.6 points below MemPalace — while running entirely on PostgreSQL with no external graph database. Enabling semantic or hybrid mode with an embedding provider is expected to narrow this gap further.
+MemForge hybrid mode (92.0% R@5) closes to within 4.6 points of MemPalace while running entirely on PostgreSQL with no external graph database. Keyword-only mode (88.0% R@5) runs with zero external dependencies — no embedding service required. Both modes outperform the BM25 baseline by 14–18 percentage points.
 
 ## Configuration
 
@@ -355,7 +371,10 @@ See `.env.example` for the full list. Key variables:
 | `MEMFORGE_TOKEN` | required | Bearer token for `/memory/*` routes |
 | `PORT` | `3333` | HTTP listen port |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL (optional) |
-| `EMBEDDING_PROVIDER` | `none` | `openai`, `ollama`, or `none` |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` runs in-process (zero external dependency). |
+| `EMBEDDING_MODEL` | provider default | Embedding model override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
+| `EMBEDDING_DIMENSIONS` | provider default | Output dimensions override (required if model differs from default). |
+| `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel requests for external embedding providers (Ollama, OpenAI). |
 | `LLM_PROVIDER` | `none` | `anthropic`, `openai`, `ollama`, or `none` |
 | `CONSOLIDATION_MODE` | `concat` | `concat` (fast) or `summarize` (LLM) |
 | `CONSOLIDATION_INNER_BATCH_SIZE` | `50` | Hot-tier rows per consolidation batch |
@@ -493,7 +512,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, data models, module structure |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
-| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.2.0 |
+| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.2.0 (latest: local embeddings, multi-query retrieval, 92.0% R@5) |
 | [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges |

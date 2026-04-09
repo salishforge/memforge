@@ -66,6 +66,14 @@ LLM_PROVIDER=none
 CONSOLIDATION_MODE=concat
 ```
 
+For development with local in-process embeddings (no external service needed):
+```
+EMBEDDING_PROVIDER=local
+# Optional overrides:
+# EMBEDDING_MODEL=Xenova/bge-small-en-v1.5
+# EMBEDDING_DIMENSIONS=384
+```
+
 ### Running
 
 ```bash
@@ -206,8 +214,10 @@ All configuration is via environment variables. Copy `.env.example` to `.env` to
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LLM_MODEL` | provider default | Model name override |
 | `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
-| `EMBEDDING_PROVIDER` | `none` | `openai`, `ollama`, or `none` |
-| `EMBEDDING_MODEL` | provider default | Embedding model name override |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` runs in-process via `@xenova/transformers` — no external service required. |
+| `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
+| `EMBEDDING_DIMENSIONS` | provider default | Output embedding dimensions override (required when using a non-default model). |
+| `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Prevents request pileup during consolidation. |
 | `CONSOLIDATION_MODE` | `concat` | `concat` (fast, no LLM) or `summarize` (LLM-driven) |
 
 ### Retrieval Tuning
@@ -363,7 +373,7 @@ The docker-compose.yml mounts `schema/schema.sql` into PostgreSQL's init directo
 
 **"extension vector does not exist"** — Install pgvector: `sudo apt install postgresql-16-pgvector` or use the Docker setup.
 
-**"Semantic search requires an embedding provider"** — Set `EMBEDDING_PROVIDER=openai` or `ollama`, or use `mode=keyword` explicitly.
+**"Semantic search requires an embedding provider"** — Set `EMBEDDING_PROVIDER=local` (no external service needed), `openai`, or `ollama`, or use `mode=keyword` explicitly.
 
 **Redis connection errors** — MemForge works without Redis. Set `REDIS_URL` to empty to suppress warnings, or start Redis.
 

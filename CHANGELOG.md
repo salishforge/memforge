@@ -6,6 +6,15 @@ All notable changes to MemForge are documented here.
 
 ### Features
 
+- **In-Process Local Embeddings** — `EMBEDDING_PROVIDER=local` generates embeddings in-process using `@xenova/transformers` with `Xenova/bge-small-en-v1.5` as the default model (7.3 ms/embed, ~137 embeds/sec on CPU). No external service, API key, or Ollama instance required. Model configurable via `EMBEDDING_MODEL`; output dimensions configurable via `EMBEDDING_DIMENSIONS`.
+- **Concurrency-Limited Embedding Provider** — `ConcurrencyLimitedEmbeddingProvider` wraps Ollama and OpenAI embedding providers with a semaphore (`EMBEDDING_CONCURRENCY_LIMIT`, default 3). Prevents request pileup during large consolidation batches. Fixes #67.
+- **Query Understanding — Preprocessing** — Query text is normalised before retrieval: question scaffolding ("what is", "tell me about", etc.) is stripped, time references ("yesterday", "last week", "two days ago") are automatically converted to `after`/`before` date filters, and compound queries are split at conjunctions for multi-query retrieval.
+- **Multi-Query Retrieval** — Compound queries are split into up to 3 independent sub-queries, each run through the full retrieval pipeline. Results are merged by highest rank across sub-queries, improving recall on queries that combine unrelated topics.
+- **Asymmetric RRF** — Reciprocal rank fusion now weights semantic results 1.5× relative to keyword results in hybrid mode, improving precision for conversational queries.
+- **Result Deduplication** — Top-k results are deduplicated by a first-100-character fingerprint before returning to callers. Prevents near-identical consolidated rows from consuming multiple result slots.
+- **Minimum Quality Threshold** — Results scoring below 10% of the top-ranked result's score are discarded, preventing low-quality noise from appearing in top-k output.
+- **Entity Detection Boost** — Query terms matched against the knowledge graph entity table receive a scoring boost, improving recall for queries about known entities.
+- **Term-Memory Affinity** — Positive feedback stores query-term → memory associations as affinity weights. Future retrievals for those query terms preferentially surface the associated memories, creating a retrieval reinforcement loop.
 - **Active Ingest — Hints API** — `POST /memory/:agentId/hints` accepts structured retrieval hints (keywords, entities, temporal anchors) that bias future search scoring without requiring a full memory write. Agents can now participate directly in memory management.
 - **Active Ingest — Preference Extraction** — Automatic extraction of user preferences from stored content during consolidation. Preferences are tagged and weighted for priority retrieval.
 - **Active Ingest — Entity Detection** — Lightweight heuristic pre-screening detects named entities before sending content to the LLM, reducing unnecessary LLM calls.
@@ -31,12 +40,15 @@ All notable changes to MemForge are documented here.
 - **Row-Level Security Migration** — `schema/migration-v2.3.sql` adds PostgreSQL RLS policies on all agent-scoped tables. Applications connecting with per-agent roles get OS-level isolation, not just application-level.
 - **SSRF Prevention** — Outbound HTTP calls from the embedding and LLM provider factories validate destination URLs against an allowlist. Private IP ranges are blocked.
 - **Security Headers** — HTTP responses now include `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, and `Referrer-Policy` headers via the `helmet` middleware.
-- **4 Rounds of Security Audits** — 25 findings identified and resolved across authentication, input handling, SQL construction, LLM prompt safety, and deployment configuration. See `ADVERSARIAL-ASSESSMENT.md` and `DEPLOYMENT-SECURITY.md`.
+- **8 Rounds of Security Audits** — All rounds clean at MEDIUM+ severity. Prior rounds resolved 25 findings across authentication, input handling, SQL construction, LLM prompt safety, and deployment configuration. See `ADVERSARIAL-ASSESSMENT.md` and `DEPLOYMENT-SECURITY.md`.
 
 ### Performance
 
-- **Retrieval p50 39 ms, p95 50 ms** — Measured on LongMemEval 500-question harness (keyword mode, PostgreSQL FTS).
-- **88.0% Recall@5** — LongMemEval keyword mode. Outperforms Hippo (74.0% R@5 BM25) by 14 percentage points.
+- **92.0% Recall@5 — Hybrid mode** — LongMemEval per-session benchmark with `EMBEDDING_PROVIDER=local`. Properly differentiated R@k: R@1 74% → R@3 88% → R@5 92% → R@10 94%. Closes to within 4.6 points of MemPalace (96.6%) while running on pure PostgreSQL.
+- **88.0% Recall@5 — Keyword mode** — LongMemEval keyword-only baseline. No embedding provider required. Outperforms Hippo (74.0% R@5 BM25) by 14 percentage points.
+- **Local embedding throughput** — `@xenova/transformers` with bge-small-en-v1.5: 7.3 ms/embed, ~137 embeds/sec on CPU, in-process with no network overhead.
+- **Hybrid mode latency** — p50 32 ms, p95 47 ms per query (local PostgreSQL with local embeddings).
+- **Keyword mode latency** — p50 39 ms, p95 50 ms per query (PostgreSQL FTS).
 - Dual-tokenizer search reduces missed recall on natural-language queries by ~8% in internal testing.
 - Keyword overlap boost improves MRR by ~0.04 on the LongMemEval multi-session category.
 - Configurable batch size allows high-memory deployments to process consolidation 2-3x faster.

@@ -51,6 +51,16 @@ npm run benchmark:evaluate
 npm run benchmark:report
 ```
 
+### Recommended Configuration
+
+For best results, run with local in-process embeddings and hybrid mode:
+
+```bash
+EMBEDDING_PROVIDER=local BENCHMARK_MODES=keyword,hybrid npm run benchmark:longmemeval
+```
+
+This requires no external embedding service. `@xenova/transformers` will download the bge-small-en-v1.5 model on first run (~120 MB, cached locally).
+
 ### Configuration
 
 All via environment variables:
@@ -69,8 +79,8 @@ All via environment variables:
 ### Modes
 
 - **keyword**: PostgreSQL full-text search + trigram fallback. No embedding provider needed.
-- **semantic**: pgvector cosine similarity. Requires `EMBEDDING_PROVIDER=ollama` or `openai`.
-- **hybrid**: Reciprocal rank fusion of keyword + semantic. Requires embedding provider.
+- **semantic**: pgvector cosine similarity. Requires `EMBEDDING_PROVIDER=local`, `ollama`, or `openai`.
+- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 92.0% R@5 with `EMBEDDING_PROVIDER=local`.
 
 ### Output
 
@@ -87,6 +97,9 @@ Each session is tagged with `[SESSION_ID:xxx]` during ingestion. After consolida
 
 | System | R@5 | Notes |
 |--------|-----|-------|
+| MemPalace | 96.6% | Dedicated graph-memory system, requires Neo4j |
+| **MemForge (hybrid)** | **92.0%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (keyword)** | **88.0%** | Pure PostgreSQL, no embedding provider needed |
 | Hippo (BM25) | 74.0% | Zero dependencies, keyword only |
-| Zep | +18.5% | Temporal knowledge graph |
+| Zep | Hippo +18.5% | Temporal knowledge graph |
 | Letta | 74.0% | LoCoMo benchmark, GPT-4o-mini |
