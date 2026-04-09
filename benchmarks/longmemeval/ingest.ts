@@ -109,18 +109,44 @@ export async function main(configOverride?: BenchmarkConfig): Promise<IngestMani
   const promises = questions.map((instance, i) => {
     const questionIndex = config.questionOffset + i;
     return limit(async () => {
-      const result = await ingestQuestion(client, instance, questionIndex, config);
-      agents.push({
-        agentId: result.agentId,
-        questionIndex,
-        sessionsIngested: result.sessionsIngested,
-        ingestMs: result.ingestMs,
-        consolidateMs: result.consolidateMs,
-      });
+      // Retry up to 2 times on transient failures (timeout, connection reset)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await ingestQuestion(client, instance, questionIndex, config);
+          agents.push({
+            agentId: result.agentId,
+            questionIndex,
+            sessionsIngested: result.sessionsIngested,
+            ingestMs: result.ingestMs,
+            consolidateMs: result.consolidateMs,
+          });
+          break;
+        } catch (err) {
+          if (attempt === 2) {
+            console.error(`  SKIP question ${questionIndex}: ${(err as Error).message}`);
+            // Don't throw — skip this question and continue
+          } else {
+            await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          }
+        }
+      }
       completed++;
       if (completed % 10 === 0 || completed === questions.length) {
         const elapsed = ((performance.now() - totalStart) / 1000).toFixed(1);
         console.log(`  [${completed}/${questions.length}] ${elapsed}s elapsed`);
+        // Save incremental manifest every 10 questions
+        mkdirSync(config.resultsDir, { recursive: true });
+        writeFileSync(
+          join(config.resultsDir, 'ingest-manifest.json'),
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            agentPrefix: config.agentPrefix,
+            questionCount: agents.length,
+            consolidationMode: config.consolidationMode,
+            agents: agents.sort((a, b) => a.questionIndex - b.questionIndex),
+          }, null, 2),
+          'utf-8',
+        );
       }
     });
   });
