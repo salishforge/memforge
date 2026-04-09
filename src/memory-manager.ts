@@ -7,6 +7,7 @@
 import { createHash } from 'crypto';
 import { Pool } from 'pg';
 import { getPool } from './db.js';
+import { emitWebhookEvent } from './webhooks.js';
 import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
@@ -1279,6 +1280,11 @@ Ranking (numbers only):`;
 
       await client.query('COMMIT');
 
+      // Emit webhook event for consolidation
+      if (warmCreated > 0) {
+        emitWebhookEvent('consolidated', agentId, { warm_rows_created: warmCreated, mode: resolvedMode });
+      }
+
       return {
         run_id: runId,
         agent_id: agentId,
@@ -2531,5 +2537,123 @@ Guidelines:
       memories: memoryResults,
       procedures: procedureResults,
     };
+  }
+
+  // ─── Export/Import ──────────────────────────────────────────────────────
+
+  /**
+   * Export an agent's full memory as JSONL lines.
+   * Includes warm-tier memories, entities, relationships, procedures, and reflections.
+   */
+  async exportMemory(agentId: string): Promise<string[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    const lines: string[] = [];
+
+    // Warm-tier memories
+    const memories = await this.pool.query<{ content: string; summary: string | null; metadata: Record<string, unknown>; importance: number; confidence: number; consolidated_at: Date }>(
+      `SELECT content, summary, metadata, importance, confidence, consolidated_at FROM warm_tier WHERE agent_id = $1 ORDER BY importance DESC`,
+      [agentId],
+    );
+    for (const m of memories.rows) {
+      lines.push(JSON.stringify({ type: 'memory', content: m.content, summary: m.summary, metadata: m.metadata, importance: m.importance, confidence: m.confidence, consolidated_at: m.consolidated_at }));
+    }
+
+    // Entities
+    const entities = await this.pool.query<{ name: string; entity_type: string; mention_count: number }>(
+      `SELECT name, entity_type, mention_count FROM entities WHERE agent_id = $1`,
+      [agentId],
+    );
+    for (const e of entities.rows) {
+      lines.push(JSON.stringify({ type: 'entity', name: e.name, entity_type: e.entity_type, mention_count: e.mention_count }));
+    }
+
+    // Relationships
+    const rels = await this.pool.query<{ source: string; target: string; relation_type: string; weight: number }>(
+      `SELECT s.name as source, t.name as target, r.relation_type, r.weight
+       FROM relationships r
+       JOIN entities s ON s.id = r.source_entity_id
+       JOIN entities t ON t.id = r.target_entity_id
+       WHERE r.agent_id = $1 AND r.valid_until IS NULL`,
+      [agentId],
+    );
+    for (const r of rels.rows) {
+      lines.push(JSON.stringify({ type: 'relationship', source: r.source, target: r.target, relation_type: r.relation_type, weight: r.weight }));
+    }
+
+    // Procedures
+    const procs = await this.pool.query<{ condition: string; action: string; confidence: number; active: boolean }>(
+      `SELECT condition, action, confidence, active FROM procedures WHERE agent_id = $1`,
+      [agentId],
+    );
+    for (const p of procs.rows) {
+      lines.push(JSON.stringify({ type: 'procedure', condition: p.condition, action: p.action, confidence: p.confidence, active: p.active }));
+    }
+
+    // Reflections
+    const reflections = await this.pool.query<{ content: string; key_insights: string[]; reflection_level: number }>(
+      `SELECT content, key_insights, reflection_level FROM reflections WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      [agentId],
+    );
+    for (const r of reflections.rows) {
+      lines.push(JSON.stringify({ type: 'reflection', content: r.content, key_insights: r.key_insights, reflection_level: r.reflection_level }));
+    }
+
+    return lines;
+  }
+
+  /**
+   * Import JSONL lines into an agent's memory.
+   * Each line must be a JSON object with a 'type' field.
+   */
+  async importMemory(agentId: string, lines: string[]): Promise<{ imported: number; errors: number }> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+
+    if (this.config.autoRegisterAgents) {
+      await this.registerAgent(agentId);
+    }
+
+    let imported = 0;
+    let errors = 0;
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        const type = obj['type'] as string;
+
+        switch (type) {
+          case 'memory':
+            await this.add(agentId, obj['content'] as string, (obj['metadata'] as Record<string, unknown>) ?? {});
+            imported++;
+            break;
+          case 'entity':
+            await this.pool.query(
+              `INSERT INTO entities (agent_id, name, entity_type, mention_count) VALUES ($1, $2, $3, $4)
+               ON CONFLICT (agent_id, name) DO UPDATE SET mention_count = GREATEST(entities.mention_count, $4)`,
+              [agentId, obj['name'], obj['entity_type'] ?? 'other', obj['mention_count'] ?? 1],
+            );
+            imported++;
+            break;
+          case 'procedure':
+            await this.pool.query(
+              `INSERT INTO procedures (agent_id, condition, action, confidence, active) VALUES ($1, $2, $3, $4, $5)`,
+              [agentId, obj['condition'], obj['action'], obj['confidence'] ?? 0.5, obj['active'] ?? true],
+            );
+            imported++;
+            break;
+          default:
+            // Skip unknown types gracefully
+            break;
+        }
+      } catch {
+        errors++;
+      }
+    }
+
+    return { imported, errors };
   }
 }

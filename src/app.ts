@@ -836,6 +836,47 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   /**
+   * GET /memory/:agentId/export
+   * Export agent's full memory as JSONL.
+   */
+  app.get('/memory/:agentId/export', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    try {
+      const lines = await manager.exportMemory(getAgentId(req));
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Content-Disposition', `attachment; filename="${getAgentId(req)}-memory.jsonl"`);
+      res.send(lines.join('\n') + '\n');
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * POST /memory/:agentId/import
+   * Import JSONL into agent's memory.
+   * Body: JSONL text (one JSON object per line)
+   */
+  app.post('/memory/:agentId/import', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const body = req.body as { lines?: string[] } | string;
+    let lines: string[];
+    if (typeof body === 'string') {
+      lines = body.split('\n').filter((l) => l.trim());
+    } else if (Array.isArray(body.lines)) {
+      lines = body.lines;
+    } else {
+      fail(res, 400, 'Body must be { "lines": [...] } or raw JSONL text');
+      return;
+    }
+
+    try {
+      const result = await manager.importMemory(getAgentId(req), lines);
+      void invalidateAgent(getAgentId(req));
+      ok(res, result);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
    * GET /memory/:agentId/verify
    * Verify integrity of all audit chains for an agent.
    */

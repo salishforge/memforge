@@ -69,4 +69,6 @@ export { AuditChain, contentHash } from './audit.js';
 export type { AuditEntry, AuditOperation, AuditTrigger, VerificationResult, AuditConfig } from './audit.js';
 export { createApp } from './app.js';
 export type { AppDependencies } from './app.js';
+export { configureWebhooks, emitWebhookEvent } from './webhooks.js';
+export type { WebhookEvent } from './webhooks.js';
 export { VERSION } from './version.js';

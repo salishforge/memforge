@@ -13,6 +13,7 @@ import { wrapLLMProvider } from './llm-safety.js';
 import { AuditChain } from './audit.js';
 import { createApp } from './app.js';
 import { getLogger } from './logger.js';
+import { configureWebhooks } from './webhooks.js';
 import type { ConsolidationMode } from './types.js';
 
 const log = getLogger('server');
@@ -81,6 +82,9 @@ const manager = new MemoryManager({
   },
   auditChain,
 });
+
+// ─── Webhooks ────────────────────────────────────────────────────────────────
+configureWebhooks();
 
 // ─── Create and start ────────────────────────────────────────────────────────
 
