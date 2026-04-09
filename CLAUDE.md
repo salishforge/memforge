@@ -164,12 +164,11 @@ Raw query text
               ─► keyword overlap boost
               ─► temporal proximity boost
               ─► importance × score
-              ─► term-memory affinity (query terms → memory associations)
               ─► [optional LLM rerank]
               ─► top-k results
 ```
 
-Query preprocessing normalises natural-language phrasing and auto-applies time filters. Compound queries are split at conjunctions and run as independent sub-queries, with results merged by best rank (up to 3 sub-queries). Asymmetric RRF weights semantic results 1.5× higher than keyword to improve precision in hybrid mode. Result deduplication and a minimum quality threshold prevent noise from polluting top-k results. Configurable boosts tune scoring per deployment.
+Query preprocessing normalises natural-language phrasing and auto-applies time filters. Compound queries are split at conjunctions and run as independent sub-queries, with results merged by best rank (up to 3 sub-queries). Asymmetric RRF weights semantic results 1.5× higher than keyword to improve precision in hybrid mode. Result deduplication, a minimum quality threshold, entity detection boost, keyword overlap boost, and temporal proximity boost all tune the final ranking. Configurable boosts tune scoring per deployment.
 
 ### Active Ingest
 
@@ -219,13 +218,13 @@ Entities stored in `entities` table; relationships in `relationships` table with
 
 ### Logging and Observability
 
-All log output is structured JSON via pino. Request correlation IDs (`X-Request-Id`) propagate through all log entries. Prometheus metrics at `/metrics`. Swagger UI at `/api/docs`.
+All log output is structured JSON via pino. Request correlation IDs (`X-Request-Id`) propagate through all log entries. Prometheus metrics at `/metrics`. OpenAPI spec at `/api/spec.json`; `/api/docs` redirects to `/api/spec.json`.
 
 ## Section 5: Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/memory-manager.ts` | ~2,727 | Core API — all memory operations |
+| `src/memory-manager.ts` | ~2,400 | Core API — all memory operations |
 | `src/app.ts` | ~995 | Express app factory (`createApp()`) — all routes, middleware, validation |
 | `src/sleep-cycle.ts` | ~872 | Sleep cycle engine (10 phases) |
 | `src/server.ts` | ~121 | Thin bootstrap — creates providers, calls `createApp()`, binds port |
@@ -239,7 +238,7 @@ All log output is structured JSON via pino. Request correlation IDs (`X-Request-
 | `src/openapi.ts` | ~409 | OpenAPI 3.0 spec |
 | `src/embedding.ts` | ~295 | Embedding providers (local in-process, Ollama, OpenAI, concurrency limiter) |
 | `src/db.ts` | ~70 | PostgreSQL pool setup |
-| `schema/schema.sql` | ~230 | Canonical "from scratch" schema (12 tables) |
+| `schema/schema.sql` | ~400 | Complete fresh-install schema (21 tables) — no migrations needed for new installs |
 | `python/python/memforge/client.py` | ~268 | Python SDK — `MemForgeClient` (18 async methods) |
 | `python/python/memforge/resilient.py` | ~174 | Python SDK — `ResilientMemForgeClient` (graceful degradation) |
 | `python/python/memforge/conversation.py` | ~150 | Python SDK — `ConversationMemory` adapter |
@@ -265,7 +264,7 @@ All log output is structured JSON via pino. Request correlation IDs (`X-Request-
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LLM_MODEL` | provider default | Model name override |
 | `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
-| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` uses in-process @xenova/transformers (zero external dependency). |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` uses in-process `@xenova/transformers` (optional peer dependency — install separately: `npm install @xenova/transformers`). |
 | `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
 | `EMBEDDING_DIMENSIONS` | provider default | Override output embedding dimensions (required if model differs from default). |
 | `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Fixes request pileup under load. |

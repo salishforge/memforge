@@ -2,6 +2,19 @@
 
 All notable changes to MemForge are documented here.
 
+## [2.7.1] - 2026-04-08 — Beta Release Cleanup
+
+### Changed
+
+- **`@xenova/transformers` is now an optional peer dependency** — It is no longer installed by default. Run `npm install @xenova/transformers` explicitly when using `EMBEDDING_PROVIDER=local`. No change for deployments using `openai`, `ollama`, or `none` embedding providers.
+- **`/api/docs` removed Swagger UI** — The interactive Swagger UI has been removed. `/api/docs` now redirects to `/api/spec.json`. The raw OpenAPI 3.0 spec remains available at `/api/spec.json`.
+- **`schema/schema.sql` regenerated as complete 21-table fresh-install schema** — The canonical schema now reflects all tables through v2.7. New installs no longer need to run any migrations; a single `psql -f schema/schema.sql` is sufficient. Migrations remain in `schema/migration-*.sql` for upgrading existing deployments.
+- **`schema/migration-v2.3.sql` SQL syntax fixed** — Corrected a syntax error in the RLS migration that caused failures on some PostgreSQL configurations.
+
+### Removed
+
+- **Dead code removed from `src/memory-manager.ts`** — The following features were implemented but never wired into the retrieval pipeline and have been removed: `postIngestAnalysis`, `llmIngestAnalysis`, preference extraction, correction detection, and term-memory affinity scoring. These had no effect on query results. `memory-manager.ts` is now ~2,400 lines (down from ~2,727).
+
 ## [2.7.0] - 2026-04-08
 
 ### Changed

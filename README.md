@@ -35,7 +35,7 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 
 - **Tiered Memory** — Hot (raw events) → Warm (consolidated, searchable, scored) → Cold (archived audit trail)
 - **Hybrid Search** — Dual-tokenizer keyword (PostgreSQL FTS + trigram), semantic (pgvector HNSW with halfvec float16 — 2x compression), and asymmetric reciprocal rank fusion (semantic 1.5×) with keyword overlap boost, temporal proximity scoring, result deduplication, quality threshold, and entity detection
-- **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@xenova/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. Zero external dependency — no Ollama or OpenAI required for semantic search.
+- **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@xenova/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. No Ollama or OpenAI required. `@xenova/transformers` is an optional peer dependency — install it separately with `npm install @xenova/transformers` when using `EMBEDDING_PROVIDER=local`.
 - **Query Understanding** — Strips question scaffolding, auto-extracts time references as date filters, splits compound queries into independent sub-queries for multi-query retrieval
 - **Knowledge Graph** — Entities and relationships extracted during consolidation, traversable via recursive CTEs
 - **Sleep Cycles** — 10-phase background processor: scoring → triage → conflict resolution → revision → graph maintenance → temporal chains → reflection → schema detection → meta-reflection → gap analysis. Includes autonomous weight adaptation.
@@ -152,15 +152,19 @@ cd memforge
 npm install
 cp .env.example .env  # edit DATABASE_URL at minimum
 
-# Apply database schema (fresh install)
+# Apply database schema (fresh install — all 21 tables, no migrations needed)
 psql "$DATABASE_URL" -f schema/schema.sql
 
-# If upgrading from v2.1.x, apply migrations in order:
-psql "$DATABASE_URL" -f schema/migration-v2.2.sql
-psql "$DATABASE_URL" -f schema/migration-v2.3.sql
-psql "$DATABASE_URL" -f schema/migration-v2.4.sql
-psql "$DATABASE_URL" -f schema/migration-v2.6.sql
-psql "$DATABASE_URL" -f schema/migration-v2.7.sql  # halfvec float16 vectors (requires pgvector 0.5+)
+# If upgrading an existing deployment, apply migrations in order instead:
+# psql "$DATABASE_URL" -f schema/migration-v2.2.sql
+# psql "$DATABASE_URL" -f schema/migration-v2.3.sql
+# psql "$DATABASE_URL" -f schema/migration-v2.4.sql
+# psql "$DATABASE_URL" -f schema/migration-v2.6.sql
+# psql "$DATABASE_URL" -f schema/migration-v2.7.sql  # halfvec float16 (requires pgvector 0.5+)
+
+# Optional: local in-process embeddings (no external service needed)
+# npm install @xenova/transformers
+# Then set EMBEDDING_PROVIDER=local in .env
 
 npm run build
 npm start
@@ -225,7 +229,7 @@ All `/memory/*` routes require a Bearer token (`MEMFORGE_TOKEN` env var).
 |--------|----------|-------------|
 | GET | `/health` | Service health check |
 | GET | `/metrics` | Prometheus metrics |
-| GET | `/api/docs` | Interactive Swagger UI |
+| GET | `/api/docs` | Redirects to `/api/spec.json` |
 | GET | `/api/spec.json` | OpenAPI 3.0 spec |
 | GET | `/admin/cache/stats` | Cache hit/miss statistics |
 | POST | `/admin/cache/clear` | Flush Redis cache |
@@ -567,9 +571,9 @@ Visit `http://localhost:3333/admin/cache/dashboard` for live monitoring.
 
 ## Database
 
-PostgreSQL with 15 tables: `agents`, `hot_tier`, `warm_tier`, `cold_tier`, `consolidation_log`, `entities`, `relationships`, `warm_tier_entities`, `reflections`, `retrieval_log`, `memory_revisions`, `procedures`, `memory_conflicts`, `memory_sequences`, `knowledge_gaps`.
+PostgreSQL with 21 tables: `agents`, `hot_tier`, `warm_tier`, `cold_tier`, `consolidation_log`, `entities`, `relationships`, `warm_tier_entities`, `reflections`, `retrieval_log`, `memory_revisions`, `procedures`, `memory_conflicts`, `memory_sequences`, `knowledge_gaps`, and 6 additional tables added through v2.7.
 
-Schema: `schema/schema.sql` + incremental migrations in `schema/migration-*.sql`. Latest: `migration-v2.7.sql` (halfvec float16 vector storage — 2x compression, requires pgvector 0.5+).
+Schema: `schema/schema.sql` is the complete 21-table fresh-install schema — a single `psql -f schema/schema.sql` is all new installs need. Incremental migrations in `schema/migration-*.sql` are only required when upgrading an existing deployment.
 
 ## Testing
 

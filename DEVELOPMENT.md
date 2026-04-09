@@ -28,12 +28,16 @@ createdb memforge
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS vector;"
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
-# Apply schema (fresh install)
+# Apply schema (fresh install — complete 21-table schema, no migrations needed)
 psql memforge -f schema/schema.sql
+```
 
-# If upgrading from v2.1.x, apply migrations in order:
+> **Migrations are only for upgrading existing deployments.** Fresh installs should use `schema/schema.sql` directly — it is the complete, up-to-date schema. Do not run migrations on a fresh database.
+
+```bash
+# Upgrading from v2.1.x — apply migrations in order:
 psql memforge -f schema/migration-v2.2.sql   # dedup, confidence graduation, outcome tagging
-psql memforge -f schema/migration-v2.3.sql   # RLS policies (requires superuser)
+psql memforge -f schema/migration-v2.3.sql   # RLS policies (requires superuser) — syntax fixed in beta cleanup
 psql memforge -f schema/migration-v2.4.sql   # hints table, supersession, weight adaptation
 psql memforge -f schema/migration-v2.6.sql   # AKM: memory_conflicts, memory_sequences, knowledge_gaps, surprise_score, staleness_score
 psql memforge -f schema/migration-v2.7.sql   # halfvec (float16) vector storage: 2x compression (requires pgvector 0.5+)
@@ -78,6 +82,8 @@ EMBEDDING_PROVIDER=local
 # EMBEDDING_MODEL=Xenova/bge-small-en-v1.5
 # EMBEDDING_DIMENSIONS=384
 ```
+
+> **`@xenova/transformers` is an optional peer dependency.** It is not installed by default. Run `npm install @xenova/transformers` before starting if `EMBEDDING_PROVIDER=local`.
 
 ### Running
 
@@ -219,7 +225,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` to
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LLM_MODEL` | provider default | Model name override |
 | `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
-| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` runs in-process via `@xenova/transformers` — no external service required. |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` runs in-process via `@xenova/transformers` (optional peer dependency — run `npm install @xenova/transformers` first). |
 | `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
 | `EMBEDDING_DIMENSIONS` | provider default | Output embedding dimensions override (required when using a non-default model). |
 | `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Prevents request pileup during consolidation. |
