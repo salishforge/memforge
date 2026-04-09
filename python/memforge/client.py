@@ -260,6 +260,41 @@ class MemForgeClient:
         """Merge duplicate entities in the knowledge graph."""
         return await self._post(f"/memory/{agent_id}/dedup-entities", {"threshold": threshold})
 
+    # ── Shared Pools (Phase 3) ─────────────────────────────────────────────
+
+    async def create_pool(self, pool_id: str, name: str, pool_type: str = "team", description: str | None = None) -> dict[str, Any]:
+        """Create a shared memory pool."""
+        return await self._post("/pool", {"id": pool_id, "name": name, "pool_type": pool_type, "description": description})
+
+    async def join_pool(self, agent_id: str, pool_id: str) -> dict[str, Any]:
+        """Join a shared memory pool."""
+        return await self._post(f"/pool/{pool_id}/join", {"agent_id": agent_id})
+
+    async def leave_pool(self, agent_id: str, pool_id: str) -> dict[str, Any]:
+        """Leave a shared memory pool."""
+        resp = await self._client.request("DELETE", f"/pool/{pool_id}/leave", json={"agent_id": agent_id})
+        data = resp.json()
+        if not data.get("ok"):
+            raise MemForgeError(data.get("error", "Unknown error"), resp.status_code)
+        return data.get("data")
+
+    async def get_pool_members(self, pool_id: str) -> list[dict[str, Any]]:
+        """List members of a shared pool."""
+        return await self._get(f"/pool/{pool_id}/members")
+
+    async def publish(self, agent_id: str, pool_id: str, memory_ids: list[int]) -> dict[str, Any]:
+        """Publish private memories to a shared pool."""
+        return await self._post(f"/pool/{pool_id}/publish", {"agent_id": agent_id, "memory_ids": memory_ids})
+
+    async def get_reputation(self, pool_id: str, agent_id: str, domain: str | None = None) -> dict[str, Any]:
+        """Get agent reputation in a pool."""
+        params = {"domain": domain} if domain else {}
+        return await self._get(f"/pool/{pool_id}/reputation/{agent_id}", params)
+
+    async def pool_sleep(self, pool_id: str) -> dict[str, Any]:
+        """Run shared pool maintenance cycle."""
+        return await self._post(f"/pool/{pool_id}/sleep")
+
     # ── System ───────────────────────────────────────────────────────────
 
     async def health(self) -> dict[str, Any]:

@@ -508,6 +508,56 @@ Ranking (numbers only):`;
       }
     }
 
+    // Phase 3: Search shared pools the agent belongs to, merge with trust scoring
+    const agentPools = await this.getAgentPools(agentId);
+    if (agentPools.length > 0) {
+      for (const pool of agentPools) {
+        // Search shared_memories in this pool
+        const poolResults = await this.pool.query<{
+          id: bigint; content: string; summary: string | null; metadata: Record<string, unknown>;
+          published_at: Date; source_agent_id: string; hop_count: number; base_confidence: number;
+          importance: number; rank: number;
+        }>(
+          mode === 'keyword' || mode === 'code'
+            ? `SELECT id, content, summary, metadata, published_at as consolidated_at, source_agent_id, hop_count, base_confidence, importance,
+                      ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * importance AS rank
+               FROM shared_memories WHERE pool_id = $1 AND content_tsv @@ plainto_tsquery('english', $2)
+               ORDER BY rank DESC LIMIT $3`
+            : `SELECT id, content, summary, metadata, published_at as consolidated_at, source_agent_id, hop_count, base_confidence, importance,
+                      (1 - (embedding <=> $2::halfvec)) * importance AS rank
+               FROM shared_memories WHERE pool_id = $1 AND embedding IS NOT NULL
+               ORDER BY embedding <=> $2::halfvec LIMIT $3`,
+          mode === 'keyword' || mode === 'code'
+            ? [pool.pool_id, searchText, Math.min(resolvedLimit, 10)]
+            : [pool.pool_id, `[${(await this.embedder.embed(searchText)).join(',')}]`, Math.min(resolvedLimit, 10)],
+        );
+
+        // Apply trust scoring: confidence × hearsay discount × reputation × pool level
+        const poolLevelDiscount = pool.pool_type === 'team' ? 0.9 : 0.8;
+        for (const pr of poolResults.rows) {
+          const rep = await this.getReputation(pr.source_agent_id);
+          const trustScore = pr.base_confidence * Math.pow(0.8, pr.hop_count) * rep.score * poolLevelDiscount;
+          // Merge into results with trust-adjusted rank
+          const merged: QueryResult = {
+            id: pr.id,
+            content: pr.content,
+            summary: pr.summary ?? undefined,
+            metadata: { ...pr.metadata, _from_pool: pool.pool_id, _source_agent: pr.source_agent_id, _trust_score: trustScore },
+            consolidated_at: pr.published_at,
+            time_start: null,
+            time_end: null,
+            rank: pr.rank * trustScore,
+          };
+          // Deduplicate: if private results already contain similar content, skip
+          const isDup = results.some((r) => r.content.slice(0, 100).toLowerCase() === merged.content.slice(0, 100).toLowerCase());
+          if (!isDup) results.push(merged);
+        }
+      }
+      // Re-sort after merging pool results
+      results.sort((a, b) => b.rank - a.rank);
+      results = results.slice(0, resolvedLimit);
+    }
+
     // Apply temporal decay if configured
     if (decayRate > 0) {
       const now = Date.now();
@@ -2278,6 +2328,33 @@ Ranking (numbers only):`;
       ).catch((err) => log.error({ err }, 'corroboration tracking failed'));
     }
 
+    // Phase 3: Reputation signal from feedback on shared pool memories
+    // If the retrieved memory came from a pool, boost/penalize the source agent's reputation
+    if (updated > 0 && (outcome === 'positive' || outcome === 'negative')) {
+      void this.pool.query<{ metadata: Record<string, unknown> }>(
+        `SELECT w.metadata FROM warm_tier w
+         JOIN retrieval_log rl ON rl.warm_tier_id = w.id
+         WHERE rl.agent_id = $1 AND rl.id = ANY($2) AND w.metadata->>'_source_agent' IS NOT NULL
+         LIMIT 5`,
+        [agentId, retrievalIds],
+      ).then((rows) => {
+        for (const row of rows.rows) {
+          const sourceAgent = (row.metadata as Record<string, unknown>)?.['_source_agent'] as string | undefined;
+          if (sourceAgent) {
+            const delta = outcome === 'positive' ? 0.01 : -0.03;
+            void this.pool.query(
+              `INSERT INTO agent_reputation (agent_id, domain, score)
+               VALUES ($1, '_global', $2)
+               ON CONFLICT (agent_id, domain) DO UPDATE SET
+                 score = LEAST(1.0, GREATEST(0.1, agent_reputation.score + $2)),
+                 last_updated = now()`,
+              [sourceAgent, 0.7 + delta],
+            ).catch(() => {});
+          }
+        }
+      }).catch(() => {});
+    }
+
     // Audit: record feedback event
     if (this.audit && updated > 0) {
       void this.audit.recordBatch(agentId, 'retrieval_log', 'feedback',
@@ -2697,6 +2774,33 @@ Guidelines:
          ON CONFLICT (agent_id, domain) DO UPDATE SET contribution_count = agent_reputation.contribution_count + 1, last_updated = now()`,
         [agentId],
       );
+
+      // Corroboration check: if similar content already exists from another agent, boost both
+      const similar = await this.pool.query<{ source_agent_id: string; id: bigint }>(
+        `SELECT source_agent_id, id FROM shared_memories
+         WHERE pool_id = $1 AND source_agent_id != $2
+           AND content_tsv @@ plainto_tsquery('english', $3)
+         LIMIT 1`,
+        [poolId, agentId, m.content.slice(0, 200)],
+      );
+      if (similar.rows[0]) {
+        // Corroboration: boost the existing memory and both agents' reputation
+        void this.pool.query(
+          `UPDATE shared_memories SET corroboration_count = corroboration_count + 1 WHERE id = $1`,
+          [similar.rows[0].id],
+        ).catch(() => {});
+        for (const corrAgentId of [agentId, similar.rows[0].source_agent_id]) {
+          void this.pool.query(
+            `INSERT INTO agent_reputation (agent_id, domain, corroboration_count, score)
+             VALUES ($1, '_global', 1, 0.72)
+             ON CONFLICT (agent_id, domain) DO UPDATE SET
+               corroboration_count = agent_reputation.corroboration_count + 1,
+               score = LEAST(1.0, agent_reputation.score + 0.02),
+               last_updated = now()`,
+            [corrAgentId],
+          ).catch(() => {});
+        }
+      }
 
       published++;
     }

@@ -1036,6 +1036,18 @@ export function createApp(deps: AppDependencies): express.Express {
     }
   });
 
+  app.post('/pool/:poolId/sleep', adminAuth, async (req: Request, res: Response) => {
+    try {
+      const { SharedPoolSleepCycle } = await import('./sleep-cycle.js');
+      const { getPool } = await import('./db.js');
+      const cycle = new SharedPoolSleepCycle(getPool());
+      const result = await cycle.run(req.params['poolId'] ?? '');
+      ok(res, result);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
   app.get('/pool/:poolId/reputation/:agentId', requireScope('memforge:read'), async (req: Request, res: Response) => {
     const domain = req.query['domain'] as string | undefined;
     try {

@@ -869,4 +869,100 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
   }
 }
 
+// ─── Shared Pool Sleep Cycle (#84) ──────────────────────────────────────────
+// Separate maintenance cycle for shared memory pools.
+
+export class SharedPoolSleepCycle {
+  private readonly pool: Pool;
+
+  constructor(pool: Pool) {
+    this.pool = pool;
+  }
+
+  async run(poolId: string): Promise<{ deduplicated: number; conflicts_resolved: number; reputation_updated: number; evicted: number }> {
+    let deduplicated = 0;
+    let conflictsResolved = 0;
+    let reputationUpdated = 0;
+    let evicted = 0;
+
+    // Phase 1: Deduplication — merge shared memories with >80% word overlap
+    const candidates = await this.pool.query<{ id_a: bigint; id_b: bigint; agent_a: string; agent_b: string }>(
+      `SELECT sm1.id as id_a, sm2.id as id_b, sm1.source_agent_id as agent_a, sm2.source_agent_id as agent_b
+       FROM shared_memories sm1
+       JOIN shared_memories sm2 ON sm1.pool_id = sm2.pool_id AND sm1.id < sm2.id
+         AND sm1.source_agent_id != sm2.source_agent_id
+       WHERE sm1.pool_id = $1
+         AND sm1.content_tsv @@ plainto_tsquery('english', LEFT(sm2.content, 100))
+       LIMIT 20`,
+      [poolId],
+    );
+
+    for (const pair of candidates.rows) {
+      // Keep the one with higher confidence, increment corroboration
+      await this.pool.query(
+        `UPDATE shared_memories SET corroboration_count = corroboration_count + 1 WHERE id = $1`,
+        [pair.id_a],
+      );
+      await this.pool.query(`DELETE FROM shared_memories WHERE id = $1`, [pair.id_b]);
+
+      // Boost both agents' reputation
+      for (const agId of [pair.agent_a, pair.agent_b]) {
+        await this.pool.query(
+          `INSERT INTO agent_reputation (agent_id, domain, corroboration_count, score)
+           VALUES ($1, '_global', 1, 0.72)
+           ON CONFLICT (agent_id, domain) DO UPDATE SET
+             corroboration_count = agent_reputation.corroboration_count + 1,
+             score = LEAST(1.0, agent_reputation.score + 0.02),
+             last_updated = now()`,
+          [agId],
+        );
+      }
+      deduplicated++;
+    }
+
+    // Phase 2: Corroboration promotion — 3+ confirmations get confidence boost
+    const { rowCount: promoted } = await this.pool.query(
+      `UPDATE shared_memories SET base_confidence = LEAST(1.0, base_confidence * 1.2)
+       WHERE pool_id = $1 AND corroboration_count >= 3 AND base_confidence < 0.9`,
+      [poolId],
+    );
+    // (promoted is informational, not tracked separately)
+
+    // Phase 3: Recompute reputation scores from accumulated signals
+    const agents = await this.pool.query<{ agent_id: string }>(
+      `SELECT DISTINCT source_agent_id as agent_id FROM shared_memories WHERE pool_id = $1`,
+      [poolId],
+    );
+    for (const agent of agents.rows) {
+      const rep = await this.pool.query<{ corr: string; contr: string; contrib: string }>(
+        `SELECT corroboration_count::text as corr, contradiction_count::text as contr, contribution_count::text as contrib
+         FROM agent_reputation WHERE agent_id = $1 AND domain = '_global'`,
+        [agent.agent_id],
+      );
+      if (rep.rows[0]) {
+        const r = rep.rows[0];
+        const newScore = Math.min(1.0, Math.max(0.1,
+          0.7 + parseInt(r.corr, 10) * 0.02 - parseInt(r.contr, 10) * 0.05
+        ));
+        await this.pool.query(
+          `UPDATE agent_reputation SET score = $2, last_updated = now() WHERE agent_id = $1 AND domain = '_global'`,
+          [agent.agent_id, newScore],
+        );
+        reputationUpdated++;
+      }
+    }
+
+    // Phase 4: Evict low-quality uncorroborated old entries
+    const { rowCount: evictCount } = await this.pool.query(
+      `DELETE FROM shared_memories
+       WHERE pool_id = $1 AND base_confidence < 0.2 AND corroboration_count = 0
+         AND published_at < now() - interval '30 days'`,
+      [poolId],
+    );
+    evicted = evictCount ?? 0;
+
+    return { deduplicated, conflicts_resolved: conflictsResolved, reputation_updated: reputationUpdated, evicted };
+  }
+}
+
 export { DEFAULT_CONFIG as SLEEP_CYCLE_DEFAULTS };
