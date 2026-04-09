@@ -1,0 +1,45 @@
+{
+  "name": "MemForge: Pre-Meeting Context",
+  "description": "5 minutes before a calendar event, retrieve relevant memories and send a Teams notification",
+  "trigger": {
+    "type": "Office365Outlook.CalendarEventSoon",
+    "inputs": {
+      "minutesBefore": 5
+    }
+  },
+  "actions": [
+    {
+      "name": "SearchMemories",
+      "type": "Http",
+      "inputs": {
+        "method": "GET",
+        "uri": "@{parameters('MemForgeUrl')}/memory/@{parameters('AgentId')}/query?q=@{encodeUriComponent(triggerOutputs()?['body/subject'])}&mode=hybrid&max_tokens=2000&limit=5",
+        "headers": {
+          "Authorization": "Bearer @{parameters('MemForgeToken')}"
+        }
+      }
+    },
+    {
+      "name": "SendTeamsCard",
+      "type": "MicrosoftTeams.PostMessageToConversation",
+      "runAfter": "SearchMemories",
+      "inputs": {
+        "body": "📝 **Pre-meeting context for: @{triggerOutputs()?['body/subject']}**\n\n@{join(body('SearchMemories')?['data'], '\n\n---\n\n')}",
+        "recipient": "@{triggerOutputs()?['body/organizer/emailAddress/address']}"
+      }
+    }
+  ],
+  "parameters": {
+    "MemForgeUrl": {
+      "type": "string",
+      "defaultValue": "https://your-memforge-server:3333"
+    },
+    "MemForgeToken": {
+      "type": "string"
+    },
+    "AgentId": {
+      "type": "string",
+      "defaultValue": "copilot-meetings"
+    }
+  }
+}

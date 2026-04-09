@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "memforge": {
+      "command": "npx",
+      "args": ["memforge-mcp"],
+      "env": {
+        "MEMFORGE_URL": "http://localhost:3333",
+        "MEMFORGE_TOKEN": ""
+      }
+    }
+  }
+}

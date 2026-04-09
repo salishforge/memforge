@@ -1,0 +1,80 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/copilot/plugin/v2.2/schema.json",
+  "schema_version": "v2.2",
+  "name_for_human": "MemForge Memory",
+  "description_for_human": "Long-term memory for AI agents — store, search, and manage knowledge that persists across sessions",
+  "description_for_model": "MemForge provides persistent memory for AI agents. Use these tools to: store new memories (facts, decisions, preferences, errors), search past knowledge with semantic understanding, get relevant context before tasks, and manage knowledge quality through consolidation and reflection. Memory persists across sessions and improves over time through active knowledge management.",
+  "logo_url": "https://github.com/salishforge/memforge/raw/main/assets/logo.png",
+  "contact_email": "hello@salishforge.com",
+  "legal_info_url": "https://github.com/salishforge/memforge/blob/main/LICENSE",
+  "privacy_policy_url": "https://github.com/salishforge/memforge/blob/main/SECURITY.md",
+  "namespace": "memforge",
+  "functions": [
+    {
+      "name": "storeMemory",
+      "description": "Store a memory event — a fact, decision, preference, error, or observation",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": { "type": "string", "description": "Agent identifier (use a consistent ID per user/context)" },
+          "content": { "type": "string", "description": "The memory content to store" },
+          "outcome_type": { "type": "string", "enum": ["neutral", "error", "success", "decision", "observation"] }
+        },
+        "required": ["agent_id", "content"]
+      }
+    },
+    {
+      "name": "searchMemory",
+      "description": "Search for relevant memories using semantic and keyword matching",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": { "type": "string", "description": "Agent identifier" },
+          "query": { "type": "string", "description": "What to search for" },
+          "max_tokens": { "type": "integer", "description": "Maximum tokens to return (budget control)" }
+        },
+        "required": ["agent_id", "query"]
+      }
+    },
+    {
+      "name": "getContext",
+      "description": "Get session resumption context — recent memories, active rules, and knowledge health",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": { "type": "string", "description": "Agent identifier" }
+        },
+        "required": ["agent_id"]
+      }
+    },
+    {
+      "name": "consolidateMemory",
+      "description": "Consolidate recent memories into searchable long-term storage",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": { "type": "string", "description": "Agent identifier" }
+        },
+        "required": ["agent_id"]
+      }
+    }
+  ],
+  "runtimes": [
+    {
+      "type": "OpenApi",
+      "auth": {
+        "type": "ApiKeyPluginVault",
+        "reference_id": "memforge_api_key"
+      },
+      "spec": {
+        "url": "api/spec.json"
+      },
+      "run_for_functions": ["storeMemory", "searchMemory", "getContext", "consolidateMemory"]
+    }
+  ],
+  "capabilities": {
+    "conversation": {
+      "completion_type": "chat"
+    }
+  }
+}

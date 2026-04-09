@@ -1,0 +1,50 @@
+{
+  "name": "MemForge: Store Important Emails",
+  "description": "When an email tagged 'Important' arrives, store it as a memory in MemForge",
+  "trigger": {
+    "type": "Office365Outlook.OnNewEmail",
+    "inputs": {
+      "importance": "High",
+      "includeAttachments": false
+    }
+  },
+  "actions": [
+    {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "@{parameters('MemForgeUrl')}/memory/@{parameters('AgentId')}/add",
+        "headers": {
+          "Authorization": "Bearer @{parameters('MemForgeToken')}",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": "Email from @{triggerOutputs()?['body/from']} — Subject: @{triggerOutputs()?['body/subject']} — @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 500))}",
+          "metadata": {
+            "source": "outlook",
+            "from": "@{triggerOutputs()?['body/from']}",
+            "subject": "@{triggerOutputs()?['body/subject']}",
+            "received": "@{triggerOutputs()?['body/receivedDateTime']}"
+          },
+          "outcome_type": "observation"
+        }
+      }
+    }
+  ],
+  "parameters": {
+    "MemForgeUrl": {
+      "type": "string",
+      "defaultValue": "https://your-memforge-server:3333",
+      "description": "MemForge server URL (must be HTTPS for Power Automate)"
+    },
+    "MemForgeToken": {
+      "type": "string",
+      "description": "Bearer token for MemForge API"
+    },
+    "AgentId": {
+      "type": "string",
+      "defaultValue": "copilot-outlook",
+      "description": "Agent ID for this memory context"
+    }
+  }
+}
