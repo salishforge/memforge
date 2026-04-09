@@ -2,6 +2,13 @@
 
 All notable changes to MemForge are documented here.
 
+## [2.7.0] - 2026-04-08
+
+### Changed
+
+- **halfvec (float16) vector storage** — Vector embeddings now stored as `halfvec` (pgvector float16) instead of `float32 vector`. 2x storage compression with zero quality loss. Validated by TurboQuant research.
+- Migration `schema/migration-v2.7.sql` — Converts existing `vector` columns to `halfvec` for all deployments upgrading from v2.6.x.
+
 ## [2.6.0] - 2026-04-08
 
 ### Features

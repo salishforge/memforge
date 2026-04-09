@@ -4,7 +4,7 @@
 
 - **Node.js** >= 22
 - **PostgreSQL** 16+ with extensions:
-  - `pgvector` — vector similarity search
+  - `pgvector` 0.5+ — vector similarity search; 0.5+ required for `halfvec` (float16) storage
   - `pg_trgm` — trigram fuzzy matching (used for entity dedup and search fallback)
 - **Redis** 7+ (optional — MemForge works without it, just slower)
 - **Git**
@@ -24,6 +24,7 @@ npm install
 createdb memforge
 
 # Enable extensions (requires superuser or rds_superuser)
+# pgvector 0.5+ required for halfvec (float16) storage
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS vector;"
 psql memforge -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
@@ -35,6 +36,7 @@ psql memforge -f schema/migration-v2.2.sql   # dedup, confidence graduation, out
 psql memforge -f schema/migration-v2.3.sql   # RLS policies (requires superuser)
 psql memforge -f schema/migration-v2.4.sql   # hints table, supersession, weight adaptation
 psql memforge -f schema/migration-v2.6.sql   # AKM: memory_conflicts, memory_sequences, knowledge_gaps, surprise_score, staleness_score
+psql memforge -f schema/migration-v2.7.sql   # halfvec (float16) vector storage: 2x compression (requires pgvector 0.5+)
 
 # Full migration sequence from v1.x:
 psql memforge -f schema/migration-v1.2.sql
@@ -47,6 +49,7 @@ psql memforge -f schema/migration-v2.2.sql
 psql memforge -f schema/migration-v2.3.sql
 psql memforge -f schema/migration-v2.4.sql
 psql memforge -f schema/migration-v2.6.sql
+psql memforge -f schema/migration-v2.7.sql
 ```
 
 ### Environment

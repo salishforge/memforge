@@ -69,6 +69,7 @@ psql "$DATABASE_URL" -f schema/migration-v1.6.sql
 psql "$DATABASE_URL" -f schema/migration-v2.0.sql
 psql "$DATABASE_URL" -f schema/migration-v2.1.sql
 psql "$DATABASE_URL" -f schema/migration-v2.2.sql  # audit chain + content hashes
+psql "$DATABASE_URL" -f schema/migration-v2.7.sql  # halfvec (float16) vector storage (requires pgvector 0.5+)
 ```
 
 `migration-v2.2.sql` creates the `audit_chain` and `cold_audit` tables and adds `content_hash` to `warm_tier`. Required for integrity verification.
@@ -584,6 +585,7 @@ Copy and check off before going live:
 - [ ] `REDIS_URL` includes AUTH password: `redis://:password@host:6379`
 - [ ] `migration-v2.2.sql` applied (audit chain tables and `content_hash` column)
 - [ ] `migration-v2.3.sql` applied (RLS policies, audit delete trigger, statement timeout)
+- [ ] `migration-v2.7.sql` applied (halfvec float16 vector storage — requires pgvector 0.5+)
 - [ ] Reverse proxy with TLS termination in front of MemForge (nginx or Caddy)
 - [ ] MemForge port (3333) not exposed on public network interface
 - [ ] PostgreSQL not reachable from public network; TLS enabled; dedicated app role created

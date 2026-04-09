@@ -49,7 +49,7 @@ npm run build && npm start
 # → {"level":"info","msg":"memforge listening","port":3333}
 ```
 
-Node.js 22+ required. PostgreSQL 16 with `pgvector` and `pg_trgm` extensions required. Redis is optional.
+Node.js 22+ required. PostgreSQL 16 with `pgvector` 0.5+ (halfvec float16) and `pg_trgm` extensions required. Redis is optional.
 
 ### Integrate
 
@@ -123,7 +123,7 @@ All responses: `{ ok: true, data: ... }` or `{ ok: false, error: "..." }`.
 |-----------|---------|-------|
 | Language | TypeScript 5.7 | Strict mode, ES modules (NodeNext) |
 | Runtime | Node.js 22+ | |
-| Database | PostgreSQL 16 | `pgvector` + `pg_trgm` extensions required |
+| Database | PostgreSQL 16 | `pgvector` 0.5+ (halfvec float16, 2x compression) + `pg_trgm` extensions required |
 | Cache | Redis 7 | Optional — graceful degradation |
 | Framework | Express 4 | |
 | Logging | pino | Structured JSON, request correlation IDs |
@@ -156,7 +156,8 @@ Raw query text
   └─► Per sub-query (multi-query retrieval, results merged by highest rank)
         ├─► plainto_tsquery (FTS)        ─┐
         ├─► websearch_to_tsquery (FTS)    ├─► asymmetric RRF (semantic 1.5×)
-        └─► pgvector HNSW (semantic)     ─┘
+        └─► pgvector HNSW (semantic,      ─┘
+              halfvec float16 — 2x storage compression)
               ─► result dedup (first 100 chars fingerprint)
               ─► min quality threshold (≥10% of top score)
               ─► entity detection boost (terms in knowledge graph)
@@ -461,6 +462,11 @@ const mockLlm: LLMProvider = {
 
 #### ChatGPT Plugin
 - `public/ai-plugin.json` — ChatGPT plugin manifest for direct ChatGPT integration
+
+### v2.7.0 — halfvec Vector Storage
+
+- **halfvec (float16) vector storage** — Embedding columns converted from pgvector `vector` (float32) to `halfvec` (float16). 2x storage compression with zero quality loss. Requires pgvector 0.5+.
+- **Migration v2.7.sql** — Converts existing `vector` columns to `halfvec` for upgrading deployments.
 
 #### Active Knowledge Management (#75–#80)
 - **Staleness detection** (#78) — `staleness_score` column on `warm_tier`; computed in sleep Phase 0; confidence auto-reduced; `health()` reports `stale_memory_count` and `avg_staleness`
