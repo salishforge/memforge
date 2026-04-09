@@ -1,0 +1,35 @@
+FROM postgres:16-alpine
+
+# Install Node.js 22 and build tools
+RUN apk add --no-cache nodejs npm curl
+
+# pgvector — build from source (not in Alpine package repos for pg 16)
+RUN apk add --no-cache postgresql16-dev git build-base \
+    && git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector \
+    && cd /tmp/pgvector && make && make install \
+    && rm -rf /tmp/pgvector \
+    && apk del git build-base
+
+# pg_trgm is bundled with PostgreSQL — just enable it via schema
+
+# Copy MemForge application
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY dist/ ./dist/
+COPY schema/ ./schema/
+
+# Standalone entrypoint
+COPY docker-entrypoint-standalone.sh /docker-entrypoint-standalone.sh
+RUN chmod +x /docker-entrypoint-standalone.sh
+
+EXPOSE 3333
+
+# Defaults tuned for single-container use with local embeddings
+ENV EMBEDDING_PROVIDER=local
+ENV CONSOLIDATION_INNER_BATCH_SIZE=1
+ENV DATABASE_URL=postgresql://postgres@localhost/memforge
+ENV PORT=3333
+ENV LOG_LEVEL=info
+
+ENTRYPOINT ["/docker-entrypoint-standalone.sh"]

@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "MemForge Memory",
+  "name_for_model": "memforge",
+  "description_for_human": "Long-term memory for AI agents — store, search, and manage knowledge",
+  "description_for_model": "MemForge provides persistent memory for AI agents. Use memforge tools to store memories, search past knowledge, and manage an agent's accumulated experience.",
+  "auth": {
+    "type": "service_http",
+    "authorization_type": "bearer"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "/api/spec.json"
+  }
+}
