@@ -231,7 +231,15 @@ export class MemoryManager {
     }
 
     // Build enriched metadata from outcome_type and agent-provided hints
-    const enrichedMetadata: Record<string, unknown> = { ...metadata };
+    // F2 fix: strip reserved system keys that could be used for provenance/reputation forgery
+    const sanitizedMetadata = { ...metadata };
+    delete sanitizedMetadata['_source_agent'];
+    delete sanitizedMetadata['_from_pool'];
+    delete sanitizedMetadata['_source_chain'];
+    delete sanitizedMetadata['_trust_score'];
+    delete sanitizedMetadata['_conflict_loser'];
+    delete sanitizedMetadata['_superseded'];
+    const enrichedMetadata: Record<string, unknown> = { ...sanitizedMetadata };
     if (outcomeType !== 'neutral') enrichedMetadata['_outcome_type'] = outcomeType;
     if (hints) {
       if (hints.importance !== undefined) enrichedMetadata['_hint_importance'] = Math.min(1, Math.max(0, hints.importance));
@@ -2341,14 +2349,15 @@ Ranking (numbers only):`;
         for (const row of rows.rows) {
           const sourceAgent = (row.metadata as Record<string, unknown>)?.['_source_agent'] as string | undefined;
           if (sourceAgent) {
+            // F4 fix: use separate params for INSERT default vs UPDATE delta
             const delta = outcome === 'positive' ? 0.01 : -0.03;
             void this.pool.query(
               `INSERT INTO agent_reputation (agent_id, domain, score)
                VALUES ($1, '_global', $2)
                ON CONFLICT (agent_id, domain) DO UPDATE SET
-                 score = LEAST(1.0, GREATEST(0.1, agent_reputation.score + $2)),
+                 score = LEAST(1.0, GREATEST(0.1, agent_reputation.score + $3)),
                  last_updated = now()`,
-              [sourceAgent, 0.7 + delta],
+              [sourceAgent, 0.7 + delta, delta],
             ).catch(() => {});
           }
         }
@@ -2775,14 +2784,23 @@ Guidelines:
         [agentId],
       );
 
-      // Corroboration check: if similar content already exists from another agent, boost both
-      const similar = await this.pool.query<{ source_agent_id: string; id: bigint }>(
-        `SELECT source_agent_id, id FROM shared_memories
-         WHERE pool_id = $1 AND source_agent_id != $2
-           AND content_tsv @@ plainto_tsquery('english', $3)
-         LIMIT 1`,
+      // F3 fix: Corroboration check — only if this agent hasn't already corroborated this content
+      // Check for existing publish from this agent with similar content first (prevent spam)
+      const alreadyPublished = await this.pool.query(
+        `SELECT 1 FROM shared_memories WHERE pool_id = $1 AND source_agent_id = $2
+           AND content_tsv @@ plainto_tsquery('english', $3) LIMIT 1`,
         [poolId, agentId, m.content.slice(0, 200)],
       );
+      // Only check corroboration if this is genuinely new content from this agent
+      const similar = alreadyPublished.rows.length === 0
+        ? await this.pool.query<{ source_agent_id: string; id: bigint }>(
+            `SELECT source_agent_id, id FROM shared_memories
+             WHERE pool_id = $1 AND source_agent_id != $2
+               AND content_tsv @@ plainto_tsquery('english', $3)
+             LIMIT 1`,
+            [poolId, agentId, m.content.slice(0, 200)],
+          )
+        : { rows: [] as Array<{ source_agent_id: string; id: bigint }> };
       if (similar.rows[0]) {
         // Corroboration: boost the existing memory and both agents' reputation
         void this.pool.query(

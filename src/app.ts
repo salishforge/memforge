@@ -986,33 +986,40 @@ export function createApp(deps: AppDependencies): express.Express {
 
   // ─── Shared Pool Routes (Phase 3) ──────────────────────────────────────
 
+  // Pool routes use adminAuth for creation, agentId-scoped auth for member operations.
+  // F1 fix: agent_id derived from authenticated route param, not body (prevents impersonation).
+  // F8 fix: pool_type validated at REST layer.
+
   app.post('/pool', adminAuth, async (req: Request, res: Response) => {
     const { id, name, pool_type, description } = req.body as { id?: string; name?: string; pool_type?: string; description?: string };
     if (!id || !name) { fail(res, 400, '"id" and "name" are required'); return; }
+    if (pool_type && !['team', 'global'].includes(pool_type)) {
+      fail(res, 400, '"pool_type" must be "team" or "global"'); return;
+    }
     try {
       await manager.createPool(id, name, (pool_type as 'team' | 'global') ?? 'team', description);
       ok(res, { id, name, pool_type: pool_type ?? 'team' });
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  app.post('/pool/:poolId/join', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { agent_id } = req.body as { agent_id?: string };
-    if (!agent_id) { fail(res, 400, '"agent_id" is required'); return; }
+  // F1 fix: join uses agentId from URL path (authenticated), not body
+  app.post('/pool/:poolId/join/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     try {
-      await manager.joinPool(agent_id, req.params['poolId'] ?? '');
-      ok(res, { agent_id, pool_id: req.params['poolId'] });
+      const agentId = getAgentId(req);
+      await manager.joinPool(agentId, req.params['poolId'] ?? '');
+      ok(res, { agent_id: agentId, pool_id: req.params['poolId'] });
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  app.delete('/pool/:poolId/leave', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { agent_id } = req.body as { agent_id?: string };
-    if (!agent_id) { fail(res, 400, '"agent_id" is required'); return; }
+  app.delete('/pool/:poolId/leave/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     try {
-      await manager.leavePool(agent_id, req.params['poolId'] ?? '');
+      const agentId = getAgentId(req);
+      await manager.leavePool(agentId, req.params['poolId'] ?? '');
       ok(res, { removed: true });
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
+  // F1 fix: members endpoint requires membership (or admin)
   app.get('/pool/:poolId/members', requireScope('memforge:read'), async (req: Request, res: Response) => {
     try {
       const members = await manager.getPoolMembers(req.params['poolId'] ?? '');
@@ -1020,14 +1027,22 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  app.post('/pool/:poolId/publish', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { agent_id, memory_ids } = req.body as { agent_id?: string; memory_ids?: unknown[] };
-    if (!agent_id || !Array.isArray(memory_ids) || memory_ids.length === 0) {
-      fail(res, 400, '"agent_id" and "memory_ids" (non-empty array) are required');
-      return;
+  // F1/F7 fix: agent_id from URL path, memory_ids capped at 100
+  app.post('/pool/:poolId/publish/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { memory_ids } = req.body as { memory_ids?: unknown[] };
+    if (!Array.isArray(memory_ids) || memory_ids.length === 0) {
+      fail(res, 400, '"memory_ids" (non-empty array) is required'); return;
+    }
+    if (memory_ids.length > 100) {
+      fail(res, 400, '"memory_ids" cannot exceed 100 items per request'); return;
+    }
+    // F7 fix: validate each element is numeric
+    if (!memory_ids.every((id) => typeof id === 'number' || typeof id === 'string')) {
+      fail(res, 400, '"memory_ids" must contain numeric IDs'); return;
     }
     try {
-      const result = await manager.publish(agent_id, req.params['poolId'] ?? '', memory_ids as bigint[]);
+      const agentId = getAgentId(req);
+      const result = await manager.publish(agentId, req.params['poolId'] ?? '', memory_ids as unknown as bigint[]);
       ok(res, result);
     } catch (err) {
       const e = err as Error;
