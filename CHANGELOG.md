@@ -2,6 +2,71 @@
 
 All notable changes to MemForge are documented here.
 
+## [2.6.0] - 2026-04-08
+
+### Features
+
+#### Python SDK
+
+- **`MemForgeClient`** — 18 async methods over `httpx` mirroring the TypeScript SDK. Full type annotations via `memforge/types.py`.
+- **`ResilientMemForgeClient`** — Wraps `MemForgeClient` with per-method error handling. Returns safe defaults (empty arrays, null) on any error rather than raising. Accepts a custom `on_error` callback for logging.
+- **`ConversationMemory`** — Chat-oriented adapter with `add_turn(role, content)`, `get_context(query)`, `start_session()`, and `end_session(session_id)`. Automatically consolidates on session end.
+- **Tool definitions** — `memforge/tools.py` exports tool schemas for OpenAI function calling and Anthropic tool_use formats.
+- Install: `pip install memforge` or `cd python/python && pip install -e .` for development.
+
+#### Framework Examples (`examples/`)
+
+- `quickstart.py` — Hello-world: add, query, sleep in Python
+- `simple_chatbot.py` — Minimal chatbot with MemForge memory and graceful degradation
+- `openai_tools.py` — OpenAI function calling with MemForge tool definitions
+- `claude_tools.py` — Anthropic tool_use with MemForge tool definitions
+- `langchain_memory.py` — LangChain custom memory integration
+- `quickstart.ts` — Hello-world walkthrough in TypeScript
+
+#### Docker Standalone
+
+- `Dockerfile.standalone` — Single container with embedded PostgreSQL. Run `docker run -p 3333:3333 salishforge/memforge:standalone`. No external Postgres or Redis required.
+
+#### Memory Export / Import
+
+- `GET /memory/:agentId/export` — Download full warm-tier memory as JSONL. Each line: `{ content, importance, confidence, created_at, metadata? }`.
+- `POST /memory/:agentId/import` — Bulk-load memories from JSONL into warm tier. Embeddings regenerated if provider is configured.
+- TypeScript: `client.export(agentId)` / `client.import(agentId, jsonl)`.
+- Python: `await client.export(agent_id)` / `await client.import_memories(agent_id, jsonl)`.
+
+#### Webhooks
+
+- `WEBHOOK_URL` env var — POST event payloads to this URL after significant operations.
+- `WEBHOOK_EVENTS` env var — Comma-separated filter: `consolidated`, `revised`, `reflected`, `evicted`, `graduated`. Omit to receive all.
+- Payload: `{ event, agentId, data, timestamp }`. Delivery is best-effort (no retry on failure).
+
+#### ChatGPT Plugin
+
+- `public/ai-plugin.json` — ChatGPT plugin manifest for direct ChatGPT integration against a publicly accessible MemForge instance.
+
+### Active Knowledge Management (#75–#80)
+
+- **Staleness detection** (#78) — `staleness_score REAL` column added to `warm_tier`. Computed in sleep Phase 0 based on age, corroboration count, and access recency. Confidence auto-reduces on memories with high staleness. `health()` now reports `stale_memory_count` and `avg_staleness`.
+- **Prioritized experience replay** (#79) — `surprise_score REAL` column added to `warm_tier`. Incremented when a memory transitions from positive to negative feedback (unexpected contradiction). Sleep Phase 3 processes memories in descending `surprise_score` order, ensuring surprising experiences are revised first.
+- **Conflict resolution** (#80) — Sleep Phase 2.5 identifies contradictory warm-tier memory pairs via semantic similarity + entity overlap. Multi-factor resolution scoring: supersession annotations take priority, then corroboration count, then temporal recency, then confidence. Results stored in `memory_conflicts` table with `winner_id` and `resolution_strategy`.
+- **Temporal event chains** (#76) — Sleep Phase 4b links warm-tier memories that are temporally adjacent (within a configurable gap window). Chains stored in `memory_sequences` table with `gap_seconds`. Enables causal and sequential reasoning queries.
+- **Knowledge gap detection** (#77) — Zero-result query texts recorded in `knowledge_gaps` table. Deduplicated per agent (same query text → update `detected_at` rather than insert). Hard cap of 1000 gaps per agent. `health()` now reports `knowledge_gap_count_7d`.
+- **Schema detection** (#75) — Sleep Phase 5.5 scans `memory_sequences` for repeated temporal patterns and crystallizes them as `entity_type='schema'` entries in the knowledge graph. Enables pattern recognition across multiple event chains.
+
+### Security (Round 9)
+
+- Agent-scoped conflict resolution queries — `memory_conflicts` JOIN enforces `agent_id` predicate, preventing cross-agent data leakage in conflict queries.
+- Multi-factor conflict heuristic — Replaces earlier cascading priority approach with deterministic multi-factor scoring. Audit confirmed no tie-breaking ambiguity.
+- Feedback deduplication — Each `(agent_id, retrieval_id)` pair may only receive one feedback event. Duplicate submissions return `409 Conflict`. Prevents adversarial feedback spam.
+- Knowledge gap dedup — Duplicate zero-result queries update `detected_at` rather than accumulating unboundedly.
+- Batched retrieval logging — Per-query `INSERT` into `retrieval_log` replaced with single `INSERT ... SELECT unnest(...)` per consolidation batch. Eliminates N+1 insert pattern.
+- All new endpoints and migration objects confirmed clean at MEDIUM+ in round 9 audit.
+
+### Infrastructure
+
+- Migration `schema/migration-v2.6.sql` — 3 new tables (`memory_conflicts`, `memory_sequences`, `knowledge_gaps`), 3 new columns (`warm_tier.surprise_score`, `warm_tier.staleness_score`, `warm_tier.last_corroborated`).
+- `python/` directory — Python SDK and examples added to repository.
+
 ## [2.2.0] - 2026-04-08
 
 ### Features

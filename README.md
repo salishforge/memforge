@@ -5,7 +5,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
-[![Security Audited](https://img.shields.io/badge/Security-8%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
+[![Security Audited](https://img.shields.io/badge/Security-9%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
 [![LongMemEval R@5](https://img.shields.io/badge/LongMemEval%20R%405-93.2%25%20hybrid-blue.svg)](benchmarks/RESULTS.md)
 
 Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, revise, and strengthen memories — just like biological brains.
@@ -16,7 +16,7 @@ MemForge manages agent memory across three tiers (hot → warm → cold) with ve
 
 ## Project Status
 
-**Beta** — Production hardening is complete. MemForge has passed 8 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (93.2% R@5 hybrid mode, 88.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
+**Beta** — Production hardening is complete. MemForge has passed 9 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval (93.2% R@5 hybrid mode, 35.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and the [ROADMAP.md](ROADMAP.md) for the long-term plan.
 
@@ -38,8 +38,9 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 - **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@xenova/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. Zero external dependency — no Ollama or OpenAI required for semantic search.
 - **Query Understanding** — Strips question scaffolding, auto-extracts time references as date filters, splits compound queries into independent sub-queries for multi-query retrieval
 - **Knowledge Graph** — Entities and relationships extracted during consolidation, traversable via recursive CTEs
-- **Sleep Cycles** — 5-phase background processor: scoring → triage → revision → graph maintenance → reflection. Includes autonomous weight adaptation.
-- **Memory Revision** — LLM rewrites low-confidence memories (augment, correct, merge, compress)
+- **Sleep Cycles** — 10-phase background processor: scoring → triage → conflict resolution → revision → graph maintenance → temporal chains → reflection → schema detection → meta-reflection → gap analysis. Includes autonomous weight adaptation.
+- **Active Knowledge Management** — Staleness detection, prioritized experience replay, conflict resolution (Phase 2.5), temporal event chains, knowledge gap tracking, schema crystallization
+- **Memory Revision** — LLM rewrites low-confidence memories (augment, correct, merge, compress). High-surprise memories revised first.
 - **Reflection** — LLM synthesizes higher-order insights and detects contradictions
 - **Meta-Reflection** — Second-order reflection on reflections surfaces durable principles
 - **Procedural Memory** — Condition→action rules extracted from reflections
@@ -50,12 +51,80 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 - **Active Recall** — Proactively surface relevant memories before agent actions
 - **Agent Resumption** — Single endpoint returns a full context bundle for fast warm-start
 - **Entity Deduplication** — Trigram-based duplicate entity detection and merge
-- **Temporal Intelligence** — Time-bounded queries, decay scoring, timeline view
+- **Temporal Intelligence** — Time-bounded queries, decay scoring, timeline view, temporal event chains
+- **Export / Import** — Full JSONL export and bulk import for memory migration and seeding
+- **Webhooks** — Event-driven notifications on consolidated/revised/reflected/evicted/graduated
 - **Multi-Tenant** — All operations scoped by agent ID
-- **Security Hardened** — Zod validation, advisory locks, prompt injection boundaries, RLS, SSRF prevention, security headers. 8 audit rounds, all clean at MEDIUM+.
+- **Security Hardened** — Zod validation, advisory locks, prompt injection boundaries, RLS, SSRF prevention, security headers. 9 audit rounds, all clean at MEDIUM+.
 - **MCP Server** — 17 tools for Claude Code, Cursor, and MCP-compatible AI tools
 - **TypeScript SDK** — Zero-dependency HTTP client for any JS runtime
+- **Python SDK** — `MemForgeClient`, `ResilientMemForgeClient`, `ConversationMemory` adapter, OpenAI + Anthropic tool definitions. `pip install memforge`.
+- **Docker Standalone** — Single container image with embedded PostgreSQL. `docker run -p 3333:3333 salishforge/memforge:standalone`
+- **ChatGPT Plugin** — `public/ai-plugin.json` manifest for direct ChatGPT integration
 - **LLM Opt-In** — Post-retrieval reranking and LLM-assisted ingest available but off by default
+
+## Getting Started
+
+Choose the path that fits your setup:
+
+### Path 1: Docker Standalone (quickest — zero dependencies)
+
+```bash
+docker run -p 3333:3333 salishforge/memforge:standalone
+```
+
+A single container starts MemForge with an embedded PostgreSQL database. No separate Postgres, Redis, or Node.js required. Ideal for evaluation and local development.
+
+### Path 2: Python SDK
+
+```bash
+pip install memforge
+```
+
+```python
+from memforge import MemForgeClient, ResilientMemForgeClient, ConversationMemory
+import asyncio
+
+async def main():
+    # ResilientMemForgeClient never raises — safe for production agents
+    client = ResilientMemForgeClient(base_url="http://localhost:3333", token="your-token")
+
+    # Store and query
+    await client.add("agent-1", "User prefers dark mode")
+    results = await client.query("agent-1", q="user preferences", mode="hybrid")
+
+    # ConversationMemory adapter for chat agents
+    memory = ConversationMemory(client, agent_id="agent-1")
+    session_id = await memory.start_session()
+    await memory.add_turn("user", "What layout do I prefer?")
+    context = await memory.get_context("layout preferences")
+    await memory.end_session(session_id)
+
+asyncio.run(main())
+```
+
+See [INTEGRATION.md](INTEGRATION.md) for the full Python SDK reference and framework examples.
+
+### Path 3: TypeScript SDK
+
+```bash
+npm install @salishforge/memforge
+```
+
+```typescript
+import { ResilientMemForgeClient } from '@salishforge/memforge/client';
+
+const memory = new ResilientMemForgeClient({
+  baseUrl: 'http://localhost:3333',
+  token: process.env.MEMFORGE_TOKEN,
+});
+
+await memory.add('agent-1', 'User prefers dark mode');
+const results = await memory.query('agent-1', { q: 'preferences', mode: 'hybrid' });
+const ctx = await memory.resume('agent-1');  // warm-start context bundle
+```
+
+---
 
 ## Quick Start
 
@@ -80,6 +149,7 @@ psql "$DATABASE_URL" -f schema/schema.sql
 psql "$DATABASE_URL" -f schema/migration-v2.2.sql
 psql "$DATABASE_URL" -f schema/migration-v2.3.sql
 psql "$DATABASE_URL" -f schema/migration-v2.4.sql
+psql "$DATABASE_URL" -f schema/migration-v2.6.sql
 
 npm run build
 npm start
@@ -108,6 +178,9 @@ All `/memory/*` routes require a Bearer token (`MEMFORGE_TOKEN` env var).
 | POST | `/memory/:agentId/clear` | Archive all memory to cold tier |
 | POST | `/memory/:agentId/hints` | Submit retrieval hints (keywords, entities, temporal anchors) |
 | GET | `/memory/:agentId/resume` | Get context bundle for agent warm-start |
+| GET | `/memory/:agentId/export` | Export all memories as JSONL |
+| POST | `/memory/:agentId/import` | Bulk import memories from JSONL |
+| GET | `/memory/:agentId/conflicts` | List detected memory conflicts |
 
 ### Knowledge Graph
 
@@ -212,22 +285,34 @@ curl -X POST http://localhost:3333/memory/agent-1/active-recall \
                                 └──────────────┘
 
     Sleep Cycle (background):
-    Phase 1: Score importance (SQL)
-    Phase 2: Triage — evict low-value, flag for revision
-    Phase 3: Revise — LLM rewrites flagged memories
-    Phase 4: Graph maintenance + entity deduplication
-    Phase 5: Reflection — synthesize insights
+    Phase 0:   Pre-flight — refresh staleness scores
+    Phase 1:   Score importance (SQL, weight adaptation)
+    Phase 2:   Triage — evict low-value, flag for revision
+    Phase 2.5: Conflict resolution — multi-factor scoring
+    Phase 3:   Revise — LLM rewrites flagged memories
+    Phase 4:   Graph maintenance + entity deduplication
+    Phase 4b:  Temporal chains — link adjacent memories
+    Phase 5:   Reflection — synthesize insights
+    Phase 5.5: Schema detection — crystallize patterns
+    Phase 5b:  Meta-reflection
+    Phase 6:   Gap analysis — record knowledge gaps
 ```
 
 ### Sleep Cycles
 
 Sleep cycles are MemForge's primary differentiator. Inspired by complementary learning systems theory, they actively improve memory quality during idle periods:
 
-1. **Scoring** — Composite importance from recency, frequency, centrality, reflection count, and revision stability
+0. **Pre-flight** — Refresh staleness scores; auto-reduce confidence on stale memories
+1. **Scoring** — Composite importance from recency, frequency, centrality, reflection count, and revision stability; adapt weights based on retrieval outcome correlation
 2. **Triage** — Evict memories below importance threshold to cold tier; flag low-confidence for revision
-3. **Revision** — LLM reviews flagged memories with context (related entities, retrieval history, neighboring memories) and decides to augment, correct, merge, compress, or leave as-is
-4. **Graph Maintenance** — Decay stale relationship edges; deduplicate similar entities
-5. **Reflection** — If enough revisions occurred, synthesize insights from the revised knowledge base
+3. **Conflict Resolution** (Phase 2.5) — Multi-factor scoring resolves contradictions; pairs recorded in `memory_conflicts`
+4. **Revision** — LLM reviews flagged memories with context (entities, retrieval history, neighbors). High-`surprise_score` memories processed first (prioritized experience replay).
+5. **Graph Maintenance** — Decay stale relationship edges; deduplicate similar entities
+6. **Temporal Chains** (Phase 4b) — Link temporally adjacent memories in `memory_sequences`
+7. **Reflection** — Synthesize insights from the revised knowledge base; extract procedural rules
+8. **Schema Detection** (Phase 5.5) — Crystallize repeated temporal patterns as `entity_type='schema'` entities
+9. **Meta-Reflection** (Phase 5b) — Second-order reflection on accumulated first-order reflections
+10. **Gap Analysis** (Phase 6) — Record zero-result query patterns in `knowledge_gaps`
 
 Each phase respects a token budget to control LLM costs.
 
@@ -393,6 +478,8 @@ See `.env.example` for the full list. Key variables:
 | `RATE_LIMIT_MAX` | `100` | Requests per minute per IP (0 = disabled) |
 | `ADMIN_TOKEN` | (open) | Bearer token for `/admin/*` routes |
 | `OAUTH2_REQUIRED` | `false` | Require OAuth2 JWT on all `/memory/*` routes |
+| `WEBHOOK_URL` | — | URL to POST event payloads to (optional) |
+| `WEBHOOK_EVENTS` | (all) | Comma-separated event filter: `consolidated`, `revised`, `reflected`, `evicted`, `graduated` |
 
 ## Scheduling Sleep Cycles
 
@@ -480,9 +567,9 @@ Visit `http://localhost:3333/admin/cache/dashboard` for live monitoring.
 
 ## Database
 
-PostgreSQL with 12 tables: `agents`, `hot_tier`, `warm_tier`, `cold_tier`, `consolidation_log`, `entities`, `relationships`, `warm_tier_entities`, `reflections`, `retrieval_log`, `memory_revisions`, `procedures`.
+PostgreSQL with 15 tables: `agents`, `hot_tier`, `warm_tier`, `cold_tier`, `consolidation_log`, `entities`, `relationships`, `warm_tier_entities`, `reflections`, `retrieval_log`, `memory_revisions`, `procedures`, `memory_conflicts`, `memory_sequences`, `knowledge_gaps`.
 
-Schema: `schema/schema.sql` + incremental migrations in `schema/migration-*.sql`.
+Schema: `schema/schema.sql` + incremental migrations in `schema/migration-*.sql`. Latest: `migration-v2.6.sql` (Active Knowledge Management tables and columns).
 
 ## Testing
 
@@ -502,7 +589,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 - **LLM-dependent features require API keys** — Summarize consolidation, reflection, meta-reflection, sleep cycle revision, and procedural extraction all require an LLM provider. Without one, MemForge still works as a tiered search engine with concat consolidation.
 - **No streaming consolidation** — Large hot-tier backlogs (10K+ events) load into memory at once. See [BACKLOG.md](BACKLOG.md) issue #6.
 - **Cold tier grows indefinitely** — No retention policy or hard deletion. Archived memories accumulate forever.
-- **No unit tests for LLM paths** — Integration tests cover CRUD operations but LLM-dependent codepaths (summarize, reflect, revise) need mocked provider tests. See [BACKLOG.md](BACKLOG.md) issue #1.
+- **Limited semantic search test coverage** — Mock LLM tests cover all LLM-dependent paths. Semantic/hybrid search paths still require a live embedding provider; no mock embedding provider exists yet.
 - **No HTTPS** — Run behind a TLS-terminating reverse proxy in production. See [SECURITY.md](SECURITY.md).
 
 ## Project Documentation
@@ -514,8 +601,8 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, data models, module structure |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
-| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.2.0 (latest: local embeddings, multi-query retrieval, 93.2% R@5) |
-| [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.6.0 (latest: Python SDK, Active Knowledge Management, Docker standalone, webhooks) |
+| [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic, Python SDK) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |

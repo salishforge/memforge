@@ -210,6 +210,18 @@ recent_memories = [m["content"] for m in ctx["recent"]]
 
 ---
 
+## Docker Standalone Quickstart
+
+The fastest way to run MemForge locally — no separate PostgreSQL or Redis required:
+
+```bash
+docker run -p 3333:3333 salishforge/memforge:standalone
+```
+
+The standalone image bundles an embedded PostgreSQL instance. It is intended for local development and evaluation. For production, use Docker Compose (`docker compose up -d`) which provides a proper PostgreSQL container and optional Redis.
+
+---
+
 ## Three Ways to Connect
 
 ### Option A: HTTP REST API (works with anything)
@@ -257,7 +269,7 @@ await memory.feedback('my-agent', [id], 'positive', ['task_completed']);
 
 **Use when:** Your agent is TypeScript/JavaScript and you want type-safe access.
 
-**Full client method list (v2.2.0):**
+**Full client method list (v2.6.0):**
 
 | Method | Description |
 |--------|-------------|
@@ -268,7 +280,7 @@ await memory.feedback('my-agent', [id], 'positive', ['task_completed']);
 | `stats(agentId)` | Tier statistics |
 | `clear(agentId)` | Archive to cold tier |
 | `sleep(agentId, opts?)` | Run a full sleep cycle |
-| `health(agentId)` | Memory health metrics |
+| `health(agentId)` | Memory health metrics (includes `stale_memory_count`, `knowledge_gap_count_7d`) |
 | `reflect(agentId)` | Trigger LLM reflection |
 | `reflections(agentId)` | List stored reflections |
 | `metaReflect(agentId)` | Second-order reflection |
@@ -280,6 +292,9 @@ await memory.feedback('my-agent', [id], 'positive', ['task_completed']);
 | `activeRecall(agentId, context)` | Proactively surface relevant memories |
 | `hints(agentId, hints)` | Submit retrieval hints (v2.2.0) |
 | `resume(agentId)` | Get warm-start context bundle (v2.2.0) |
+| `export(agentId)` | Export all memories as JSONL (v2.6.0) |
+| `import(agentId, jsonl)` | Bulk import memories from JSONL (v2.6.0) |
+| `conflicts(agentId)` | List detected memory conflicts (v2.6.0) |
 
 ### Option C: MCP Tools (Claude Code, Cursor, MCP-compatible tools)
 
@@ -304,6 +319,116 @@ MemForge ships as an MCP server with 17 tools. AI assistants call the tools dire
 The AI assistant then has access to tools like `memforge_add`, `memforge_query`, `memforge_reflect`, `memforge_sleep`, etc. It decides when to use them based on conversation context.
 
 **Use when:** Your "agent" is Claude Code, Cursor, or another MCP-compatible AI tool.
+
+### Option D: Python SDK
+
+```bash
+pip install memforge
+```
+
+Three classes cover different use cases:
+
+#### `MemForgeClient` — direct, typed, raises on errors
+
+```python
+import asyncio
+from memforge import MemForgeClient
+
+async def main():
+    client = MemForgeClient(base_url="http://localhost:3333", token="your-token")
+
+    # Store a memory
+    await client.add("agent-1", "User prefers dark mode")
+
+    # Search
+    results = await client.query("agent-1", q="user preferences", mode="hybrid")
+    for m in results:
+        print(m["content"])
+
+    # Consolidate and sleep
+    await client.consolidate("agent-1")
+    await client.sleep("agent-1", token_budget=50000)
+
+    # Feedback loop
+    retrieval_ids = [r["id"] for r in results]
+    await client.feedback("agent-1", retrieval_ids, "positive", ["task_completed"])
+
+    # Export / import
+    jsonl = await client.export("agent-1")           # returns JSONL string
+    await client.import_memories("agent-1", jsonl)   # bulk load
+
+asyncio.run(main())
+```
+
+#### `ResilientMemForgeClient` — graceful degradation (recommended for production)
+
+```python
+from memforge import ResilientMemForgeClient
+
+# Never raises — returns safe defaults if MemForge is unavailable
+client = ResilientMemForgeClient(
+    base_url="http://localhost:3333",
+    token="your-token",
+    on_error=lambda method, err: logger.warning(f"MemForge {method}: {err}"),
+)
+
+# Returns [] if MemForge is down
+results = await client.query("agent-1", q="preferences")
+
+# Silently drops if MemForge is down
+await client.add("agent-1", "User likes compact layouts")
+```
+
+#### `ConversationMemory` — chat-oriented adapter
+
+```python
+from memforge import ResilientMemForgeClient, ConversationMemory
+
+client = ResilientMemForgeClient(base_url="http://localhost:3333", token="your-token")
+memory = ConversationMemory(client, agent_id="agent-1")
+
+# Session management
+session_id = await memory.start_session()
+
+# Record turns
+await memory.add_turn("user", "I prefer dark mode")
+await memory.add_turn("assistant", "Noted! I'll use dark mode for you.")
+
+# Retrieve context before responding
+context_memories = await memory.get_context("display preferences")
+
+# End session (triggers consolidation)
+await memory.end_session(session_id)
+```
+
+**Full Python SDK method list:**
+
+| Method | Description |
+|--------|-------------|
+| `add(agent_id, content, **opts)` | Store a memory event. Supports `hints`, `supersedes_id`. |
+| `query(agent_id, q, **params)` | Search warm-tier memory |
+| `consolidate(agent_id, mode?)` | Trigger hot→warm consolidation |
+| `timeline(agent_id, **params)` | Retrieve memories chronologically |
+| `stats(agent_id)` | Tier statistics |
+| `clear(agent_id)` | Archive to cold tier |
+| `sleep(agent_id, **opts)` | Run a full sleep cycle |
+| `health(agent_id)` | Memory health metrics (includes `stale_memory_count`, `knowledge_gap_count_7d`) |
+| `reflect(agent_id)` | Trigger LLM reflection |
+| `reflections(agent_id)` | List stored reflections |
+| `meta_reflect(agent_id)` | Second-order reflection |
+| `procedures(agent_id)` | List learned condition→action rules |
+| `entities(agent_id, **params)` | Search knowledge graph entities |
+| `graph(agent_id, entity)` | Traverse graph from an entity |
+| `deduplicate_entities(agent_id)` | Merge duplicate entities |
+| `feedback(agent_id, ids, outcome, tags?)` | Record retrieval outcome feedback |
+| `active_recall(agent_id, context)` | Proactively surface relevant memories |
+| `hints(agent_id, hints)` | Submit retrieval hints |
+| `resume(agent_id)` | Get warm-start context bundle |
+| `export(agent_id)` | Export all memories as JSONL |
+| `import_memories(agent_id, jsonl)` | Bulk import memories from JSONL |
+| `conflicts(agent_id)` | List detected memory conflicts |
+
+**Use when:** Your agent is Python and you want a typed, async-native client.
 
 ---
 
@@ -576,6 +701,87 @@ const results = await manager.query('agent-1', { q: 'preferences' });
 
 ---
 
+## Export and Import
+
+### Exporting Memories
+
+Download the full warm-tier memory of an agent as JSONL (one JSON object per line):
+
+```bash
+curl "http://localhost:3333/memory/agent-1/export" \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN" \
+  > agent-1-backup.jsonl
+```
+
+```typescript
+const jsonl = await client.export('agent-1');
+fs.writeFileSync('backup.jsonl', jsonl);
+```
+
+```python
+jsonl = await client.export("agent-1")
+Path("backup.jsonl").write_text(jsonl)
+```
+
+Each line is a JSON object with `content`, `importance`, `confidence`, `created_at`, and optional `metadata`.
+
+### Importing Memories
+
+Bulk-load memories from a JSONL file (useful for migration, seeding, or restoring from backup):
+
+```bash
+curl -X POST "http://localhost:3333/memory/agent-1/import" \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN" \
+  -H "Content-Type: application/x-ndjson" \
+  --data-binary @backup.jsonl
+```
+
+```typescript
+const jsonl = fs.readFileSync('backup.jsonl', 'utf8');
+await client.import('agent-1', jsonl);
+```
+
+Import writes directly to the warm tier — no hot-tier consolidation needed. Embeddings are regenerated on import if an embedding provider is configured.
+
+---
+
+## Webhook Events
+
+Configure `WEBHOOK_URL` to receive event notifications:
+
+```bash
+WEBHOOK_URL=https://your-app.example.com/memforge-events
+WEBHOOK_EVENTS=consolidated,revised,reflected   # omit to receive all events
+```
+
+### Payload Format
+
+```json
+{
+  "event": "consolidated",
+  "agentId": "agent-1",
+  "timestamp": "2026-04-08T12:00:00.000Z",
+  "data": {
+    "hot_rows_processed": 42,
+    "warm_rows_created": 8
+  }
+}
+```
+
+### Event Types
+
+| Event | Trigger | `data` fields |
+|-------|---------|---------------|
+| `consolidated` | Hot→warm consolidation completes | `hot_rows_processed`, `warm_rows_created` |
+| `revised` | Sleep Phase 3 revises a memory | `memory_id`, `decision`, `revision_count` |
+| `reflected` | Reflection or meta-reflection completes | `reflection_id`, `level`, `insight_count` |
+| `evicted` | Memory moved to cold tier | `memory_id`, `reason`, `importance` |
+| `graduated` | Memory confidence promoted | `memory_id`, `old_confidence`, `new_confidence` |
+
+Webhook delivery is best-effort — MemForge does not retry on failure. If your endpoint returns a non-2xx status, the event is logged and dropped.
+
+---
+
 ## FAQ
 
 **Do I need an LLM provider to use MemForge?**
@@ -585,7 +791,7 @@ No. Without an LLM, you get tiered storage, keyword search, concat consolidation
 No. Without embeddings, search falls back to PostgreSQL full-text search with trigram matching. Add an embedding provider for semantic and hybrid search modes.
 
 **Can I use MemForge with Python agents?**
-Yes. Use the REST API. MemForge is a standalone HTTP server — any language that can make HTTP requests works. See the LangChain and CrewAI examples above.
+Yes. Install the Python SDK (`pip install memforge`) for a typed async client with `MemForgeClient`, `ResilientMemForgeClient`, and `ConversationMemory`. Or use the REST API directly — MemForge is a standalone HTTP server that works with any language. See the Python SDK section and LangChain/CrewAI examples above.
 
 **How much does it cost to run?**
 MemForge itself is free (MIT license). Costs come from:

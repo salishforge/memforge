@@ -34,6 +34,7 @@ psql memforge -f schema/schema.sql
 psql memforge -f schema/migration-v2.2.sql   # dedup, confidence graduation, outcome tagging
 psql memforge -f schema/migration-v2.3.sql   # RLS policies (requires superuser)
 psql memforge -f schema/migration-v2.4.sql   # hints table, supersession, weight adaptation
+psql memforge -f schema/migration-v2.6.sql   # AKM: memory_conflicts, memory_sequences, knowledge_gaps, surprise_score, staleness_score
 
 # Full migration sequence from v1.x:
 psql memforge -f schema/migration-v1.2.sql
@@ -45,6 +46,7 @@ psql memforge -f schema/migration-v2.1.sql
 psql memforge -f schema/migration-v2.2.sql
 psql memforge -f schema/migration-v2.3.sql
 psql memforge -f schema/migration-v2.4.sql
+psql memforge -f schema/migration-v2.6.sql
 ```
 
 ### Environment
@@ -236,6 +238,13 @@ All configuration is via environment variables. Copy `.env.example` to `.env` to
 | `ENABLE_LLM_RERANK` | `false` | Enable LLM post-retrieval reranking of top-k results |
 | `ENABLE_LLM_INGEST` | `false` | Enable LLM entity/tag extraction at write time |
 
+### Webhooks
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_URL` | — | URL to POST event payloads to (optional) |
+| `WEBHOOK_EVENTS` | (all) | Comma-separated event filter: `consolidated`, `revised`, `reflected`, `evicted`, `graduated` |
+
 ### Security
 
 | Variable | Default | Description |
@@ -366,6 +375,61 @@ docker compose up -d
 ```
 
 The docker-compose.yml mounts `schema/schema.sql` into PostgreSQL's init directory for automatic schema creation on first run.
+
+## Python SDK Development
+
+The Python SDK lives in `python/python/memforge/`. It is a separate package with its own `pyproject.toml`.
+
+### Setup
+
+```bash
+cd python/python
+pip install -e ".[dev]"
+```
+
+### Structure
+
+| File | Purpose |
+|------|---------|
+| `memforge/client.py` | `MemForgeClient` — 18 async methods over `httpx` |
+| `memforge/resilient.py` | `ResilientMemForgeClient` — wraps `MemForgeClient`, returns safe defaults on errors |
+| `memforge/conversation.py` | `ConversationMemory` — chat-oriented adapter: `add_turn`, `get_context`, `start_session`, `end_session` |
+| `memforge/tools.py` | Tool definitions for OpenAI function calling and Anthropic tool_use formats |
+| `memforge/__init__.py` | Public exports |
+| `memforge/types.py` | Typed dataclasses mirroring TypeScript interfaces |
+
+### Publishing
+
+```bash
+cd python/python
+python -m build
+pip install twine
+twine upload dist/*
+```
+
+Install from PyPI:
+
+```bash
+pip install memforge
+```
+
+### Framework Examples
+
+`examples/` contains runnable Python examples:
+
+| File | What it demonstrates |
+|------|----------------------|
+| `quickstart.py` | Hello-world: add, query, consolidate |
+| `simple_chatbot.py` | Minimal chatbot with MemForge memory |
+| `openai_tools.py` | OpenAI function calling with MemForge tools |
+| `claude_tools.py` | Anthropic tool_use with MemForge tools |
+| `langchain_memory.py` | LangChain memory integration |
+
+Run any example with a running MemForge server:
+
+```bash
+MEMFORGE_URL=http://localhost:3333 MEMFORGE_TOKEN=dev python examples/quickstart.py
+```
 
 ## Troubleshooting
 
