@@ -984,6 +984,66 @@ export function createApp(deps: AppDependencies): express.Express {
     res.status(status).json({ ok: false, error: safeMessage });
   }
 
+  // ─── Shared Pool Routes (Phase 3) ──────────────────────────────────────
+
+  app.post('/pool', adminAuth, async (req: Request, res: Response) => {
+    const { id, name, pool_type, description } = req.body as { id?: string; name?: string; pool_type?: string; description?: string };
+    if (!id || !name) { fail(res, 400, '"id" and "name" are required'); return; }
+    try {
+      await manager.createPool(id, name, (pool_type as 'team' | 'global') ?? 'team', description);
+      ok(res, { id, name, pool_type: pool_type ?? 'team' });
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.post('/pool/:poolId/join', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { agent_id } = req.body as { agent_id?: string };
+    if (!agent_id) { fail(res, 400, '"agent_id" is required'); return; }
+    try {
+      await manager.joinPool(agent_id, req.params['poolId'] ?? '');
+      ok(res, { agent_id, pool_id: req.params['poolId'] });
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.delete('/pool/:poolId/leave', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { agent_id } = req.body as { agent_id?: string };
+    if (!agent_id) { fail(res, 400, '"agent_id" is required'); return; }
+    try {
+      await manager.leavePool(agent_id, req.params['poolId'] ?? '');
+      ok(res, { removed: true });
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.get('/pool/:poolId/members', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    try {
+      const members = await manager.getPoolMembers(req.params['poolId'] ?? '');
+      ok(res, members);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.post('/pool/:poolId/publish', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { agent_id, memory_ids } = req.body as { agent_id?: string; memory_ids?: unknown[] };
+    if (!agent_id || !Array.isArray(memory_ids) || memory_ids.length === 0) {
+      fail(res, 400, '"agent_id" and "memory_ids" (non-empty array) are required');
+      return;
+    }
+    try {
+      const result = await manager.publish(agent_id, req.params['poolId'] ?? '', memory_ids as bigint[]);
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error;
+      if (e.message.includes('not a member')) { fail(res, 403, e.message); }
+      else { fail(res, 500, e.message); }
+    }
+  });
+
+  app.get('/pool/:poolId/reputation/:agentId', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const domain = req.query['domain'] as string | undefined;
+    try {
+      const rep = await manager.getReputation(req.params['agentId'] ?? '', domain);
+      ok(res, rep);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
   // ─── Global error handler ─────────────────────────────────────────────
 
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

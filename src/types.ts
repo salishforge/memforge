@@ -402,6 +402,53 @@ export interface MemoryHints {
   type?: 'fact' | 'event' | 'decision' | 'preference' | 'correction' | 'error';
 }
 
+// ─── Phase 3: Cross-Agent Shared Memory ─────────────────────────────────────
+
+export interface SharedPool {
+  id: string;
+  name: string;
+  description?: string;
+  pool_type: 'team' | 'global';
+  created_at: Date;
+  metadata: Record<string, unknown>;
+}
+
+export interface PoolMembership {
+  agent_id: string;
+  pool_id: string;
+  role: 'member' | 'admin';
+  joined_at: Date;
+}
+
+export interface SharedMemory {
+  id: bigint;
+  pool_id: string;
+  source_agent_id: string;
+  content: string;
+  summary?: string;
+  source_chain: string[];
+  hop_count: number;
+  base_confidence: number;
+  importance: number;
+  corroboration_count: number;
+  published_at: Date;
+  rank?: number;
+}
+
+export interface AgentReputation {
+  agent_id: string;
+  domain: string;
+  score: number;
+  corroboration_count: number;
+  contradiction_count: number;
+  contribution_count: number;
+}
+
+export interface PublishResult {
+  pool_id: string;
+  published: number;
+}
+
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
 };

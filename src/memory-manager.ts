@@ -2607,6 +2607,114 @@ Guidelines:
     };
   }
 
+  // ─── Phase 3: Shared Memory Pools ──────────────────────────────────────
+
+  async createPool(poolId: string, name: string, poolType: 'team' | 'global' = 'team', description?: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO shared_pools (id, name, pool_type, description) VALUES ($1, $2, $3, $4)`,
+      [poolId, name, poolType, description ?? null],
+    );
+  }
+
+  async joinPool(agentId: string, poolId: string, role: 'member' | 'admin' = 'member'): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO pool_memberships (agent_id, pool_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [agentId, poolId, role],
+    );
+  }
+
+  async leavePool(agentId: string, poolId: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM pool_memberships WHERE agent_id = $1 AND pool_id = $2`,
+      [agentId, poolId],
+    );
+  }
+
+  async getAgentPools(agentId: string): Promise<Array<{ pool_id: string; pool_type: string; role: string }>> {
+    const { rows } = await this.pool.query<{ pool_id: string; pool_type: string; role: string }>(
+      `SELECT pm.pool_id, sp.pool_type, pm.role
+       FROM pool_memberships pm JOIN shared_pools sp ON sp.id = pm.pool_id
+       WHERE pm.agent_id = $1`,
+      [agentId],
+    );
+    return rows;
+  }
+
+  async getPoolMembers(poolId: string): Promise<Array<{ agent_id: string; role: string; joined_at: Date }>> {
+    const { rows } = await this.pool.query<{ agent_id: string; role: string; joined_at: Date }>(
+      `SELECT agent_id, role, joined_at FROM pool_memberships WHERE pool_id = $1`,
+      [poolId],
+    );
+    return rows;
+  }
+
+  /**
+   * Publish private memories to a shared pool.
+   * Applies first-hand sharing discount (0.8×) and tracks provenance chain.
+   */
+  async publish(agentId: string, poolId: string, memoryIds: bigint[]): Promise<{ published: number }> {
+    // Verify membership
+    const membership = await this.pool.query(
+      `SELECT 1 FROM pool_memberships WHERE agent_id = $1 AND pool_id = $2`,
+      [agentId, poolId],
+    );
+    if (membership.rows.length === 0) {
+      throw new Error(`Agent '${agentId}' is not a member of pool '${poolId}'`);
+    }
+
+    let published = 0;
+    for (const memId of memoryIds) {
+      const mem = await this.pool.query<{
+        content: string; summary: string | null; embedding: unknown;
+        confidence: number; importance: number; metadata: Record<string, unknown>;
+      }>(
+        `SELECT content, summary, embedding, confidence, importance, metadata FROM warm_tier WHERE id = $1 AND agent_id = $2`,
+        [memId, agentId],
+      );
+      if (mem.rows.length === 0) continue;
+      const m = mem.rows[0]!;
+
+      // Determine provenance: if this memory was itself from a pool, increment hop
+      const fromPool = (m.metadata as Record<string, unknown>)?.['_from_pool'] as string | undefined;
+      const existingChain = (m.metadata as Record<string, unknown>)?.['_source_chain'] as string[] | undefined;
+      const sourceChain = fromPool ? [...(existingChain ?? []), agentId] : [agentId];
+      const hopCount = fromPool ? sourceChain.length : 1;
+
+      // Apply hearsay discount: confidence × 0.8 per hop
+      const discountedConfidence = m.confidence * Math.pow(0.8, hopCount);
+
+      await this.pool.query(
+        `INSERT INTO shared_memories (pool_id, source_agent_id, source_warm_tier_id, content, summary, embedding, metadata, source_chain, hop_count, base_confidence, importance)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [poolId, agentId, memId, m.content, m.summary, m.embedding, JSON.stringify(m.metadata),
+         sourceChain, hopCount, discountedConfidence, m.importance],
+      );
+
+      // Update agent reputation: increment contribution count
+      await this.pool.query(
+        `INSERT INTO agent_reputation (agent_id, domain, contribution_count)
+         VALUES ($1, '_global', 1)
+         ON CONFLICT (agent_id, domain) DO UPDATE SET contribution_count = agent_reputation.contribution_count + 1, last_updated = now()`,
+        [agentId],
+      );
+
+      published++;
+    }
+
+    return { published };
+  }
+
+  /**
+   * Get agent reputation for a domain (or global).
+   */
+  async getReputation(agentId: string, domain = '_global'): Promise<{ score: number }> {
+    const { rows } = await this.pool.query<{ score: number }>(
+      `SELECT score FROM agent_reputation WHERE agent_id = $1 AND domain = $2`,
+      [agentId, domain],
+    );
+    return { score: rows[0]?.score ?? 0.7 }; // Default: neutral
+  }
+
   // ─── Export/Import ──────────────────────────────────────────────────────
 
   /**
