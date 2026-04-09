@@ -438,17 +438,6 @@ Configuration: concat consolidation, `EMBEDDING_PROVIDER=local`, `KEYWORD_OVERLA
 
 Configuration: concat consolidation, `KEYWORD_OVERLAP_BOOST=0.3`, `TEMPORAL_PROXIMITY_DAYS=7`. See [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) for full methodology.
 
-## How It Compares
-
-| System | LongMemEval R@5 | LongMemEval R@10 | Notes |
-|--------|-----------------|-----------------|-------|
-| MemPalace | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
-| **MemForge (hybrid)** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
-| **MemForge (keyword)** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
-| Hippo | 74.0% | — | BM25 keyword baseline |
-
-MemForge hybrid mode (93.2% R@5, 96.4% R@10) closes to within 3.4 points of MemPalace at R@5 while running entirely on PostgreSQL with no external graph database. Keyword-only mode is expected to score lower on the per-session LongMemEval format (35.0% R@5) because full-text search is weak on short per-session rows — use hybrid mode for best results. Hybrid mode outperforms the BM25 baseline by 19 percentage points at R@5.
-
 ## Configuration
 
 See `.env.example` for the full list. Key variables:
