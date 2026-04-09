@@ -625,6 +625,14 @@ Ranking (numbers only):`;
       }
     }
 
+    // Knowledge gap detection (#77) — track queries that return no results
+    if (results.length === 0) {
+      void this.pool.query(
+        `INSERT INTO knowledge_gaps (agent_id, query_text, gap_type) VALUES ($1, $2, 'no_results')`,
+        [agentId, searchText.slice(0, 500)],
+      ).catch(() => {});
+    }
+
     // Log retrieval events and update access counts (fire-and-forget)
     if (results.length > 0) {
       const ids = results.map((r) => r.id);
@@ -1173,6 +1181,19 @@ Ranking (numbers only):`;
         );
         const warmRowId = warmRow.rows[0]!.id;
         warmCreated++;
+
+        // Temporal event chain detection (#76) — link to closest preceding warm-tier memory
+        void client.query(
+          `INSERT INTO memory_sequences (agent_id, predecessor_id, successor_id, gap_seconds)
+           SELECT $1, w.id, $2, EXTRACT(EPOCH FROM ($3::timestamptz - w.time_end))
+           FROM warm_tier w
+           WHERE w.agent_id = $1 AND w.id != $2
+             AND w.time_end IS NOT NULL AND w.time_end < $3::timestamptz
+             AND w.time_end > $3::timestamptz - interval '24 hours'
+           ORDER BY w.time_end DESC LIMIT 1
+           ON CONFLICT DO NOTHING`,
+          [agentId, warmRowId, batch.oldest],
+        ).catch(() => {});
 
         // Audit: record warm-tier creation
         if (this.audit) {
@@ -2037,6 +2058,18 @@ Ranking (numbers only):`;
     );
 
     const r = rows[0]!;
+
+    // Knowledge gaps (#77) and staleness (#78) metrics
+    const gapResult = await this.pool.query<{ count: string }>(
+      `SELECT count(*) FROM knowledge_gaps WHERE agent_id = $1 AND NOT resolved AND detected_at > now() - interval '7 days'`,
+      [agentId],
+    );
+    const stalenessResult = await this.pool.query<{ stale_count: string; avg_staleness: number | null }>(
+      `SELECT count(*) FILTER (WHERE staleness_score > 0.5) AS stale_count, avg(staleness_score) AS avg_staleness
+       FROM warm_tier WHERE agent_id = $1`,
+      [agentId],
+    );
+
     return {
       agent_id: agentId,
       total_memories: parseInt(r.total_memories, 10),
@@ -2048,6 +2081,9 @@ Ranking (numbers only):`;
       knowledge_stability_pct: r.stable_pct ?? 100,
       retrieval_count_24h: parseInt(r.retrieval_count, 10),
       contradiction_rate: r.contradiction_rate ?? 0,
+      stale_memory_count: parseInt(stalenessResult.rows[0]?.stale_count ?? '0', 10),
+      avg_staleness: stalenessResult.rows[0]?.avg_staleness ?? 0,
+      knowledge_gap_count_7d: parseInt(gapResult.rows[0]?.count ?? '0', 10),
     };
   }
 
@@ -2208,6 +2244,31 @@ Ranking (numbers only):`;
           }
         }).catch((err) => log.error({ err }, 'term-memory affinity tracking failed'));
       }
+    }
+
+    // Surprise tracking (#79) — memories with positive history that get negative feedback
+    // are "surprising" and should be prioritized for revision in sleep cycles
+    if (outcome === 'negative' && updated > 0) {
+      void this.pool.query(
+        `UPDATE warm_tier SET surprise_score = LEAST(1.0, surprise_score + 0.3)
+         WHERE id IN (
+           SELECT DISTINCT warm_tier_id FROM retrieval_log
+           WHERE agent_id = $1 AND id = ANY($2)
+         ) AND retrieval_success_count > 0`,
+        [agentId, retrievalIds],
+      ).catch((err) => log.error({ err }, 'surprise tracking failed'));
+    }
+
+    // Corroboration tracking (#78) — positive feedback corroborates the memory
+    if (outcome === 'positive' && updated > 0) {
+      void this.pool.query(
+        `UPDATE warm_tier SET last_corroborated = now()
+         WHERE id IN (
+           SELECT DISTINCT warm_tier_id FROM retrieval_log
+           WHERE agent_id = $1 AND id = ANY($2)
+         )`,
+        [agentId, retrievalIds],
+      ).catch((err) => log.error({ err }, 'corroboration tracking failed'));
     }
 
     // Audit: record feedback event

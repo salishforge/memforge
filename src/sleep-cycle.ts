@@ -91,6 +91,9 @@ export class SleepCycleEngine {
     // Phase 2: Triage
     const { evicted, flaggedIds } = await this.phaseTriage(agentId);
 
+    // Phase 2.5: Conflict Resolution (#80) — resolve contradicting memories
+    const conflictsResolved = await this.phaseConflictResolution(agentId);
+
     // Phase 3: Revision (bounded by token budget and max revisions per cycle)
     // Revision cap inspired by claude-code-toolkit (MIT) auto-dream max-5-changes pattern
     const maxRevisions = this.config.maxRevisionsPerCycle ?? flaggedIds.length;
@@ -130,6 +133,14 @@ export class SleepCycleEngine {
       coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
     }
 
+    // Phase 5.5: Schema Detection (#75) — find repeated temporal sequences
+    let schemasDetected = 0;
+    try {
+      schemasDetected = await this.phaseSchemaDetection(agentId);
+    } catch (err) {
+      log.error({ err }, 'schema detection failed');
+    }
+
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
     if (this.audit) {
@@ -152,6 +163,8 @@ export class SleepCycleEngine {
       phase4_entities_merged: entitiesMerged,
       phase5_reflection: didReflect,
       phase5b_cold_purged: coldPurged,
+      schemas_detected: schemasDetected,
+      conflicts_resolved: conflictsResolved,
       audit_records_archived: auditArchived,
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
@@ -298,6 +311,28 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'scoring audit failed'));
     }
 
+    // Staleness detection (#78) — compute staleness based on access recency and confidence
+    await this.pool.query(
+      `UPDATE warm_tier SET staleness_score = LEAST(1.0,
+         CASE
+           WHEN last_accessed IS NULL AND consolidated_at < now() - interval '30 days' THEN 0.8
+           WHEN last_accessed IS NOT NULL AND last_accessed < now() - interval '30 days' THEN 0.6
+           WHEN last_accessed IS NOT NULL AND last_accessed < now() - interval '14 days' THEN 0.3
+           ELSE 0.0
+         END
+         + CASE WHEN revision_count > 0 AND confidence < 0.5 THEN 0.2 ELSE 0 END
+       )
+       WHERE agent_id = $1`,
+      [agentId],
+    );
+
+    // Stale memories get automatic confidence reduction (unless graduated)
+    await this.pool.query(
+      `UPDATE warm_tier SET confidence = GREATEST(0.1, confidence - 0.1)
+       WHERE agent_id = $1 AND staleness_score > 0.6 AND NOT graduated`,
+      [agentId],
+    );
+
     return rowCount ?? 0;
   }
 
@@ -344,12 +379,13 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag low-confidence memories for revision, ordered by highest importance first
-    // (prioritize revising the memories that matter most)
+    // Flag low-confidence memories for revision, prioritized by surprise score (#79)
+    // then by importance. High-surprise memories represent the biggest gap between
+    // what the system expected and what happened — revise those first.
     const flagged = await this.pool.query<{ id: bigint }>(
       `SELECT id FROM warm_tier
        WHERE agent_id = $1 AND confidence < $2
-       ORDER BY importance DESC
+       ORDER BY surprise_score DESC, importance DESC
        LIMIT 50`,
       [agentId, this.config.revisionThreshold],
     );
@@ -513,6 +549,98 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
   // ─── Phase 4: Graph Maintenance ────────────────────────────────────────────
 
+  // ─── Phase 2.5: Conflict Resolution (#80) ──────────────────────────────────
+
+  private async phaseConflictResolution(agentId: string): Promise<number> {
+    // Resolve unresolved conflicts using heuristic strategy:
+    // 1. Temporal precedence — newer memory wins
+    // 2. Corroboration — more positive feedback wins
+    // 3. Explicit supersession — superseded memories lose immediately
+    // 4. Higher confidence wins when all else is equal
+    const unresolved = await this.pool.query<{
+      id: bigint;
+      warm_tier_id_a: bigint;
+      warm_tier_id_b: bigint;
+    }>(
+      `SELECT mc.id, mc.warm_tier_id_a, mc.warm_tier_id_b
+       FROM memory_conflicts mc
+       WHERE mc.agent_id = $1 AND mc.resolved = false
+       LIMIT 20`,
+      [agentId],
+    );
+
+    let resolved = 0;
+    for (const conflict of unresolved.rows) {
+      const memories = await this.pool.query<{
+        id: bigint;
+        consolidated_at: Date;
+        retrieval_success_count: number;
+        confidence: number;
+        metadata: Record<string, unknown>;
+      }>(
+        `SELECT id, consolidated_at, retrieval_success_count, confidence, metadata
+         FROM warm_tier WHERE id IN ($1, $2)`,
+        [conflict.warm_tier_id_a, conflict.warm_tier_id_b],
+      );
+
+      if (memories.rows.length < 2) continue;
+      const [a, b] = memories.rows as [typeof memories.rows[0] & object, typeof memories.rows[0] & object];
+      if (!a || !b) continue;
+
+      // Determine winner
+      let winnerId: bigint;
+      let strategy: string;
+
+      // Supersession takes priority
+      if ((a.metadata as Record<string, unknown>)?.['_superseded']) {
+        winnerId = b.id;
+        strategy = 'supersession';
+      } else if ((b.metadata as Record<string, unknown>)?.['_superseded']) {
+        winnerId = a.id;
+        strategy = 'supersession';
+      // Temporal: newer wins
+      } else if (a.consolidated_at > b.consolidated_at) {
+        winnerId = a.id;
+        strategy = 'temporal_precedence';
+      } else if (b.consolidated_at > a.consolidated_at) {
+        winnerId = b.id;
+        strategy = 'temporal_precedence';
+      // Corroboration: more positive feedback wins
+      } else if (a.retrieval_success_count > b.retrieval_success_count) {
+        winnerId = a.id;
+        strategy = 'corroboration';
+      } else if (b.retrieval_success_count > a.retrieval_success_count) {
+        winnerId = b.id;
+        strategy = 'corroboration';
+      // Confidence: higher wins
+      } else {
+        winnerId = a.confidence >= b.confidence ? a.id : b.id;
+        strategy = 'confidence';
+      }
+
+      const loserId = winnerId === a.id ? b.id : a.id;
+
+      // Mark conflict resolved
+      await this.pool.query(
+        `UPDATE memory_conflicts SET resolved = true, winner_id = $2, resolution_strategy = $3, resolved_at = now()
+         WHERE id = $1`,
+        [conflict.id, winnerId, strategy],
+      );
+
+      // Reduce loser's confidence
+      await this.pool.query(
+        `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
+           metadata = metadata || '{"_conflict_loser": true}'::jsonb
+         WHERE id = $1`,
+        [loserId],
+      );
+
+      resolved++;
+    }
+
+    return resolved;
+  }
+
   private async phaseGraphMaintenance(agentId: string): Promise<number> {
     // Find active relationships where neither entity has been seen recently
     const stale = await this.pool.query<{ id: bigint }>(
@@ -652,6 +780,70 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
   }
 
   // ─── Phase 5b: Cold Tier Retention Purge ──────────────────────────────────
+
+  // ─── Phase 5.5: Schema Detection (#75) ─────────────────────────────────────
+  // Based on Complementary Learning Systems theory (McClelland et al., 1995).
+  // Detect repeated temporal sequences and crystallize them as schema entities.
+
+  private async phaseSchemaDetection(agentId: string): Promise<number> {
+    // Find repeated 2-step temporal sequences occurring 3+ times
+    const patterns = await this.pool.query<{
+      pattern_hash: string;
+      count: string;
+      sample_pred: bigint;
+      sample_succ: bigint;
+    }>(
+      `SELECT
+         md5(
+           (SELECT LEFT(content, 50) FROM warm_tier WHERE id = ms.predecessor_id) ||
+           '→' ||
+           (SELECT LEFT(content, 50) FROM warm_tier WHERE id = ms.successor_id)
+         ) as pattern_hash,
+         COUNT(*)::text as count,
+         MIN(ms.predecessor_id) as sample_pred,
+         MIN(ms.successor_id) as sample_succ
+       FROM memory_sequences ms
+       WHERE ms.agent_id = $1
+       GROUP BY pattern_hash
+       HAVING COUNT(*) >= 3
+       LIMIT 10`,
+      [agentId],
+    );
+
+    let created = 0;
+    for (const pattern of patterns.rows) {
+      // Check if schema entity already exists for this pattern
+      const existing = await this.pool.query(
+        `SELECT id FROM entities WHERE agent_id = $1 AND entity_type = 'schema' AND metadata->>'pattern_hash' = $2`,
+        [agentId, pattern.pattern_hash],
+      );
+
+      if (existing.rows.length === 0) {
+        // Get summary of the pattern
+        const pred = await this.pool.query<{ content: string }>(
+          `SELECT LEFT(content, 100) as content FROM warm_tier WHERE id = $1`, [pattern.sample_pred],
+        );
+        const succ = await this.pool.query<{ content: string }>(
+          `SELECT LEFT(content, 100) as content FROM warm_tier WHERE id = $1`, [pattern.sample_succ],
+        );
+
+        const schemaName = `pattern:${(pred.rows[0]?.content ?? '').slice(0, 30)}→${(succ.rows[0]?.content ?? '').slice(0, 30)}`;
+
+        await this.pool.query(
+          `INSERT INTO entities (agent_id, name, entity_type, mention_count, metadata)
+           VALUES ($1, $2, 'schema', $3, $4)
+           ON CONFLICT (agent_id, name) DO UPDATE SET mention_count = entities.mention_count + 1`,
+          [agentId, schemaName, parseInt(pattern.count, 10), JSON.stringify({
+            pattern_hash: pattern.pattern_hash,
+            occurrences: parseInt(pattern.count, 10),
+          })],
+        );
+        created++;
+      }
+    }
+
+    return created;
+  }
 
   private async phaseColdPurge(agentId: string, retentionDays: number): Promise<number> {
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);

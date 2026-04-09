@@ -276,6 +276,10 @@ export interface SleepCycleResult {
   phase4_entities_merged: number;
   phase5_reflection: boolean;
   phase5b_cold_purged: number;
+  /** Repeated temporal patterns crystallized as schema entities (#75) */
+  schemas_detected: number;
+  /** Memory conflicts resolved via heuristic strategy (#80) */
+  conflicts_resolved: number;
   audit_records_archived: number;
   tokens_used: number;
   duration_ms: number;
@@ -315,6 +319,12 @@ export interface MemoryHealth {
   knowledge_stability_pct: number;
   retrieval_count_24h: number;
   contradiction_rate: number;
+  /** Number of memories with staleness > 0.5 (#78) */
+  stale_memory_count: number;
+  /** Average staleness score across all warm-tier memories (#78) */
+  avg_staleness: number;
+  /** Knowledge gaps detected in the last 7 days (#77) */
+  knowledge_gap_count_7d: number;
 }
 
 // ─── Cold tier ───────────────────────────────────────────────────────────────
