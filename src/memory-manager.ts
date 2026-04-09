@@ -99,6 +99,66 @@ function escapeLike(input: string): string {
   return input.replace(/[%_\\]/g, '\\$&');
 }
 
+// ─── Query Understanding ────────────────────────────────────────────────────
+// Strip question scaffolding, extract time references, split compound queries.
+
+const QUESTION_SCAFFOLDING = /^(?:what|how|who|where|when|why|can you|could you|do you|does|did|is|are|was|were|tell me|show me|find|search for|look up|recall)\s+(?:is|are|was|were|does|do|did|about|the|a|an|my|our)?\s*/i;
+
+const TIME_REFERENCES: Array<{ pattern: RegExp; offsetDays: number }> = [
+  { pattern: /\byesterday\b/i, offsetDays: -1 },
+  { pattern: /\blast week\b/i, offsetDays: -7 },
+  { pattern: /\blast month\b/i, offsetDays: -30 },
+  { pattern: /\brecently\b/i, offsetDays: -14 },
+  { pattern: /\btoday\b/i, offsetDays: 0 },
+  { pattern: /\bthis week\b/i, offsetDays: -7 },
+];
+
+interface ParsedQuery {
+  /** Cleaned search text (scaffolding removed) */
+  cleanedText: string;
+  /** Sub-queries from compound splitting */
+  subQueries: string[];
+  /** Extracted time filter (if any) */
+  timeHint?: { after: Date; before?: Date };
+}
+
+function parseQuery(raw: string): ParsedQuery {
+  let text = raw.trim();
+
+  // Strip question scaffolding
+  text = text.replace(QUESTION_SCAFFOLDING, '').trim();
+  // Strip trailing question mark
+  text = text.replace(/\?+$/, '').trim();
+
+  // Extract time references → convert to date filters
+  let timeHint: ParsedQuery['timeHint'] | undefined;
+  for (const { pattern, offsetDays } of TIME_REFERENCES) {
+    if (pattern.test(text)) {
+      const now = new Date();
+      const after = new Date(now.getTime() + offsetDays * 86_400_000);
+      timeHint = { after, before: offsetDays === 0 ? undefined : now };
+      text = text.replace(pattern, '').trim();
+      break;
+    }
+  }
+
+  // Split compound queries at conjunctions
+  const subQueries = text
+    .split(/\b(?:and also|and|as well as|plus|along with)\b/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 2);
+
+  // If splitting produced nothing useful, use the full cleaned text
+  const effectiveSubQueries = subQueries.length > 0 ? subQueries : [text];
+
+  // Use the full cleaned text as the primary query (for embedding — compound is fine)
+  return {
+    cleanedText: text || raw, // Fall back to raw if cleaning removed everything
+    subQueries: effectiveSubQueries,
+    timeHint,
+  };
+}
+
 export class MemoryManager {
   private readonly pool: Pool;
   private readonly config: MemForgeConfig;
@@ -393,26 +453,58 @@ Ranking (numbers only):`;
       throw new TypeError('search query must be a non-empty string');
     }
 
+    // Query understanding: clean scaffolding, extract time hints, split compounds
+    const parsed = parseQuery(opts.q);
+    const searchText = parsed.cleanedText;
+
+    // Apply extracted time hints if caller didn't provide explicit filters
+    const after = opts.after ?? parsed.timeHint?.after;
+    const before = opts.before ?? parsed.timeHint?.before;
+
     const resolvedLimit = opts.limit ?? 10;
     const mode: QueryMode = opts.mode ?? (this.embeddingsEnabled ? 'hybrid' : 'keyword');
     const decayRate = opts.decayRate ?? this.config.temporalDecayRate;
 
     let results: QueryResult[];
 
-    switch (mode) {
-      case 'keyword':
-        results = await this.queryKeyword(agentId, opts.q, resolvedLimit, opts.after, opts.before);
-        break;
-      case 'code':
-        // Code-preserving search — inspired by CCRider (MIT) dual tokenizer approach
-        results = await this.queryCode(agentId, opts.q, resolvedLimit, opts.after, opts.before);
-        break;
-      case 'semantic':
-        results = await this.querySemantic(agentId, opts.q, resolvedLimit, opts.after, opts.before);
-        break;
-      case 'hybrid':
-        results = await this.queryHybrid(agentId, opts.q, resolvedLimit, opts.after, opts.before);
-        break;
+    // Multi-query retrieval: if compound query has multiple sub-queries, run each
+    // independently and merge results (dedup by ID, keep highest rank)
+    if (parsed.subQueries.length > 1 && mode !== 'code') {
+      const allResults = new Map<string, QueryResult>();
+      const subLimit = Math.max(resolvedLimit, 10); // fetch enough per sub-query
+      for (const subQ of parsed.subQueries.slice(0, 3)) { // cap at 3 sub-queries
+        let subResults: QueryResult[];
+        switch (mode) {
+          case 'keyword': subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before); break;
+          case 'semantic': subResults = await this.querySemantic(agentId, subQ, subLimit, after, before); break;
+          case 'hybrid': subResults = await this.queryHybrid(agentId, subQ, subLimit, after, before); break;
+          default: subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before);
+        }
+        for (const r of subResults) {
+          const key = String(r.id);
+          const existing = allResults.get(key);
+          if (!existing || r.rank > existing.rank) {
+            allResults.set(key, r);
+          }
+        }
+      }
+      results = Array.from(allResults.values()).sort((a, b) => b.rank - a.rank).slice(0, resolvedLimit);
+    } else {
+      // Single query path (most common)
+      switch (mode) {
+        case 'keyword':
+          results = await this.queryKeyword(agentId, searchText, resolvedLimit, after, before);
+          break;
+        case 'code':
+          results = await this.queryCode(agentId, searchText, resolvedLimit, after, before);
+          break;
+        case 'semantic':
+          results = await this.querySemantic(agentId, searchText, resolvedLimit, after, before);
+          break;
+        case 'hybrid':
+          results = await this.queryHybrid(agentId, searchText, resolvedLimit, after, before);
+          break;
+      }
     }
 
     // Apply temporal decay if configured
@@ -428,10 +520,10 @@ Ranking (numbers only):`;
     // Temporal proximity boost — inspired by MemPalace (MIT) hybrid v2
     // When time filters are present, boost memories near the reference date
     const proximityDays = this.config.temporalProximityDays ?? 0;
-    if (proximityDays > 0 && (opts.after || opts.before)) {
-      const refDate = opts.after && opts.before
-        ? new Date((opts.after.getTime() + opts.before.getTime()) / 2)
-        : (opts.after ?? opts.before!);
+    if (proximityDays > 0 && (after || before)) {
+      const refDate = after && before
+        ? new Date((after.getTime() + before.getTime()) / 2)
+        : (after ?? before!);
       const sigmaMs = proximityDays * 24 * 60 * 60 * 1000;
       results = results.map((r) => {
         const dt = new Date(r.consolidated_at).getTime() - refDate.getTime();
@@ -2091,6 +2183,24 @@ Ranking (numbers only):`;
            )`,
           [agentId, retrievalIds],
         ).catch((err) => log.error({ err }, 'retrieval success tracking failed'));
+
+        // Term-memory affinity: store which query terms led to positive feedback.
+        // Future queries with matching terms get a boost from these memories.
+        void this.pool.query<{ query_text: string; warm_tier_id: bigint }>(
+          `SELECT query_text, warm_tier_id FROM retrieval_log
+           WHERE agent_id = $1 AND id = ANY($2) AND query_text IS NOT NULL`,
+          [agentId, retrievalIds],
+        ).then((logRows) => {
+          for (const row of logRows.rows) {
+            const terms = row.query_text.toLowerCase().split(/\s+/).filter((w) => w.length > 3).slice(0, 5);
+            if (terms.length > 0) {
+              void this.pool.query(
+                `UPDATE warm_tier SET metadata = metadata || $2::jsonb WHERE id = $1`,
+                [row.warm_tier_id, JSON.stringify({ _affinity_terms: terms })],
+              ).catch(() => {});
+            }
+          }
+        }).catch((err) => log.error({ err }, 'term-memory affinity tracking failed'));
       }
     }
 
