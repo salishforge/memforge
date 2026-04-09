@@ -2,6 +2,18 @@
 
 This guide explains how to wire MemForge into any AI agent, regardless of framework. It covers the conceptual model, the integration points, and concrete examples for common setups.
 
+## Platform-Specific Guides
+
+For step-by-step setup and tool references for specific platforms, see:
+
+- **[Claude Desktop](plugins/claude-desktop/README.md)** — MCP setup, auto-context hooks, [16 tools reference](plugins/claude-desktop/TOOLS.md)
+- **[Microsoft 365 Copilot](plugins/m365-copilot/README.md)** — API plugin, Power Automate flows, Copilot Studio, [tool reference](plugins/m365-copilot/TOOLS.md)
+- **[Power Automate templates](plugins/power-automate/)** — Pre-built flows for email capture, meeting context, nightly consolidation
+- **[ChatGPT plugin](public/ai-plugin.json)** — Plugin manifest pointing to the OpenAPI spec
+- **[Python examples](examples/)** — Working code for OpenAI function calling, Anthropic tool use, LangChain, and a simple chatbot
+
+The rest of this document covers the general integration pattern that works with any framework.
+
 ## Graceful Degradation
 
 MemForge should never crash your agent. If MemForge is down, the agent should keep working — just without long-term memory for that interaction.

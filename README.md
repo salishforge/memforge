@@ -124,6 +124,16 @@ const results = await memory.query('agent-1', { q: 'preferences', mode: 'hybrid'
 const ctx = await memory.resume('agent-1');  // warm-start context bundle
 ```
 
+### Platform Integrations
+
+| Platform | Setup | Guide |
+|----------|-------|-------|
+| **Claude Desktop** | Add MCP config → 16 memory tools available | [Setup guide](plugins/claude-desktop/README.md) · [Tool reference](plugins/claude-desktop/TOOLS.md) |
+| **Microsoft 365 Copilot** | API plugin, Power Automate, or Copilot Studio | [Setup guide](plugins/m365-copilot/README.md) · [Tool reference](plugins/m365-copilot/TOOLS.md) |
+| **ChatGPT** | Plugin manifest at `/api/spec.json` | [ai-plugin.json](public/ai-plugin.json) |
+| **LangChain / CrewAI** | Python SDK adapters | [Examples](examples/) |
+| **OpenAI / Anthropic** | Function calling tool definitions | [openai_tools.py](examples/openai_tools.py) · [claude_tools.py](examples/claude_tools.py) |
+
 ---
 
 ## Quick Start
