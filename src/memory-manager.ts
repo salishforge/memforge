@@ -444,8 +444,23 @@ Ranking (numbers only):`;
     // Structure-aware scoring — boost results linked to entities mentioned in query
     // Inspired by FABLE (arXiv 2601.18116) structure-aware propagation
     if (results.length > 0) {
+      // Detect entities: regex for proper nouns PLUS check against known entity names
       const queryUpper = opts.q;
-      const queryEntityCandidates = queryUpper.match(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b/g) ?? [];
+      const regexCandidates: string[] = [...(queryUpper.match(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b/g) ?? [])];
+      // Also check query words against the agent's actual entity table
+      const queryWords = opts.q.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+      if (queryWords.length > 0) {
+        const knownEntities = await this.pool.query<{ name: string }>(
+          `SELECT name FROM entities WHERE agent_id = $1 AND LOWER(name) = ANY($2) LIMIT 20`,
+          [agentId, queryWords],
+        );
+        for (const e of knownEntities.rows) {
+          if (!regexCandidates.some((c) => c.toLowerCase() === e.name.toLowerCase())) {
+            regexCandidates.push(e.name);
+          }
+        }
+      }
+      const queryEntityCandidates = regexCandidates;
       if (queryEntityCandidates.length > 0) {
         const entityNames = new Set(queryEntityCandidates.map((e) => e.toLowerCase()));
         const resultIds = results.map((r) => r.id);
@@ -490,6 +505,31 @@ Ranking (numbers only):`;
         tokenCount += estimatedTokens;
       }
       results = budgeted;
+    }
+
+    // Deduplicate near-identical results — prevents similar memories filling all top-k slots
+    if (results.length > 1) {
+      const deduplicated: QueryResult[] = [results[0]!];
+      for (let i = 1; i < results.length; i++) {
+        const candidate = results[i]!;
+        const isDup = deduplicated.some((kept) => {
+          // Fast check: if content starts the same (first 100 chars), likely duplicate
+          const a = kept.content.slice(0, 100).toLowerCase();
+          const b = candidate.content.slice(0, 100).toLowerCase();
+          return a === b;
+        });
+        if (!isDup) deduplicated.push(candidate);
+      }
+      results = deduplicated;
+    }
+
+    // Minimum quality threshold — don't return results that barely match
+    if (results.length > 1 && results[0]) {
+      const topScore = results[0].rank;
+      if (topScore > 0) {
+        // Drop results scoring less than 10% of the top result
+        results = results.filter((r) => r.rank >= topScore * 0.1);
+      }
     }
 
     // Log retrieval events and update access counts (fire-and-forget)
@@ -688,9 +728,11 @@ Ranking (numbers only):`;
       }
     });
 
+    // Semantic results weighted 1.5x — paraphrase matching is the primary failure mode
+    // in conversational memory retrieval (users ask differently than memories are stored)
     semanticResults.forEach((row, idx) => {
       const key = String(row.id);
-      const rrf = 1 / (K + idx + 1);
+      const rrf = 1.5 / (K + idx + 1);
       const existing = scores.get(key);
       if (existing) {
         existing.score += rrf;
