@@ -44,3 +44,5 @@ temp/
 # Benchmark data and results (downloaded/generated)
 benchmarks/data/
 benchmarks/results/
+__pycache__/
+*.pyc
