@@ -237,9 +237,9 @@ describe('Success paths', () => {
   it('POST /memory/:agentId/consolidate works', async () => {
     const res = await post(`/memory/${TEST_AGENT}/consolidate`, {});
     assert.equal(res.status, 200);
-    const body = await res.json() as { ok: boolean; data: { warm_created: number } };
+    const body = await res.json() as { ok: boolean; data: { warm_rows_created: number } };
     assert.equal(body.ok, true);
-    assert.ok('warm_created' in body.data, 'returns consolidation result');
+    assert.ok('warm_rows_created' in body.data, 'returns consolidation result');
   });
 
   it('GET /memory/:agentId/stats returns tier counts', async () => {
@@ -303,12 +303,10 @@ describe('Response format', () => {
   });
 
   it('500 errors do not leak internal details', async () => {
-    // Force an error by querying a non-existent agent with stats
-    // (stats throws when agent not found)
-    const res = await get('/memory/nonexistent-agent-12345/stats');
+    // Force an error by calling reflect without LLM configured
+    const res = await post(`/memory/${TEST_AGENT}/reflect`, {});
     const body = await res.json() as { ok: boolean; error: string };
     assert.equal(body.ok, false);
-    // Should either be a 404 with agent-not-found or safe message
     assert.ok(
       !body.error.includes('stack') && !body.error.includes('at '),
       'error does not contain stack trace',
