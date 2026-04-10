@@ -210,11 +210,11 @@ describe('Stats', () => {
     assert.equal(typeof stats.reflection_count, 'number');
   });
 
-  it('throws for unknown agent', async () => {
-    await assert.rejects(
-      () => manager.stats('nonexistent-agent-xyz'),
-      (err: Error) => err.message.includes('not found'),
-    );
+  it('returns zeroed stats for unknown agent', async () => {
+    const s = await manager.stats('nonexistent-agent-xyz');
+    assert.equal(s.hot_count, 0);
+    assert.equal(s.warm_count, 0);
+    assert.equal(s.cold_count, 0);
   });
 });
 
