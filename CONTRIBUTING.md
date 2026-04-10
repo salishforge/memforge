@@ -54,7 +54,7 @@ Open a [GitHub issue](https://github.com/salishforge/memforge/issues/new?templat
 1. **Fork** the repository and create a branch from `main`
 2. **Write code** that follows the existing patterns (see Code Style below)
 3. **Add tests** for new functionality — see DEVELOPMENT.md for testing guidance
-4. **Run checks**: `npm run type-check` must pass with zero errors
+4. **Run checks**: `npm run type-check && npm run lint` must pass with zero errors
 5. **Write a clear PR description** explaining what and why
 6. **Keep PRs focused** — one feature or fix per PR
 
@@ -89,14 +89,18 @@ Key decisions to be aware of:
 - **No built-in scheduler** — sleep cycles are triggered externally by design.
 - **Pluggable providers** — LLM and embedding providers are interfaces, not concrete implementations.
 
+### Good First Issues
+
+Issues labeled [`good first issue`](https://github.com/salishforge/memforge/issues?q=is%3Aopen+label%3A%22good+first+issue%22) are scoped, well-documented, and don't require deep knowledge of the codebase. Start there.
+
 ### Areas Where We Especially Welcome Contributions
 
-- **Test coverage** — integration tests for LLM-dependent paths (with mocking)
-- **Performance** — query optimization, connection pool tuning, batch operations
-- **New embedding/LLM providers** — Cohere, Mistral, local models
-- **Documentation** — tutorials, integration guides, architecture diagrams
+- **Documentation** — integration guides for LangChain, AutoGen, CrewAI (#21), ADRs (#22), deployment security guide (#46)
+- **New embedding/LLM providers** — Cohere, Mistral, Gemini, local models
+- **Performance** — streaming consolidation (#11), BM25 search (#23)
+- **Features** — memory namespaces (#16), cold tier querying (#14), CORS config (#18)
+- **Security hardening** — cache validation (#41), classifier improvements (#45), rate limiting (#43)
 - **Bug fixes** — especially edge cases in consolidation and sleep cycles
-- **CI/CD** — GitHub Actions for automated testing
 
 ### Areas Where We're More Conservative
 

@@ -14,47 +14,39 @@ The goal is a constant set of evolving agents developed and refined over years, 
 
 ---
 
-## Where We Are Today (v2.1.0)
+## Where We Are Today (v3.0.0-beta.2)
 
-MemForge has the foundation:
+MemForge has a production-grade foundation with CI fully green:
 
 - **Tiered memory** with hot → warm → cold lifecycle
-- **Sleep cycles** that score, triage, revise, and reflect on stored knowledge
-- **Memory revision** where an LLM actively rewrites low-confidence memories
-- **Knowledge graph** built from extracted entities and relationships
-- **Procedural learning** that distills experience into condition→action rules
-- **Outcome feedback** that closes the reinforcement loop
-- **Meta-reflection** that synthesizes higher-order principles from patterns
-
-This is enough to demonstrate the concept. It is not yet enough to run agents for years.
+- **Sleep cycles** — 10-phase background processor (scoring, triage, conflict resolution, revision, graph maintenance, reflection, schema detection)
+- **Hybrid retrieval** — dual-tokenizer FTS + pgvector HNSW semantic search + asymmetric RRF fusion (93.2% R@5 on LongMemEval)
+- **Active Knowledge Management** — staleness detection, prioritized experience replay, conflict resolution, temporal chains, knowledge gap detection, schema crystallization
+- **Cross-agent shared memory** — hierarchical pools, hearsay discounting, per-domain reputation
+- **Cryptographic audit chain** — HMAC integrity verification across all 14 mutation points
+- **Content classification** — pre-LLM sanitization, secret pattern detection
+- **In-process embeddings** — bge-small-en-v1.5 at 137 embeds/sec, no external service needed
+- **SDKs** — TypeScript, Python, MCP (Claude Desktop / Cursor)
+- **Full test coverage** — integration, LLM paths, HTTP API, cache, load, security
 
 ---
 
-## Phase 1: Production Hardening (Q2-Q3 2026)
+## Phase 1: Production Hardening — COMPLETE
 
 *Make MemForge reliable enough to trust with long-lived agents.*
 
-### Testing & Quality
+All Phase 1 items are implemented:
+- CI/CD pipeline with 6 jobs (Node 20+22) — all green
+- Mocked LLM test suite, HTTP API tests, load tests, security tests
+- Structured JSON logging with request correlation IDs (pino)
+- Connection pool hardening with health checks, timeouts, auto-scaling
+- npm package configured as `@salishforge/memforge` ([#10](https://github.com/salishforge/memforge/issues/10) — publish pending)
 
-- **Mocked LLM test suite** — All LLM-dependent paths (consolidation, reflection, revision, procedural extraction) tested with deterministic mock providers ([#6](https://github.com/salishforge/memforge/issues/6))
-- **HTTP API tests** — Full Express stack coverage including auth, rate limiting, error handling ([#7](https://github.com/salishforge/memforge/issues/7))
-- **Load testing** — Validate performance at 100K+ warm-tier memories ([#8](https://github.com/salishforge/memforge/issues/8))
+### Remaining
 
-### Infrastructure
-
-- **CI/CD pipeline** — Automated type-check, lint, and test on every PR ([#9](https://github.com/salishforge/memforge/issues/9))
-- **npm publish** — Available as `@salishforge/memforge` for library consumers ([#10](https://github.com/salishforge/memforge/issues/10))
-- **Structured logging** — JSON logs with request tracing for production debugging ([#19](https://github.com/salishforge/memforge/issues/19))
-
-### Operational Reliability
-
-- **Streaming consolidation** — Bounded memory usage regardless of backlog size ([#11](https://github.com/salishforge/memforge/issues/11))
-- **Connection pool hardening** — Health checks, auto-scaling, graceful degradation ([#12](https://github.com/salishforge/memforge/issues/12))
-- **Cold tier retention policies** — Configurable cleanup to prevent unbounded storage growth ([#20](https://github.com/salishforge/memforge/issues/20))
-
-### Milestone
-
-An agent running MemForge in production for 3+ months without manual intervention — memory growing, sleep cycles running, quality metrics stable or improving.
+- **Streaming consolidation** — cursor-based processing for 10K+ event backlogs ([#11](https://github.com/salishforge/memforge/issues/11))
+- **Cold tier retention policies** — configurable cleanup ([#20](https://github.com/salishforge/memforge/issues/20))
+- **npm publish** — publish to npm registry ([#10](https://github.com/salishforge/memforge/issues/10))
 
 ---
 
@@ -85,29 +77,24 @@ An agent with 6+ months of accumulated memory, warm tier at 50K+ entries, demons
 
 ---
 
-## Phase 3: Cross-Agent Learning (2027)
+## Phase 3: Cross-Agent Learning — COMPLETE
 
 *Agents don't exist in isolation. Enable knowledge sharing and collective intelligence.*
 
-### Knowledge Transfer
+All Phase 3 core items are implemented:
+- **Memory export/import** — JSONL export/import for backup, migration, seeding
+- **Shared memory pools** — hierarchical team/global pools with publish/subscribe
+- **Provenance chains** — source_chain tracking across agent hops
+- **Hearsay discounting** — confidence × (0.8^hop_count) × agent_reputation
+- **Per-domain reputation** — earned through corroboration/contradiction signals
+- **Pool sleep cycles** — deduplication, conflict resolution, corroboration promotion
+- **Cross-agent conflict detection** — private vs shared memory contradiction flagging
 
-- **Memory export/import** — Serialize an agent's knowledge (warm tier + graph + procedures) for backup, migration, or seeding new agents. A new agent can inherit the institutional knowledge of a veteran.
-- **Shared knowledge graphs** — Multiple agents contribute to and query a shared entity/relationship graph while maintaining private episodic memories. The graph becomes organizational knowledge.
-- **Procedure sharing** — Condition→action rules learned by one agent can be offered to other agents in the same organization, with confidence weighted by domain overlap.
+### Remaining
 
-### Agent Specialization
-
-- **Role-aware memory** — Agents understand their own expertise boundaries. When queried outside their domain, they know they don't know (rather than hallucinating from thin knowledge).
-- **Expertise discovery** — Given a question, route to the agent whose memory is most relevant. Memory becomes the basis for agent selection, not just agent behavior.
-
-### Memory Provenance
-
-- **Cross-agent citation** — When Agent B uses knowledge that originated from Agent A's experience, the provenance is tracked. This builds trust and enables debugging of bad knowledge propagation.
-- **Confidence propagation** — Knowledge transferred between agents carries confidence metadata. Second-hand knowledge starts at lower confidence than direct experience.
-
-### Milestone
-
-A team of 3-5 specialized agents sharing knowledge, with demonstrably better collective performance than the same agents in isolation.
+- **Procedure sharing** — condition→action rules offered across agents
+- **Expertise discovery** — route questions to the most relevant agent's memory
+- **Role-aware memory** — agents track their own expertise boundaries
 
 ---
 
@@ -179,8 +166,7 @@ An agent that requires no operator intervention for memory management — it mon
 
 The roadmap is ambitious. We welcome contributions at every phase:
 
-- **Phase 1** is mostly engineering — testing, CI/CD, operational hardening. Great for developers who want concrete, well-defined tasks.
-- **Phase 2** requires both engineering and design thinking — how should memory lifecycle work at scale?
-- **Phase 3+** is exploratory — research prototypes, design proposals, and experiments are as valuable as code.
+- **Phase 2** (current focus) requires both engineering and design thinking — memory lifecycle at scale, search quality, operational tooling
+- **Phase 4+** is exploratory — research prototypes, design proposals, and experiments are as valuable as code
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [BACKLOG.md](BACKLOG.md) for current issues.
+Start with issues labeled [`good first issue`](https://github.com/salishforge/memforge/issues?q=is%3Aopen+label%3A%22good+first+issue%22). See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
