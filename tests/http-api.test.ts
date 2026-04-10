@@ -360,7 +360,7 @@ describe('Admin endpoints', () => {
 describe('Content classification on ingest', () => {
   it('redacts sensitive content and tags classification', async () => {
     const res = await post(`/memory/${TEST_AGENT}/add`, {
-      content: 'My API key is sk-ant-api03-abc123def456',
+      content: 'My API key is sk-ant-api03-abc123def456ghi789jkl012',
     });
     assert.equal(res.status, 200);
     const body = await res.json() as {
