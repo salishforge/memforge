@@ -526,8 +526,8 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
          content = $2,
          confidence = $3,
          revision_count = revision_count + 1
-         ${newEmbedding ? ', embedding = $5::vector' : ''}
-       WHERE id = $1`,
+         ${newEmbedding ? ', embedding = $5::halfvec' : ''}
+       WHERE id = $1 AND agent_id = $4`,
       newEmbedding
         ? [warmTierId, revisedContent, confidence, agentId, newEmbedding]
         : [warmTierId, revisedContent, confidence, agentId],

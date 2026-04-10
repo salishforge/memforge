@@ -207,11 +207,10 @@ describe('Meta-reflection (LLM)', () => {
     const result = await manager.metaReflect(TEST_AGENT, 10);
 
     assert.ok(mockLlm.chatCalls.length >= 1, 'chat called for meta-reflection');
-    const metaCall = mockLlm.chatCalls[0]!;
-    assert.ok(
-      metaCall.systemPrompt.includes('meta-reflection') || metaCall.systemPrompt.includes('second-order'),
-      'meta-reflection system prompt used',
+    const metaCall = mockLlm.chatCalls.find((c) =>
+      c.systemPrompt.includes('meta-reflection') || c.systemPrompt.includes('second-order'),
     );
+    assert.ok(metaCall, 'meta-reflection system prompt used');
 
     assert.ok(result.insights_count > 0, 'meta-reflection has insights');
     assert.equal(result.reflection_level, 2, 'reflection level is 2');
