@@ -12,6 +12,7 @@ import { performance } from 'node:perf_hooks';
 
 const { MemoryManager } = await import('../src/memory-manager.js');
 const { NoOpEmbeddingProvider } = await import('../src/embedding.js');
+const { closePool } = await import('../src/db.js');
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -188,4 +189,5 @@ function randomTopic(): string {
 
 after(async () => {
   await pool.end();
+  await closePool();
 });

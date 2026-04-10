@@ -20,6 +20,7 @@ import { Pool } from 'pg';
 const { MemoryManager } = await import('../src/memory-manager.js');
 const { NoOpEmbeddingProvider } = await import('../src/embedding.js');
 const { createApp } = await import('../src/app.js');
+const { closePool } = await import('../src/db.js');
 const { createDefaultRegistry } = await import('../src/classifier.js');
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ after(async () => {
   server.close();
   await cleanup();
   await pool.end();
+  await closePool();
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

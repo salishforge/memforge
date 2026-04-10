@@ -14,6 +14,7 @@ import { Pool } from 'pg';
 // Dynamic import to handle module resolution
 const { MemoryManager } = await import('../src/memory-manager.js');
 const { NoOpEmbeddingProvider } = await import('../src/embedding.js');
+const { closePool } = await import('../src/db.js');
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -393,6 +394,7 @@ describe('Input validation', () => {
 after(async () => {
   await cleanup();
   await pool.end();
+  await closePool();
 });
 
 console.log('[test] Integration tests loaded — running with node:test');

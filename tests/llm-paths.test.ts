@@ -15,6 +15,7 @@ import { Pool } from 'pg';
 const { MemoryManager } = await import('../src/memory-manager.js');
 const { MockLLMProvider } = await import('./mocks/mock-llm-provider.js');
 const { MockEmbeddingProvider } = await import('./mocks/mock-embedding-provider.js');
+const { closePool } = await import('../src/db.js');
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -358,4 +359,5 @@ describe('Hybrid search (keyword + embedding)', () => {
 
 after(async () => {
   await pool.end();
+  await closePool();
 });
