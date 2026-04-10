@@ -881,7 +881,7 @@ export class SharedPoolSleepCycle {
 
   async run(poolId: string): Promise<{ deduplicated: number; conflicts_resolved: number; reputation_updated: number; evicted: number }> {
     let deduplicated = 0;
-    let conflictsResolved = 0;
+    const conflictsResolved = 0;
     let reputationUpdated = 0;
     let evicted = 0;
 
@@ -921,12 +921,11 @@ export class SharedPoolSleepCycle {
     }
 
     // Phase 2: Corroboration promotion — 3+ confirmations get confidence boost
-    const { rowCount: promoted } = await this.pool.query(
+    await this.pool.query(
       `UPDATE shared_memories SET base_confidence = LEAST(1.0, base_confidence * 1.2)
        WHERE pool_id = $1 AND corroboration_count >= 3 AND base_confidence < 0.9`,
       [poolId],
     );
-    // (promoted is informational, not tracked separately)
 
     // Phase 3: Recompute reputation scores from accumulated signals
     const agents = await this.pool.query<{ agent_id: string }>(

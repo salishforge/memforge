@@ -37,7 +37,6 @@ export const httpRequestDurationSeconds = new Histogram({
 
 // ── Database pool metrics ─────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const dbPoolConnections = new Gauge({
   name: 'database_pool_connections',
   help: 'PostgreSQL connection pool state',
@@ -64,7 +63,6 @@ export const cacheOperationsTotal = new Counter({
   registers: [registry],
 });
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const cacheHitRate = new Gauge({
   name: 'cache_hit_rate',
   help: 'Redis cache hit rate (0–1)',

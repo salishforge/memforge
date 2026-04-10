@@ -11,7 +11,6 @@ const log = getLogger('auth');
 
 // Extend Express Request type with oauth2 context
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       oauth2?: { client_id: string; scope: string };
