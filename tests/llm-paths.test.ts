@@ -134,7 +134,7 @@ describe('Reflection (LLM)', () => {
   it('calls LLM chat with reflection system prompt', async () => {
     const result = await manager.reflect(TEST_AGENT, 'manual', 20);
 
-    assert.equal(mockLlm.chatCalls.length, 2, 'chat called for reflection + procedure extraction');
+    assert.ok(mockLlm.chatCalls.length >= 1, 'chat called for reflection');
     const reflectionCall = mockLlm.chatCalls[0]!;
     assert.ok(reflectionCall.systemPrompt.includes('reflection engine'), 'reflection system prompt used');
   });

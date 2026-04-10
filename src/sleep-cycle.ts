@@ -280,16 +280,16 @@ export class SleepCycleEngine {
     const { rowCount } = await this.pool.query(
       `UPDATE warm_tier w SET importance = LEAST(1.0, GREATEST(0.0,
          (
-           $2 * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - COALESCE(w.last_accessed, w.consolidated_at))) / 86400.0))
-         + $3 * (ln(w.access_count + 1) / GREATEST(ln((SELECT MAX(access_count) + 1 FROM warm_tier WHERE agent_id = $1)), 1.0))
-         + $4 * LEAST(1.0, (
+           $2::real * (1.0 / (1.0 + EXTRACT(EPOCH FROM (now() - COALESCE(w.last_accessed, w.consolidated_at))) / 86400.0))
+         + $3::real * (ln(w.access_count + 1) / GREATEST(ln((SELECT MAX(access_count) + 1 FROM warm_tier WHERE agent_id = $1)), 1.0))
+         + $4::real * LEAST(1.0, (
              (SELECT COUNT(*) FROM warm_tier_entities wte WHERE wte.warm_tier_id = w.id)
              + (SELECT COUNT(DISTINCT r.id) FROM relationships r
                 JOIN warm_tier_entities wte ON wte.entity_id = r.source_entity_id OR wte.entity_id = r.target_entity_id
                 WHERE wte.warm_tier_id = w.id)
            ) / 20.0)
-         + $5 * LEAST(1.0, (SELECT COUNT(*) FROM reflections ref WHERE w.id = ANY(ref.source_warm_ids) AND ref.agent_id = $1) / 3.0)
-         + $6 * CASE WHEN w.revision_count = 0 THEN 0.5
+         + $5::real * LEAST(1.0, (SELECT COUNT(*) FROM reflections ref WHERE w.id = ANY(ref.source_warm_ids) AND ref.agent_id = $1) / 3.0)
+         + $6::real * CASE WHEN w.revision_count = 0 THEN 0.5
                      ELSE 1.0 - LEAST(1.0, (SELECT COUNT(*) FROM memory_revisions mr WHERE mr.warm_tier_id = w.id AND mr.created_at > now() - interval '7 days') / 5.0)
                 END
          )
