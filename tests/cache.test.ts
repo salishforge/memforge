@@ -53,11 +53,6 @@ describe('Cache hit / miss', () => {
     await clearTestKeys();
   });
 
-  after(async () => {
-    await clearTestKeys();
-    await closeRedis();
-  });
-
   beforeEach(async () => {
     await clearTestKeys();
   });
@@ -297,6 +292,13 @@ describe('Performance benchmarks', () => {
 
     await invalidateAgent(AGENT_A);
   });
+});
+
+// ─── Final cleanup ───────────────────────────────────────────────────────────
+
+after(async () => {
+  await clearTestKeys();
+  await closeRedis();
 });
 
 console.log('[test] Cache integration tests loaded — running with node:test');

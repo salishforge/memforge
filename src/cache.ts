@@ -52,7 +52,19 @@ export async function getRedis(): Promise<RedisClientType | null> {
   connectionPromise = (async (): Promise<RedisClientType | null> => {
     const url = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
     try {
-      const client = createClient({ url }) as RedisClientType;
+      const client = createClient({
+        url,
+        socket: {
+          connectTimeout: 5_000,
+          reconnectStrategy: (retries: number) => {
+            if (retries > 5) {
+              log.error('Redis max reconnect attempts reached');
+              return false;
+            }
+            return Math.min(retries * 500, 3_000);
+          },
+        },
+      }) as RedisClientType;
 
       client.on('error', (err: Error) => {
         log.error({ err }, 'Redis error');

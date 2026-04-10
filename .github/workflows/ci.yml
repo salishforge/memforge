@@ -8,6 +8,7 @@ on:
 jobs:
   typecheck-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         node: [20, 22]
@@ -24,6 +25,7 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         node: [20, 22]
@@ -58,6 +60,7 @@ jobs:
 
   cache-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         node: [20, 22]
