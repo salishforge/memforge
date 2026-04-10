@@ -166,6 +166,8 @@ describe('Procedure extraction (LLM)', () => {
     await manager.consolidate(TEST_AGENT, 'summarize');
     mockLlm.reset();
     await manager.reflect(TEST_AGENT, 'manual', 20);
+    // Wait for fire-and-forget procedure extraction to complete
+    await new Promise((resolve) => setTimeout(resolve, 200));
   });
   after(cleanup);
 
