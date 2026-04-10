@@ -1527,7 +1527,7 @@ Ranking (numbers only):`;
 
          UNION ALL
 
-         -- Forward edges: source → target
+         -- Forward and reverse edges combined (single recursive term)
          SELECT
            e2.id,
            e2.name,
@@ -1535,36 +1535,18 @@ Ranking (numbers only):`;
            e2.mention_count,
            e2.first_seen,
            e2.last_seen,
-           g.node_name,
-           e2.name,
+           CASE WHEN r.source_entity_id = g.node_id THEN g.node_name ELSE e2.name END,
+           CASE WHEN r.source_entity_id = g.node_id THEN e2.name ELSE g.node_name END,
            r.relation_type,
            r.weight,
            g.hop + 1,
            g.visited || e2.id
          FROM graph g
-         JOIN relationships r ON r.source_entity_id = g.node_id AND r.agent_id = $1 AND r.valid_until IS NULL
-         JOIN entities e2 ON e2.id = r.target_entity_id
-         WHERE g.hop < $3 AND NOT (e2.id = ANY(g.visited))
-
-         UNION ALL
-
-         -- Reverse edges: target → source
-         SELECT
-           e2.id,
-           e2.name,
-           e2.entity_type,
-           e2.mention_count,
-           e2.first_seen,
-           e2.last_seen,
-           e2.name,
-           g.node_name,
-           r.relation_type,
-           r.weight,
-           g.hop + 1,
-           g.visited || e2.id
-         FROM graph g
-         JOIN relationships r ON r.target_entity_id = g.node_id AND r.agent_id = $1 AND r.valid_until IS NULL
-         JOIN entities e2 ON e2.id = r.source_entity_id
+         JOIN relationships r ON (r.source_entity_id = g.node_id OR r.target_entity_id = g.node_id)
+           AND r.agent_id = $1 AND r.valid_until IS NULL
+         JOIN entities e2 ON e2.id = CASE
+           WHEN r.source_entity_id = g.node_id THEN r.target_entity_id
+           ELSE r.source_entity_id END
          WHERE g.hop < $3 AND NOT (e2.id = ANY(g.visited))
        )
        SELECT DISTINCT ON (node_id, edge_source, edge_target, relation_type)
@@ -2798,8 +2780,8 @@ Guidelines:
             break;
           case 'entity':
             await this.pool.query(
-              `INSERT INTO entities (agent_id, name, entity_type, mention_count) VALUES ($1, $2, $3, $4)
-               ON CONFLICT (agent_id, name) DO UPDATE SET mention_count = GREATEST(entities.mention_count, $4)`,
+              `INSERT INTO entities (agent_id, name, entity_type, mention_count) VALUES ($1, $2, $3, $4::int)
+               ON CONFLICT (agent_id, name) DO UPDATE SET mention_count = GREATEST(entities.mention_count, $4::int)`,
               [agentId, obj['name'], obj['entity_type'] ?? 'other', obj['mention_count'] ?? 1],
             );
             imported++;

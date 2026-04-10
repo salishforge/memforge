@@ -92,7 +92,7 @@ describe('Summarize consolidation (LLM)', () => {
     assert.ok(mockLlm.summarizeCalls[0]!.rawContent.includes('Alice deployed'), 'raw content passed to LLM');
 
     // Warm tier has the mock summary
-    assert.ok(result.warm_created > 0, 'warm tier entries created');
+    assert.ok(result.warm_rows_created > 0, 'warm tier entries created');
   });
 
   it('creates entities from LLM-extracted data', async () => {
