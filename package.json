@@ -22,9 +22,9 @@
   "bin": {
     "memforge": "./dist/server.js",
     "memforge-mcp": "./dist/mcp.js"
-    "publishConfig": {
-      "access": "public"
-    },
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
@@ -45,7 +45,7 @@
     "benchmark:download": "node --import tsx/esm benchmarks/longmemeval/download.ts",
     "benchmark:ingest": "node --import tsx/esm benchmarks/longmemeval/ingest.ts",
     "benchmark:evaluate": "node --import tsx/esm benchmarks/longmemeval/evaluate.ts",
-    "benchmark:report": "node --import tsx/esm benchmarks/longmemeval/report.ts"
+    "benchmark:report": "node --import tsx/esm benchmarks/longmemeval/report.ts",
     "prepublishOnly": "npm run build"
   },
   "optionalDependencies": {
