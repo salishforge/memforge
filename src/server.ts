@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 // MemForge Standalone — Express REST API server
 //
 // This file bootstraps real providers from environment variables and starts the server.

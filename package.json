@@ -22,6 +22,9 @@
   "bin": {
     "memforge": "./dist/server.js",
     "memforge-mcp": "./dist/mcp.js"
+    "publishConfig": {
+      "access": "public"
+    },
   },
   "scripts": {
     "build": "tsc",
@@ -43,6 +46,7 @@
     "benchmark:ingest": "node --import tsx/esm benchmarks/longmemeval/ingest.ts",
     "benchmark:evaluate": "node --import tsx/esm benchmarks/longmemeval/evaluate.ts",
     "benchmark:report": "node --import tsx/esm benchmarks/longmemeval/report.ts"
+    "prepublishOnly": "npm run build"
   },
   "optionalDependencies": {
     "@xenova/transformers": "^2.17.2"
