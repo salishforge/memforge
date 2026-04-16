@@ -568,7 +568,6 @@ Ranking (numbers only):`;
          WHERE id = ANY($1)`,
         [ids],
       );
-      // Batch-insert retrieval events (single query instead of N, fixes B3)
       const warmIds = results.map((r) => r.id);
       const positions = results.map((_, idx) => idx + 1);
       void this.pool.query(
@@ -949,9 +948,8 @@ Ranking (numbers only):`;
         });
       }
 
-      // ── Heuristic pre-screening: skip LLM for high-overlap batches (#53) ──
-      // Inspired by hippo-memory (MIT) overlap merge + claude-code-toolkit (MIT)
-      // deterministic-vs-probabilistic philosophy.
+      // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7 across
+      // sampled pairs) — concat produces equivalent results without API cost.
       const batchNeedsLlm = batches.map((batch) => {
         if (resolvedMode !== 'summarize' || !this.llm) return false;
         // Check intra-batch diversity via word-level Jaccard overlap
@@ -1105,7 +1103,7 @@ Ranking (numbers only):`;
         const warmRowId = warmRow.rows[0]!.id;
         warmCreated++;
 
-        // Temporal event chain detection (#76) — link to closest preceding warm-tier memory
+        // Link to closest preceding warm-tier memory to build temporal event chains
         void client.query(
           `INSERT INTO memory_sequences (agent_id, predecessor_id, successor_id, gap_seconds)
            SELECT $1, w.id, $2, EXTRACT(EPOCH FROM ($3::timestamptz - w.time_end))
@@ -1947,7 +1945,6 @@ Ranking (numbers only):`;
 
     const r = rows[0]!;
 
-    // Knowledge gaps (#77) and staleness (#78) metrics
     const gapResult = await this.pool.query<{ count: string }>(
       `SELECT count(*) FROM knowledge_gaps WHERE agent_id = $1 AND NOT resolved AND detected_at > now() - interval '7 days'`,
       [agentId],
@@ -1979,9 +1976,7 @@ Ranking (numbers only):`;
 
   /**
    * Generate a resumption context for an agent starting a new session.
-   * Returns recent important memories, active procedures, and contradictions.
-   *
-   * Inspired by CCRider (MIT) resume prompt templates.
+   * Returns recent important memories, active procedures, and open contradictions.
    */
   async resume(agentId: string, limit = 5): Promise<ResumeContext> {
     this.assertAgentId(agentId);
