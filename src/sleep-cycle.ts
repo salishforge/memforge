@@ -956,4 +956,4 @@ export class SharedPoolSleepCycle {
   }
 }
 
-export { DEFAULT_CONFIG as SLEEP_CYCLE_DEFAULTS };
+

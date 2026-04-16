@@ -13,9 +13,13 @@
 
 import { MemForgeClient } from './client.js';
 import { VERSION } from './version.js';
+import type { JsonSchemaProperty } from './types.js';
 
 // ─── MCP Protocol Types ──────────────────────────────────────────────────────
 // Minimal types for MCP stdio transport — no external SDK dependency required.
+
+/** MCP protocol result value — structured JSON data with arbitrary nesting. */
+type MCPResultValue = string | number | boolean | null | MCPResultValue[] | { [key: string]: MCPResultValue };
 
 interface MCPRequest {
   jsonrpc: '2.0';
@@ -27,7 +31,7 @@ interface MCPRequest {
 interface MCPResponse {
   jsonrpc: '2.0';
   id: number | string;
-  result?: unknown;
+  result?: MCPResultValue;
   error?: { code: number; message: string };
 }
 
@@ -36,7 +40,7 @@ interface MCPToolDefinition {
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, unknown>;
+    properties: Record<string, JsonSchemaProperty>;
     required?: string[];
   };
 }
