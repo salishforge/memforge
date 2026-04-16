@@ -143,7 +143,6 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
 // ─── Local in-process provider (no external service) ────────────────────────
 // Uses @xenova/transformers (ONNX Runtime) for in-process embeddings.
-// Inspired by hippo-memory (MIT) which ships with local embeddings.
 //
 // Default: Xenova/all-MiniLM-L6-v2 (~22MB, 384 dimensions, ~50-100 embeds/sec)
 // Configurable via EMBEDDING_MODEL and EMBEDDING_DIMENSIONS env vars.

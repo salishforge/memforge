@@ -131,8 +131,7 @@ export class SecretPatternClassifier implements ContentClassifier {
 }
 
 // ─── PII Pattern Classifier ────────────────────────────────────────────────
-// Patterns inspired by Microsoft Presidio (Apache 2.0) recognizer model.
-// Uses context words to boost confidence.
+// Uses regex patterns with context words to boost confidence.
 
 interface PIIPatternDef {
   id: string;
