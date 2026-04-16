@@ -37,7 +37,7 @@ export const httpRequestDurationSeconds = new Histogram({
 
 // ── Database pool metrics ─────────────────────────────────────────────────────
 
-export const dbPoolConnections = new Gauge({
+const dbPoolConnections = new Gauge({
   name: 'database_pool_connections',
   help: 'PostgreSQL connection pool state',
   labelNames: ['state'] as const,
@@ -56,14 +56,14 @@ export const dbPoolConnections = new Gauge({
 
 // ── Cache metrics ─────────────────────────────────────────────────────────────
 
-export const cacheOperationsTotal = new Counter({
+const cacheOperationsTotal = new Counter({
   name: 'cache_operations_total',
   help: 'Total Redis cache operations by type',
   labelNames: ['operation'] as const,
   registers: [registry],
 });
 
-export const cacheHitRate = new Gauge({
+const cacheHitRate = new Gauge({
   name: 'cache_hit_rate',
   help: 'Redis cache hit rate (0–1)',
   registers: [registry],

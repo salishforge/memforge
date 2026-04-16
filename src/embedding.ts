@@ -165,12 +165,15 @@ export interface LocalEmbeddingConfig {
   quantized?: boolean;
 }
 
+/** Function signature for a @xenova/transformers feature-extraction pipeline. */
+type FeatureExtractionPipeline = (text: string, options: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array }>;
+
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
   private readonly model: string;
   private readonly quantized: boolean;
-  private pipeline: unknown = null;
-  private loading: Promise<unknown> | null = null;
+  private pipeline: FeatureExtractionPipeline | null = null;
+  private loading: Promise<FeatureExtractionPipeline> | null = null;
 
   constructor(config: LocalEmbeddingConfig = {}) {
     // Default: bge-small-en-v1.5 — retrieval-optimized, 137 embeds/sec on CPU, best discrimination
@@ -180,7 +183,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.quantized = config.quantized ?? true;
   }
 
-  private async getPipeline(): Promise<unknown> {
+  private async getPipeline(): Promise<FeatureExtractionPipeline> {
     if (this.pipeline) return this.pipeline;
     if (this.loading) return this.loading;
 
@@ -188,7 +191,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       const { pipeline } = await import('@xenova/transformers');
       this.pipeline = await pipeline('feature-extraction', this.model, {
         quantized: this.quantized,
-      });
+      }) as FeatureExtractionPipeline;
       return this.pipeline;
     })();
 
@@ -196,7 +199,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const pipe = await this.getPipeline() as (text: string, options: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array }>;
+    const pipe = await this.getPipeline();
     const output = await pipe(text, { pooling: 'mean', normalize: true });
     return Array.from(output.data);
   }
