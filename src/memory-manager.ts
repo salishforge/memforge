@@ -2573,8 +2573,8 @@ Guidelines:
         [agentId],
       );
 
-      // F3 fix: Corroboration check — only if this agent hasn't already corroborated this content
-      // Check for existing publish from this agent with similar content first (prevent spam)
+      // Corroboration: check for similar content from another agent before boosting reputation
+      // (prevents spam publishing from inflating corroboration counts)
       const alreadyPublished = await this.pool.query(
         `SELECT 1 FROM shared_memories WHERE pool_id = $1 AND source_agent_id = $2
            AND content_tsv @@ plainto_tsquery('english', $3) LIMIT 1`,
