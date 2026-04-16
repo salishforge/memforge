@@ -14,7 +14,7 @@
 
 export type Sensitivity = 'public' | 'internal' | 'confidential' | 'restricted';
 
-export type RedactionAction = 'none' | 'tag' | 'redact' | 'reject';
+type RedactionAction = 'none' | 'tag' | 'redact' | 'reject';
 
 export interface Classification {
   /** What type of sensitive data was found */
@@ -60,7 +60,7 @@ const SENSITIVITY_ORDER: Record<Sensitivity, number> = {
   restricted: 3,
 };
 
-export function maxSensitivity(a: Sensitivity, b: Sensitivity): Sensitivity {
+function maxSensitivity(a: Sensitivity, b: Sensitivity): Sensitivity {
   return SENSITIVITY_ORDER[a] >= SENSITIVITY_ORDER[b] ? a : b;
 }
 

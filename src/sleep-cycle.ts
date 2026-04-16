@@ -91,7 +91,7 @@ export class SleepCycleEngine {
     // Phase 2: Triage
     const { evicted, flaggedIds } = await this.phaseTriage(agentId);
 
-    // Phase 2.5: Conflict Resolution (#80) — resolve contradicting memories
+    // Phase 2.5: Conflict Resolution — resolve contradicting memories
     const conflictsResolved = await this.phaseConflictResolution(agentId);
 
     // Phase 3: Revision (bounded by token budget and max revisions per cycle)
@@ -133,7 +133,7 @@ export class SleepCycleEngine {
       coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
     }
 
-    // Phase 5.5: Schema Detection (#75) — find repeated temporal sequences
+    // Phase 5.5: Schema Detection — find repeated temporal sequences
     let schemasDetected = 0;
     schemasDetected = await this.phaseSchemaDetection(agentId);
 
@@ -307,7 +307,7 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'scoring audit failed'));
     }
 
-    // Staleness detection (#78) — compute staleness based on access recency and confidence
+    // Staleness detection — compute staleness score based on access recency and confidence
     await this.pool.query(
       `UPDATE warm_tier SET staleness_score = LEAST(1.0,
          CASE
@@ -375,9 +375,8 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag low-confidence memories for revision, prioritized by surprise score (#79)
-    // then by importance. High-surprise memories represent the biggest gap between
-    // what the system expected and what happened — revise those first.
+    // Flag low-confidence memories for revision, prioritized by surprise score then importance.
+    // High-surprise memories represent the biggest gap between expected and actual behavior — revise first.
     const flagged = await this.pool.query<{ id: bigint }>(
       `SELECT id FROM warm_tier
        WHERE agent_id = $1 AND confidence < $2
