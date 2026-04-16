@@ -10,8 +10,6 @@
 //
 import { getLogger } from './logger.js';
 const log = getLogger('audit');
-// Verification: walk the chain for a target and verify each link.
-// A broken link means a record was tampered with, deleted, or reordered.
 
 import { createHmac } from 'crypto';
 import type { Pool } from 'pg';
@@ -59,14 +57,11 @@ export interface AuditConfig {
   hmacKey: string;
   /** Days to keep audit records immutable (default 90) */
   retentionDays: number;
-  /** Whether to archive expired records to cold_audit (true) or delete them (false) */
-  archiveOnExpiry: boolean;
 }
 
 const DEFAULT_CONFIG: AuditConfig = {
   hmacKey: process.env['AUDIT_HMAC_KEY'] ?? '',
   retentionDays: parseInt(process.env['AUDIT_RETENTION_DAYS'] ?? '90', 10),
-  archiveOnExpiry: process.env['AUDIT_ARCHIVE_ON_EXPIRY'] !== 'false',
 };
 
 // ─── HMAC Helpers ───────────────────────────────────────────────────────────────
@@ -352,10 +347,6 @@ export class AuditChain {
   async archiveExpired(agentId: string): Promise<{ archived: number; pruned: number }> {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - this.config.retentionDays);
-
-    if (!this.config.archiveOnExpiry) {
-      log.warn('archiveOnExpiry=false is deprecated — records will always be archived to cold_audit before deletion');
-    }
 
     // Always archive to cold_audit before deleting (preserving hashes for historical verification)
     const client = await this.pool.connect();

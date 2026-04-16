@@ -134,6 +134,19 @@ function parseSummaryResponse(text: string): ConsolidationSummary {
   };
 }
 
+/**
+ * Shared implementation of summarize() — all LLM providers use the same
+ * consolidation prompt and response parsing; only the chat() transport differs.
+ */
+async function runSummarize(
+  provider: LLMProvider,
+  rawContent: string,
+  agentContext?: string,
+): Promise<ConsolidationSummary> {
+  const text = await provider.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
+  return parseSummaryResponse(text);
+}
+
 // ─── Anthropic provider ──────────────────────────────────────────────────────
 
 export interface AnthropicLLMConfig {
@@ -190,8 +203,7 @@ export class AnthropicLLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 
@@ -256,8 +268,7 @@ export class OpenAILLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 

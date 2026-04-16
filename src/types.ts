@@ -276,9 +276,9 @@ export interface SleepCycleResult {
   phase4_entities_merged: number;
   phase5_reflection: boolean;
   phase5b_cold_purged: number;
-  /** Repeated temporal patterns crystallized as schema entities (#75) */
+  /** Repeated temporal patterns crystallized as schema entities */
   schemas_detected: number;
-  /** Memory conflicts resolved via heuristic strategy (#80) */
+  /** Memory conflicts resolved via heuristic multi-factor scoring */
   conflicts_resolved: number;
   audit_records_archived: number;
   tokens_used: number;
@@ -319,11 +319,11 @@ export interface MemoryHealth {
   knowledge_stability_pct: number;
   retrieval_count_24h: number;
   contradiction_rate: number;
-  /** Number of memories with staleness > 0.5 (#78) */
+  /** Number of memories with staleness_score > 0.5 */
   stale_memory_count: number;
-  /** Average staleness score across all warm-tier memories (#78) */
+  /** Average staleness score across all warm-tier memories */
   avg_staleness: number;
-  /** Knowledge gaps detected in the last 7 days (#77) */
+  /** Zero-result queries recorded in the last 7 days */
   knowledge_gap_count_7d: number;
 }
 
@@ -402,7 +402,7 @@ export interface MemoryHints {
   type?: 'fact' | 'event' | 'decision' | 'preference' | 'correction' | 'error';
 }
 
-// ─── Phase 3: Cross-Agent Shared Memory ─────────────────────────────────────
+// ─── Shared Memory Pools ─────────────────────────────────────────────────────
 
 export interface SharedPool {
   id: string;
@@ -452,6 +452,32 @@ export interface PublishResult {
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
 };
+
+// ─── Entity Deduplication Result ─────────────────────────────────────────────
+
+export interface EntityDeduplicationResult {
+  agent_id: string;
+  entities_merged: number;
+  threshold: number;
+}
+
+// ─── Shared Pool Sleep Cycle ─────────────────────────────────────────────────
+
+export interface SharedPoolSleepCycleResult {
+  deduplicated: number;
+  conflicts_resolved: number;
+  reputation_updated: number;
+  evicted: number;
+}
+
+// ─── Health Status ────────────────────────────────────────────────────────────
+
+export interface HealthStatus {
+  status: string;
+  ts: string;
+  embeddings: boolean;
+  summarization: boolean;
+}
 
 // ─── Resume Context ───────────────────────────────────────────────────────────
 

@@ -54,6 +54,9 @@ export type {
   SleepCycleConfig,
   MemoryHealth,
   Procedure,
+  EntityDeduplicationResult,
+  HealthStatus,
+  SharedPoolSleepCycleResult,
 } from './types.js';
 export { SleepCycleEngine } from './sleep-cycle.js';
 export {

@@ -163,6 +163,13 @@ export class MemoryManager {
     return this.llm !== null;
   }
 
+  /** Assert that agentId is a non-empty string. Throws TypeError otherwise. */
+  private assertAgentId(agentId: string): void {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+  }
+
   // ─── Agent registration ───────────────────────────────────────────────────
 
   async registerAgent(agentId: string, metadata: Record<string, unknown> = {}): Promise<void> {
@@ -183,9 +190,7 @@ export class MemoryManager {
     outcomeType: OutcomeType = 'neutral',
     hints?: MemoryHints,
   ): Promise<AddResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
       throw new TypeError('content must be a non-empty string');
     }
@@ -322,17 +327,9 @@ Ranking (numbers only):`;
    */
   async query(
     agentId: string,
-    searchTextOrOpts: string | QueryOptions,
-    limit?: number,
+    opts: QueryOptions,
   ): Promise<QueryResult[]> {
-    // Normalize arguments — support both old (string, limit) and new (QueryOptions) signatures
-    const opts: QueryOptions = typeof searchTextOrOpts === 'string'
-      ? { q: searchTextOrOpts, limit }
-      : searchTextOrOpts;
-
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!opts.q || typeof opts.q !== 'string') {
       throw new TypeError('search query must be a non-empty string');
     }
@@ -834,9 +831,7 @@ Ranking (numbers only):`;
     to?: Date,
     limit = 50,
   ): Promise<TimelineEntry[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const params: unknown[] = [agentId];
     const clauses: string[] = [];
@@ -889,9 +884,7 @@ Ranking (numbers only):`;
    * @param mode     Override the configured consolidation mode for this run
    */
   async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const resolvedMode = mode ?? this.config.consolidationMode;
 
@@ -1264,8 +1257,8 @@ Ranking (numbers only):`;
              WHERE id = $1`,
             [runId, (err as Error).message],
           );
-        } catch {
-          // best-effort
+        } catch (logErr) {
+          log.error({ err: logErr }, 'failed to update consolidation log status');
         }
       }
 
@@ -1278,9 +1271,7 @@ Ranking (numbers only):`;
   // ─── clear ────────────────────────────────────────────────────────────────
 
   async clear(agentId: string): Promise<ClearResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const client = await this.pool.connect();
     try {
@@ -1348,9 +1339,7 @@ Ranking (numbers only):`;
   // ─── stats ────────────────────────────────────────────────────────────────
 
   async stats(agentId: string): Promise<AgentStats> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     // Single-query stats: all tier counts + last consolidation + agent info
     // Avoids 8 separate round-trips to the database
@@ -1424,9 +1413,7 @@ Ranking (numbers only):`;
     type?: string,
     limit = 20,
   ): Promise<EntitySearchResult[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const params: unknown[] = [agentId];
     const clauses: string[] = [];
@@ -1481,9 +1468,7 @@ Ranking (numbers only):`;
     entityName: string,
     depth = 2,
   ): Promise<GraphQueryResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!entityName || typeof entityName !== 'string') {
       throw new TypeError('entityName must be a non-empty string');
     }
@@ -1617,9 +1602,7 @@ Ranking (numbers only):`;
     trigger: ReflectionTrigger = 'manual',
     limit = 20,
   ): Promise<ReflectionResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!this.llm) {
       throw new Error('Reflection requires an LLM provider — set LLM_PROVIDER');
     }
@@ -1756,9 +1739,7 @@ Ranking (numbers only):`;
    * @param limit    Maximum results (default 10)
    */
   async getReflections(agentId: string, limit = 10): Promise<Reflection[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const { rows } = await this.pool.query<Reflection>(
       `SELECT id, agent_id, content, key_insights, contradictions, source_warm_ids,
@@ -1805,7 +1786,8 @@ Ranking (numbers only):`;
     let parsed;
     try {
       parsed = safeParseLLMResponse(ProcedureExtractionSchema, responseText);
-    } catch {
+    } catch (err) {
+      log.error({ err, reflectionId: String(reflectionId) }, 'invalid procedure extraction response from LLM');
       return 0;
     }
 
@@ -1840,9 +1822,7 @@ Ranking (numbers only):`;
    * When a query is provided, procedures whose condition matches are returned.
    */
   async getProcedures(agentId: string, query?: string, limit = 20): Promise<Procedure[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const params: unknown[] = [agentId];
     let filter = '';
@@ -1887,9 +1867,7 @@ Ranking (numbers only):`;
    * Requires an LLM provider (either the main one or a dedicated revision LLM).
    */
   async sleep(agentId: string, configOverrides?: Partial<SleepCycleConfig>): Promise<SleepCycleResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     // Per-agent mutex — reject concurrent sleep cycles for the same agent
     if (this.sleepLocks.has(agentId)) {
@@ -1944,9 +1922,7 @@ Ranking (numbers only):`;
    * derived from revision history, retrieval patterns, and importance scores.
    */
   async health(agentId: string): Promise<MemoryHealth> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const { rows } = await this.pool.query<{
       total_memories: string;
@@ -2017,9 +1993,7 @@ Ranking (numbers only):`;
    * Inspired by CCRider (MIT) resume prompt templates.
    */
   async resume(agentId: string, limit = 5): Promise<ResumeContext> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (limit < 1 || limit > 20) {
       throw new TypeError('limit must be between 1 and 20');
     }
@@ -2101,9 +2075,7 @@ Ranking (numbers only):`;
     outcome: FeedbackOutcome,
     metadata: Record<string, unknown> = {},
   ): Promise<FeedbackResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!Array.isArray(retrievalIds) || retrievalIds.length === 0) {
       throw new TypeError('retrievalIds must be a non-empty array');
     }
@@ -2226,9 +2198,7 @@ Ranking (numbers only):`;
    * @param limit    Max reflections to review (default 10)
    */
   async metaReflect(agentId: string, limit = 10): Promise<MetaReflectionResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!this.llm) {
       throw new Error('Meta-reflection requires an LLM provider — set LLM_PROVIDER');
     }
@@ -2363,9 +2333,7 @@ Guidelines:
    * @returns Number of entities merged
    */
   async deduplicateEntities(agentId: string, threshold = 0.7): Promise<number> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     // Find candidate duplicate pairs using trigram similarity
     const candidates = await this.pool.query<{
@@ -2501,9 +2469,7 @@ Guidelines:
     context: string,
     limit = 5,
   ): Promise<ActiveMemoryResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!context || typeof context !== 'string') {
       throw new TypeError('context must be a non-empty string');
     }
@@ -2694,9 +2660,7 @@ Guidelines:
    * Includes warm-tier memories, entities, relationships, procedures, and reflections.
    */
   async exportMemory(agentId: string): Promise<string[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const lines: string[] = [];
 
@@ -2757,9 +2721,7 @@ Guidelines:
    * Each line must be a JSON object with a 'type' field.
    */
   async importMemory(agentId: string, lines: string[]): Promise<{ imported: number; errors: number }> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     if (this.config.autoRegisterAgents) {
       await this.registerAgent(agentId);
