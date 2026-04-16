@@ -147,7 +147,7 @@ async function runSummarize(
 
 // ─── Anthropic provider ──────────────────────────────────────────────────────
 
-export interface AnthropicLLMConfig {
+interface AnthropicLLMConfig {
   /** API key — falls back to ANTHROPIC_API_KEY env var */
   apiKey?: string;
   /** Model name (default: claude-sonnet-4-20250514) */
@@ -207,7 +207,7 @@ export class AnthropicLLMProvider implements LLMProvider {
 
 // ─── OpenAI-compatible provider ──────────────────────────────────────────────
 
-export interface OpenAILLMConfig {
+interface OpenAILLMConfig {
   /** API base URL (default: https://api.openai.com/v1) */
   baseUrl?: string;
   /** API key — falls back to OPENAI_API_KEY env var */
@@ -272,7 +272,7 @@ export class OpenAILLMProvider implements LLMProvider {
 
 // ─── Ollama provider ─────────────────────────────────────────────────────────
 
-export interface OllamaLLMConfig {
+interface OllamaLLMConfig {
   /** Ollama API base URL (default: http://localhost:11434) */
   baseUrl?: string;
   /** Model name (default: llama3.2) */

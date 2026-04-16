@@ -18,7 +18,7 @@ export interface EmbeddingProvider {
 
 // ─── OpenAI-compatible provider ──────────────────────────────────────────────
 
-export interface OpenAIEmbeddingConfig {
+interface OpenAIEmbeddingConfig {
   /** API base URL (default: https://api.openai.com/v1) */
   baseUrl?: string;
   /** API key — falls back to OPENAI_API_KEY env var */
@@ -85,7 +85,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
 // ─── Ollama provider ─────────────────────────────────────────────────────────
 
-export interface OllamaEmbeddingConfig {
+interface OllamaEmbeddingConfig {
   /** Ollama API base URL (default: http://localhost:11434) */
   baseUrl?: string;
   /** Model name (default: nomic-embed-text) */
@@ -156,7 +156,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 //   Xenova/nomic-embed-text-v1    — 768 dim, 135MB, matches Ollama nomic-embed-text
 //   Xenova/gte-small              — 384 dim, 30MB, multilingual
 
-export interface LocalEmbeddingConfig {
+interface LocalEmbeddingConfig {
   /** Model identifier — any Xenova/* ONNX model on Hugging Face (default: Xenova/all-MiniLM-L6-v2) */
   model?: string;
   /** Vector dimensions — must match the model's output (default: 384) */

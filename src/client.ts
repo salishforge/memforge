@@ -237,7 +237,7 @@ export class MemForgeClient {
     return this.unwrap<T>(res);
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const res = await this._fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: this.headers(),
