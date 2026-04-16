@@ -23,15 +23,10 @@ const log = getLogger('server');
 const PORT = parseInt(process.env['PORT'] ?? '3333', 10);
 const ADMIN_TOKEN = process.env['ADMIN_TOKEN'] ?? '';
 
-// Content classifier registry — runs on ingest and before LLM calls
 const classifierRegistry = createDefaultRegistry();
 
 const embeddingProvider = createEmbeddingProvider();
 
-// LLM providers wrapped with safety controls:
-//   - Pre-LLM content sanitization (classify + redact)
-//   - Remote providers blocked by default (set ALLOW_REMOTE_LLM=true to override)
-//   - Warning logged when content is sent to external LLM
 const llmProviderType = process.env['LLM_PROVIDER'] ?? 'none';
 const allowRemoteLLM = process.env['ALLOW_REMOTE_LLM'] === 'true';
 const rawLlmProvider = createLLMProvider();
@@ -46,7 +41,6 @@ const revisionLlmProvider = wrapLLMProvider(rawRevisionLlmProvider, revisionProv
 const auditChain = new AuditChain(getPool(process.env['DATABASE_URL'] || undefined), {
   hmacKey: process.env['AUDIT_HMAC_KEY'],
   retentionDays: parseInt(process.env['AUDIT_RETENTION_DAYS'] ?? '90', 10),
-  archiveOnExpiry: process.env['AUDIT_ARCHIVE_ON_EXPIRY'] !== 'false',
 });
 
 const manager = new MemoryManager({

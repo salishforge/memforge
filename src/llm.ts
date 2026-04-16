@@ -32,8 +32,6 @@ export interface LLMProvider {
   readonly model: string;
 }
 
-// ─── System prompt ───────────────────────────────────────────────────────────
-
 // ─── Prompt boundary helper ─────────────────────────────────────────────────
 
 /**
@@ -134,9 +132,22 @@ function parseSummaryResponse(text: string): ConsolidationSummary {
   };
 }
 
+/**
+ * Shared implementation of summarize() — all LLM providers use the same
+ * consolidation prompt and response parsing; only the chat() transport differs.
+ */
+async function runSummarize(
+  provider: LLMProvider,
+  rawContent: string,
+  agentContext?: string,
+): Promise<ConsolidationSummary> {
+  const text = await provider.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
+  return parseSummaryResponse(text);
+}
+
 // ─── Anthropic provider ──────────────────────────────────────────────────────
 
-export interface AnthropicLLMConfig {
+interface AnthropicLLMConfig {
   /** API key — falls back to ANTHROPIC_API_KEY env var */
   apiKey?: string;
   /** Model name (default: claude-sonnet-4-20250514) */
@@ -190,14 +201,13 @@ export class AnthropicLLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 
 // ─── OpenAI-compatible provider ──────────────────────────────────────────────
 
-export interface OpenAILLMConfig {
+interface OpenAILLMConfig {
   /** API base URL (default: https://api.openai.com/v1) */
   baseUrl?: string;
   /** API key — falls back to OPENAI_API_KEY env var */
@@ -256,14 +266,13 @@ export class OpenAILLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 
 // ─── Ollama provider ─────────────────────────────────────────────────────────
 
-export interface OllamaLLMConfig {
+interface OllamaLLMConfig {
   /** Ollama API base URL (default: http://localhost:11434) */
   baseUrl?: string;
   /** Model name (default: llama3.2) */
@@ -307,8 +316,7 @@ export class OllamaLLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 

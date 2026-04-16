@@ -47,6 +47,7 @@ import type {
   ResumeContext,
   OutcomeType,
   MemoryHints,
+  SqlParam,
 } from './types.js';
 
 const DEFAULTS: MemForgeConfig = {
@@ -163,6 +164,13 @@ export class MemoryManager {
     return this.llm !== null;
   }
 
+  /** Assert that agentId is a non-empty string. Throws TypeError otherwise. */
+  private assertAgentId(agentId: string): void {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new TypeError('agentId must be a non-empty string');
+    }
+  }
+
   // ─── Agent registration ───────────────────────────────────────────────────
 
   async registerAgent(agentId: string, metadata: Record<string, unknown> = {}): Promise<void> {
@@ -183,9 +191,7 @@ export class MemoryManager {
     outcomeType: OutcomeType = 'neutral',
     hints?: MemoryHints,
   ): Promise<AddResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
       throw new TypeError('content must be a non-empty string');
     }
@@ -194,7 +200,7 @@ export class MemoryManager {
       await this.registerAgent(agentId);
     }
 
-    // Content deduplication — inspired by CCRider (MIT) BLAKE3 content dedup
+    // Deduplicate by content hash — skip storing if identical content was added recently
     const contentHash = createHash('sha256').update(content).digest('hex');
     const dup = await this.pool.query<{ id: bigint; created_at: Date }>(
       `SELECT id, created_at FROM hot_tier
@@ -207,8 +213,7 @@ export class MemoryManager {
       return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
     }
 
-    // Build enriched metadata from outcome_type and agent-provided hints
-    // F2 fix: strip reserved system keys that could be used for provenance/reputation forgery
+    // Strip reserved system keys to prevent provenance/reputation forgery via caller metadata
     const sanitizedMetadata = { ...metadata };
     delete sanitizedMetadata['_source_agent'];
     delete sanitizedMetadata['_from_pool'];
@@ -248,11 +253,6 @@ export class MemoryManager {
 
     return result;
   }
-
-  // Dead code removed: postIngestAnalysis and llmIngestAnalysis were writing
-  // metadata keys (_similar_to, _extracted_entities, _llm_type, _llm_entities,
-  // _llm_importance) that were never read during retrieval or scoring.
-  // Re-add with read-side implementation when these signals are used.
 
   /**
    * Optional LLM-based reranking of retrieval results.
@@ -314,7 +314,7 @@ Ranking (numbers only):`;
   /**
    * Search warm tier memory with support for keyword, semantic, or hybrid modes.
    *
-   * - keyword: PostgreSQL FTS with trigram fallback (original behavior)
+   * - keyword: PostgreSQL FTS with trigram fallback when FTS returns no results
    * - semantic: Vector cosine similarity via pgvector
    * - hybrid: Reciprocal rank fusion of keyword + semantic results
    *
@@ -322,17 +322,9 @@ Ranking (numbers only):`;
    */
   async query(
     agentId: string,
-    searchTextOrOpts: string | QueryOptions,
-    limit?: number,
+    opts: QueryOptions,
   ): Promise<QueryResult[]> {
-    // Normalize arguments — support both old (string, limit) and new (QueryOptions) signatures
-    const opts: QueryOptions = typeof searchTextOrOpts === 'string'
-      ? { q: searchTextOrOpts, limit }
-      : searchTextOrOpts;
-
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!opts.q || typeof opts.q !== 'string') {
       throw new TypeError('search query must be a non-empty string');
     }
@@ -391,7 +383,7 @@ Ranking (numbers only):`;
       }
     }
 
-    // Phase 3: Search shared pools the agent belongs to, merge with trust scoring
+    // Search shared pools the agent belongs to, merge results with trust scoring
     const agentPools = await this.getAgentPools(agentId);
     if (agentPools.length > 0) {
       for (const pool of agentPools) {
@@ -451,7 +443,6 @@ Ranking (numbers only):`;
       results.sort((a, b) => b.rank - a.rank);
     }
 
-    // Temporal proximity boost — inspired by MemPalace (MIT) hybrid v2
     // When time filters are present, boost memories near the reference date
     const proximityDays = this.config.temporalProximityDays ?? 0;
     if (proximityDays > 0 && (after || before)) {
@@ -467,8 +458,7 @@ Ranking (numbers only):`;
       results.sort((a, b) => b.rank - a.rank);
     }
 
-    // Structure-aware scoring — boost results linked to entities mentioned in query
-    // Inspired by FABLE (arXiv 2601.18116) structure-aware propagation
+    // Boost results linked to entities mentioned in the query
     if (results.length > 0) {
       // Detect entities: regex for proper nouns PLUS check against known entity names
       const queryUpper = opts.q;
@@ -519,8 +509,7 @@ Ranking (numbers only):`;
       results = await this.rerankWithLlm(opts.q, results);
     }
 
-    // Budget-controlled retrieval — trim results to fit within token budget
-    // Inspired by FABLE (arXiv 2601.18116) adaptive budget control
+    // Trim results to fit within caller-specified token budget
     if (opts.maxTokens && opts.maxTokens > 0) {
       let tokenCount = 0;
       const budgeted: QueryResult[] = [];
@@ -558,8 +547,7 @@ Ranking (numbers only):`;
       }
     }
 
-    // Knowledge gap detection (#77) — track queries that return no results
-    // Dedup by query text hash + cap at 1000 per agent (fixes A4 spam risk)
+    // Track zero-result queries as knowledge gaps; deduplicated and capped at 1000/agent
     if (results.length === 0) {
       void this.pool.query(
         `INSERT INTO knowledge_gaps (agent_id, query_text, gap_type)
@@ -580,7 +568,6 @@ Ranking (numbers only):`;
          WHERE id = ANY($1)`,
         [ids],
       );
-      // Batch-insert retrieval events (single query instead of N, fixes B3)
       const warmIds = results.map((r) => r.id);
       const positions = results.map((_, idx) => idx + 1);
       void this.pool.query(
@@ -603,7 +590,7 @@ Ranking (numbers only):`;
     before?: Date,
   ): Promise<QueryResult[]> {
     const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: unknown[] = [agentId, searchText];
+    const params: SqlParam[] =[agentId, searchText];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -630,7 +617,7 @@ Ranking (numbers only):`;
 
   /**
    * Code-preserving search using simple tokenizer (no stemming).
-   * Preserves camelCase, dots, underscores — inspired by CCRider (MIT) dual tokenizer approach.
+   * Preserves camelCase, dots, and underscores — avoids stemming that mangles identifiers.
    */
   private async queryCode(
     agentId: string,
@@ -640,7 +627,7 @@ Ranking (numbers only):`;
     before?: Date,
   ): Promise<QueryResult[]> {
     const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: unknown[] = [agentId, searchText];
+    const params: SqlParam[] =[agentId, searchText];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -673,7 +660,7 @@ Ranking (numbers only):`;
     after?: Date,
     before?: Date,
   ): Promise<QueryResult[]> {
-    const params: unknown[] = [agentId, searchText, `%${escapeLike(searchText)}%`];
+    const params: SqlParam[] =[agentId, searchText, `%${escapeLike(searchText)}%`];
     const timeFilter = this.buildTimeFilter(after, before, 4);
     if (after) params.push(after);
     if (before) params.push(before);
@@ -710,7 +697,7 @@ Ranking (numbers only):`;
     const queryEmbedding = await this.embedder.embed(searchText);
     const vectorLiteral = `[${queryEmbedding.join(',')}]`;
 
-    const params: unknown[] = [agentId, vectorLiteral];
+    const params: SqlParam[] =[agentId, vectorLiteral];
     const timeFilter = this.buildTimeFilter(after, before, 3);
     if (after) params.push(after);
     if (before) params.push(before);
@@ -781,7 +768,7 @@ Ranking (numbers only):`;
       }
     });
 
-    // Keyword overlap boost — inspired by MemPalace (MIT) hybrid v1 scoring
+    // Keyword overlap boost: score up results that share query terms
     const overlapAlpha = this.config.keywordOverlapBoost ?? 0;
     if (overlapAlpha > 0) {
       const queryWords = new Set(searchText.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
@@ -834,11 +821,9 @@ Ranking (numbers only):`;
     to?: Date,
     limit = 50,
   ): Promise<TimelineEntry[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     const clauses: string[] = [];
 
     if (from) {
@@ -889,9 +874,7 @@ Ranking (numbers only):`;
    * @param mode     Override the configured consolidation mode for this run
    */
   async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const resolvedMode = mode ?? this.config.consolidationMode;
 
@@ -965,9 +948,8 @@ Ranking (numbers only):`;
         });
       }
 
-      // ── Heuristic pre-screening: skip LLM for high-overlap batches (#53) ──
-      // Inspired by hippo-memory (MIT) overlap merge + claude-code-toolkit (MIT)
-      // deterministic-vs-probabilistic philosophy.
+      // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7 across
+      // sampled pairs) — concat produces equivalent results without API cost.
       const batchNeedsLlm = batches.map((batch) => {
         if (resolvedMode !== 'summarize' || !this.llm) return false;
         // Check intra-batch diversity via word-level Jaccard overlap
@@ -1099,7 +1081,6 @@ Ranking (numbers only):`;
           }
         }
 
-        // Store summary alongside verbatim content — inspired by FABLE/MemPalace closets/drawers
         const summaryText = summary ? summary.summary : null;
 
         const warmRow = await client.query<{ id: bigint }>(
@@ -1121,7 +1102,7 @@ Ranking (numbers only):`;
         const warmRowId = warmRow.rows[0]!.id;
         warmCreated++;
 
-        // Temporal event chain detection (#76) — link to closest preceding warm-tier memory
+        // Link to closest preceding warm-tier memory to build temporal event chains
         void client.query(
           `INSERT INTO memory_sequences (agent_id, predecessor_id, successor_id, gap_seconds)
            SELECT $1, w.id, $2, EXTRACT(EPOCH FROM ($3::timestamptz - w.time_end))
@@ -1264,8 +1245,8 @@ Ranking (numbers only):`;
              WHERE id = $1`,
             [runId, (err as Error).message],
           );
-        } catch {
-          // best-effort
+        } catch (logErr) {
+          log.error({ err: logErr }, 'failed to update consolidation log status');
         }
       }
 
@@ -1278,9 +1259,7 @@ Ranking (numbers only):`;
   // ─── clear ────────────────────────────────────────────────────────────────
 
   async clear(agentId: string): Promise<ClearResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const client = await this.pool.connect();
     try {
@@ -1348,12 +1327,8 @@ Ranking (numbers only):`;
   // ─── stats ────────────────────────────────────────────────────────────────
 
   async stats(agentId: string): Promise<AgentStats> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
-    // Single-query stats: all tier counts + last consolidation + agent info
-    // Avoids 8 separate round-trips to the database
     const { rows: statsRows } = await this.pool.query<{
       last_seen: Date;
       hot_count: string;
@@ -1424,11 +1399,9 @@ Ranking (numbers only):`;
     type?: string,
     limit = 20,
   ): Promise<EntitySearchResult[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     const clauses: string[] = [];
 
     if (query) {
@@ -1481,9 +1454,7 @@ Ranking (numbers only):`;
     entityName: string,
     depth = 2,
   ): Promise<GraphQueryResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!entityName || typeof entityName !== 'string') {
       throw new TypeError('entityName must be a non-empty string');
     }
@@ -1617,9 +1588,7 @@ Ranking (numbers only):`;
     trigger: ReflectionTrigger = 'manual',
     limit = 20,
   ): Promise<ReflectionResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!this.llm) {
       throw new Error('Reflection requires an LLM provider — set LLM_PROVIDER');
     }
@@ -1756,9 +1725,7 @@ Ranking (numbers only):`;
    * @param limit    Maximum results (default 10)
    */
   async getReflections(agentId: string, limit = 10): Promise<Reflection[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const { rows } = await this.pool.query<Reflection>(
       `SELECT id, agent_id, content, key_insights, contradictions, source_warm_ids,
@@ -1805,7 +1772,8 @@ Ranking (numbers only):`;
     let parsed;
     try {
       parsed = safeParseLLMResponse(ProcedureExtractionSchema, responseText);
-    } catch {
+    } catch (err) {
+      log.error({ err, reflectionId: String(reflectionId) }, 'invalid procedure extraction response from LLM');
       return 0;
     }
 
@@ -1840,11 +1808,9 @@ Ranking (numbers only):`;
    * When a query is provided, procedures whose condition matches are returned.
    */
   async getProcedures(agentId: string, query?: string, limit = 20): Promise<Procedure[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     let filter = '';
 
     if (query) {
@@ -1887,9 +1853,7 @@ Ranking (numbers only):`;
    * Requires an LLM provider (either the main one or a dedicated revision LLM).
    */
   async sleep(agentId: string, configOverrides?: Partial<SleepCycleConfig>): Promise<SleepCycleResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     // Per-agent mutex — reject concurrent sleep cycles for the same agent
     if (this.sleepLocks.has(agentId)) {
@@ -1944,9 +1908,7 @@ Ranking (numbers only):`;
    * derived from revision history, retrieval patterns, and importance scores.
    */
   async health(agentId: string): Promise<MemoryHealth> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const { rows } = await this.pool.query<{
       total_memories: string;
@@ -1980,7 +1942,6 @@ Ranking (numbers only):`;
 
     const r = rows[0]!;
 
-    // Knowledge gaps (#77) and staleness (#78) metrics
     const gapResult = await this.pool.query<{ count: string }>(
       `SELECT count(*) FROM knowledge_gaps WHERE agent_id = $1 AND NOT resolved AND detected_at > now() - interval '7 days'`,
       [agentId],
@@ -2012,14 +1973,10 @@ Ranking (numbers only):`;
 
   /**
    * Generate a resumption context for an agent starting a new session.
-   * Returns recent important memories, active procedures, and contradictions.
-   *
-   * Inspired by CCRider (MIT) resume prompt templates.
+   * Returns recent important memories, active procedures, and open contradictions.
    */
   async resume(agentId: string, limit = 5): Promise<ResumeContext> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (limit < 1 || limit > 20) {
       throw new TypeError('limit must be between 1 and 20');
     }
@@ -2101,9 +2058,7 @@ Ranking (numbers only):`;
     outcome: FeedbackOutcome,
     metadata: Record<string, unknown> = {},
   ): Promise<FeedbackResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!Array.isArray(retrievalIds) || retrievalIds.length === 0) {
       throw new TypeError('retrievalIds must be a non-empty array');
     }
@@ -2111,7 +2066,7 @@ Ranking (numbers only):`;
       throw new TypeError('outcome must be one of: positive, negative, neutral');
     }
 
-    // Only update retrieval events that haven't already received feedback (dedup, fixes A3)
+    // Only update retrieval events with no prior feedback (prevents duplicate ratings)
     const { rowCount } = await this.pool.query(
       `UPDATE retrieval_log
        SET outcome = $3, feedback_at = now(), feedback_metadata = $4
@@ -2135,7 +2090,6 @@ Ranking (numbers only):`;
         );
       }
 
-      // Track retrieval success for graduation — inspired by claude-code-toolkit (MIT)
       if (outcome === 'positive') {
         void this.pool.query(
           `UPDATE warm_tier SET
@@ -2147,13 +2101,11 @@ Ranking (numbers only):`;
            )`,
           [agentId, retrievalIds],
         ).catch((err) => log.error({ err }, 'retrieval success tracking failed'));
-
-        // Dead code removed: _affinity_terms was written but never read during retrieval.
       }
     }
 
-    // Surprise tracking (#79) — memories with positive history that get negative feedback
-    // are "surprising" and should be prioritized for revision in sleep cycles
+    // Memories with a positive retrieval history that receive negative feedback are
+    // "surprising" — flag them for priority revision in the next sleep cycle
     if (outcome === 'negative' && updated > 0) {
       void this.pool.query(
         `UPDATE warm_tier SET surprise_score = LEAST(1.0, surprise_score + 0.3)
@@ -2165,7 +2117,7 @@ Ranking (numbers only):`;
       ).catch((err) => log.error({ err }, 'surprise tracking failed'));
     }
 
-    // Corroboration tracking (#78) — positive feedback corroborates the memory
+    // Positive feedback corroborates the memory — update last_corroborated for staleness tracking
     if (outcome === 'positive' && updated > 0) {
       void this.pool.query(
         `UPDATE warm_tier SET last_corroborated = now()
@@ -2177,8 +2129,7 @@ Ranking (numbers only):`;
       ).catch((err) => log.error({ err }, 'corroboration tracking failed'));
     }
 
-    // Phase 3: Reputation signal from feedback on shared pool memories
-    // If the retrieved memory came from a pool, boost/penalize the source agent's reputation
+    // Propagate feedback to the source agent's reputation when the memory came from a pool
     if (updated > 0 && (outcome === 'positive' || outcome === 'negative')) {
       void this.pool.query<{ metadata: Record<string, unknown> }>(
         `SELECT w.metadata FROM warm_tier w
@@ -2190,7 +2141,6 @@ Ranking (numbers only):`;
         for (const row of rows.rows) {
           const sourceAgent = (row.metadata as Record<string, unknown>)?.['_source_agent'] as string | undefined;
           if (sourceAgent) {
-            // F4 fix: use separate params for INSERT default vs UPDATE delta
             const delta = outcome === 'positive' ? 0.01 : -0.03;
             void this.pool.query(
               `INSERT INTO agent_reputation (agent_id, domain, score)
@@ -2226,9 +2176,7 @@ Ranking (numbers only):`;
    * @param limit    Max reflections to review (default 10)
    */
   async metaReflect(agentId: string, limit = 10): Promise<MetaReflectionResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!this.llm) {
       throw new Error('Meta-reflection requires an LLM provider — set LLM_PROVIDER');
     }
@@ -2363,9 +2311,7 @@ Guidelines:
    * @returns Number of entities merged
    */
   async deduplicateEntities(agentId: string, threshold = 0.7): Promise<number> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     // Find candidate duplicate pairs using trigram similarity
     const candidates = await this.pool.query<{
@@ -2501,9 +2447,7 @@ Guidelines:
     context: string,
     limit = 5,
   ): Promise<ActiveMemoryResult> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
     if (!context || typeof context !== 'string') {
       throw new TypeError('context must be a non-empty string');
     }
@@ -2534,7 +2478,7 @@ Guidelines:
     };
   }
 
-  // ─── Phase 3: Shared Memory Pools ──────────────────────────────────────
+  // ─── Shared Memory Pools ────────────────────────────────────────────────
 
   async createPool(poolId: string, name: string, poolType: 'team' | 'global' = 'team', description?: string): Promise<void> {
     await this.pool.query(
@@ -2592,7 +2536,7 @@ Guidelines:
     let published = 0;
     for (const memId of memoryIds) {
       const mem = await this.pool.query<{
-        content: string; summary: string | null; embedding: unknown;
+        content: string; summary: string | null; embedding: string | null;
         confidence: number; importance: number; metadata: Record<string, unknown>;
       }>(
         `SELECT content, summary, embedding, confidence, importance, metadata FROM warm_tier WHERE id = $1 AND agent_id = $2`,
@@ -2625,8 +2569,8 @@ Guidelines:
         [agentId],
       );
 
-      // F3 fix: Corroboration check — only if this agent hasn't already corroborated this content
-      // Check for existing publish from this agent with similar content first (prevent spam)
+      // Corroboration: check for similar content from another agent before boosting reputation
+      // (prevents spam publishing from inflating corroboration counts)
       const alreadyPublished = await this.pool.query(
         `SELECT 1 FROM shared_memories WHERE pool_id = $1 AND source_agent_id = $2
            AND content_tsv @@ plainto_tsquery('english', $3) LIMIT 1`,
@@ -2694,9 +2638,7 @@ Guidelines:
    * Includes warm-tier memories, entities, relationships, procedures, and reflections.
    */
   async exportMemory(agentId: string): Promise<string[]> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     const lines: string[] = [];
 
@@ -2757,9 +2699,7 @@ Guidelines:
    * Each line must be a JSON object with a 'type' field.
    */
   async importMemory(agentId: string, lines: string[]): Promise<{ imported: number; errors: number }> {
-    if (!agentId || typeof agentId !== 'string') {
-      throw new TypeError('agentId must be a non-empty string');
-    }
+    this.assertAgentId(agentId);
 
     if (this.config.autoRegisterAgents) {
       await this.registerAgent(agentId);

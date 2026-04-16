@@ -36,8 +36,11 @@ export const httpRequestDurationSeconds = new Histogram({
 });
 
 // ── Database pool metrics ─────────────────────────────────────────────────────
+// These variables are intentionally "unused" — their constructors self-register
+// the metrics into `registry` as a side effect.
 
-export const dbPoolConnections = new Gauge({
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const dbPoolConnections = new Gauge({
   name: 'database_pool_connections',
   help: 'PostgreSQL connection pool state',
   labelNames: ['state'] as const,
@@ -56,14 +59,16 @@ export const dbPoolConnections = new Gauge({
 
 // ── Cache metrics ─────────────────────────────────────────────────────────────
 
-export const cacheOperationsTotal = new Counter({
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const cacheOperationsTotal = new Counter({
   name: 'cache_operations_total',
   help: 'Total Redis cache operations by type',
   labelNames: ['operation'] as const,
   registers: [registry],
 });
 
-export const cacheHitRate = new Gauge({
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const cacheHitRate = new Gauge({
   name: 'cache_hit_rate',
   help: 'Redis cache hit rate (0–1)',
   registers: [registry],

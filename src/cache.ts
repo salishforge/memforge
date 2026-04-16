@@ -13,12 +13,11 @@ import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import { createHash } from 'crypto';
 import { getLogger } from './logger.js';
-
 const log = getLogger('cache');
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type CacheTier = 'hot' | 'search' | 'consolidation';
+type CacheTier = 'hot' | 'search' | 'consolidation';
 
 const TTL_SECONDS: Record<CacheTier, number> = {
   hot: 5 * 60,            //  5 min
@@ -96,7 +95,7 @@ export async function getRedis(): Promise<RedisClientType | null> {
 
 // ─── Key helpers ──────────────────────────────────────────────────────────────
 
-export function queryHash(q: string, limit: number): string {
+function queryHash(q: string, limit: number): string {
   return createHash('sha256')
     .update(`${q}::${limit}`)
     .digest('hex')
@@ -211,7 +210,17 @@ export function getLocalStats(): CacheCounters & { hit_rate: number } {
   };
 }
 
-export async function getRedisStats(): Promise<Record<string, unknown>> {
+interface RedisStats {
+  connected: boolean;
+  used_memory?: string;
+  total_keys?: number;
+  evictions?: number;
+  keyspace_hits?: number;
+  keyspace_misses?: number;
+  error?: string;
+}
+
+export async function getRedisStats(): Promise<RedisStats> {
   const redis = await getRedis();
   if (!redis?.isOpen) return { connected: false };
 

@@ -1,19 +1,14 @@
 // MemForge — Sleep Cycle Engine
 //
 // Background processor that actively rewrites and refines stored memories
-// during idle periods. Runs in phases:
-//   Phase 1: Scoring (SQL only — recalculate importance/confidence)
-//   Phase 2: Triage (SQL only — evict low-importance, flag for revision)
-//   Phase 3: Revision (LLM — rewrite flagged memories)
-//   Phase 4: Graph maintenance (LLM — invalidate stale edges)
-//   Phase 5: Reflection (LLM — synthesize insights from revised base)
+// during idle periods. See ARCHITECTURE.md for the full phase breakdown.
 
 import type { Pool } from 'pg';
 import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
 import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
 import type { EmbeddingProvider } from './embedding.js';
-import type { SleepCycleConfig, SleepCycleResult, RevisionType } from './types.js';
+import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult } from './types.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
@@ -82,7 +77,7 @@ export class SleepCycleEngine {
     const start = Date.now();
     let tokensUsed = 0;
 
-    // Phase 0: Autonomous weight adaptation — inspired by MH-FLOCKE (Apache 2.0)
+    // Phase 0: Autonomous weight adaptation
     await this.phaseWeightAdaptation(agentId);
 
     // Phase 1: Scoring
@@ -91,11 +86,10 @@ export class SleepCycleEngine {
     // Phase 2: Triage
     const { evicted, flaggedIds } = await this.phaseTriage(agentId);
 
-    // Phase 2.5: Conflict Resolution (#80) — resolve contradicting memories
+    // Phase 2.5: Conflict Resolution — resolve contradicting memories
     const conflictsResolved = await this.phaseConflictResolution(agentId);
 
-    // Phase 3: Revision (bounded by token budget and max revisions per cycle)
-    // Revision cap inspired by claude-code-toolkit (MIT) auto-dream max-5-changes pattern
+    // Phase 3: Revision (bounded by token budget and optional per-cycle cap)
     const maxRevisions = this.config.maxRevisionsPerCycle ?? flaggedIds.length;
     let revised = 0;
     let skipped = 0;
@@ -133,13 +127,9 @@ export class SleepCycleEngine {
       coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
     }
 
-    // Phase 5.5: Schema Detection (#75) — find repeated temporal sequences
+    // Phase 5.5: Schema Detection — find repeated temporal sequences
     let schemasDetected = 0;
-    try {
-      schemasDetected = await this.phaseSchemaDetection(agentId);
-    } catch (err) {
-      log.error({ err }, 'schema detection failed');
-    }
+    schemasDetected = await this.phaseSchemaDetection(agentId);
 
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
@@ -172,13 +162,11 @@ export class SleepCycleEngine {
   }
 
   // ─── Phase 0: Autonomous Weight Adaptation ─────────────────────────────────
-  // Inspired by MH-FLOCKE (Apache 2.0) autonomous closed-loop parameter tuning.
-  // Uses simple count correlation: for each scoring dimension, check if positive-
-  // feedback memories have above-median values. Adjust weights toward dimensions
-  // that correlate with positive outcomes. Learning rate: 0.01 per cycle.
+  // Nudges scoring weights toward dimensions that correlate with positive retrieval
+  // outcomes. Uses count correlation against the median importance threshold.
+  // Learning rate: 0.01 per cycle. Requires 100+ feedback events to activate.
 
   private async phaseWeightAdaptation(agentId: string): Promise<void> {
-    // Only adapt after 100+ feedback events
     const feedbackCount = await this.pool.query<{ count: string }>(
       `SELECT COUNT(*)::text as count FROM retrieval_log WHERE agent_id = $1 AND outcome IS NOT NULL`,
       [agentId],
@@ -275,8 +263,6 @@ export class SleepCycleEngine {
       : this.config.weights;
 
     // Single SQL update that computes composite importance from multiple signals.
-    // Outcome multiplier inspired by MH-FLOCKE (Apache 2.0) embodied emotions
-    // and hippo-memory (MIT) error prioritization.
     const { rowCount } = await this.pool.query(
       `UPDATE warm_tier w SET importance = LEAST(1.0, GREATEST(0.0,
          (
@@ -311,7 +297,7 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'scoring audit failed'));
     }
 
-    // Staleness detection (#78) — compute staleness based on access recency and confidence
+    // Staleness detection — compute staleness score based on access recency and confidence
     await this.pool.query(
       `UPDATE warm_tier SET staleness_score = LEAST(1.0,
          CASE
@@ -339,7 +325,7 @@ export class SleepCycleEngine {
   // ─── Phase 2: Triage ───────────────────────────────────────────────────────
 
   private async phaseTriage(agentId: string): Promise<{ evicted: number; flaggedIds: bigint[] }> {
-    // Graduate high-confidence memories — inspired by claude-code-toolkit (MIT)
+    // Graduate stable high-confidence memories (3+ successful retrievals, confidence ≥ 0.9)
     await this.pool.query(
       `UPDATE warm_tier SET graduated = true
        WHERE agent_id = $1
@@ -379,9 +365,8 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag low-confidence memories for revision, prioritized by surprise score (#79)
-    // then by importance. High-surprise memories represent the biggest gap between
-    // what the system expected and what happened — revise those first.
+    // Flag low-confidence memories for revision, prioritized by surprise score then importance.
+    // High-surprise memories represent the biggest gap between expected and actual behavior — revise first.
     const flagged = await this.pool.query<{ id: bigint }>(
       `SELECT id FROM warm_tier
        WHERE agent_id = $1 AND confidence < $2
@@ -516,8 +501,8 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
       try {
         const vec = await this.embedder.embed(revisedContent);
         newEmbedding = `[${vec.join(',')}]`;
-      } catch {
-        // Keep old embedding if re-embedding fails
+      } catch (err) {
+        log.error({ err, warmTierId: String(warmTierId) }, 're-embedding failed, keeping old embedding');
       }
     }
 
@@ -547,9 +532,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     return totalTokens;
   }
 
-  // ─── Phase 4: Graph Maintenance ────────────────────────────────────────────
-
-  // ─── Phase 2.5: Conflict Resolution (#80) ──────────────────────────────────
+  // ─── Phase 2.5: Conflict Resolution ───────────────────────────────────────
 
   private async phaseConflictResolution(agentId: string): Promise<number> {
     // Resolve unresolved conflicts using heuristic strategy:
@@ -638,6 +621,8 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
     return resolved;
   }
+
+  // ─── Phase 4: Graph Maintenance ────────────────────────────────────────────
 
   private async phaseGraphMaintenance(agentId: string): Promise<number> {
     // Find active relationships where neither entity has been seen recently
@@ -777,10 +762,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     return merged;
   }
 
-  // ─── Phase 5b: Cold Tier Retention Purge ──────────────────────────────────
-
-  // ─── Phase 5.5: Schema Detection (#75) ─────────────────────────────────────
-  // Based on Complementary Learning Systems theory (McClelland et al., 1995).
+  // ─── Phase 5.5: Schema Detection ───────────────────────────────────────────
   // Detect repeated temporal sequences and crystallize them as schema entities.
 
   private async phaseSchemaDetection(agentId: string): Promise<number> {
@@ -863,13 +845,11 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     );
     if (parseInt(recentRevisions.rows[0]?.count ?? '0', 10) < 3) return false;
 
-    // Delegate to the existing reflect() mechanism
-    // (The caller — MemoryManager — should handle this since it owns the reflect method)
-    return true; // Signal that reflection should be triggered
+    return true;
   }
 }
 
-// ─── Shared Pool Sleep Cycle (#84) ──────────────────────────────────────────
+// ─── Shared Pool Sleep Cycle ─────────────────────────────────────────────────
 // Separate maintenance cycle for shared memory pools.
 
 export class SharedPoolSleepCycle {
@@ -879,7 +859,7 @@ export class SharedPoolSleepCycle {
     this.pool = pool;
   }
 
-  async run(poolId: string): Promise<{ deduplicated: number; conflicts_resolved: number; reputation_updated: number; evicted: number }> {
+  async run(poolId: string): Promise<SharedPoolSleepCycleResult> {
     let deduplicated = 0;
     const conflictsResolved = 0;
     let reputationUpdated = 0;
@@ -927,7 +907,7 @@ export class SharedPoolSleepCycle {
       [poolId],
     );
 
-    // Phase 3: Recompute reputation scores from accumulated signals
+    // Recompute reputation scores from accumulated signals
     const agents = await this.pool.query<{ agent_id: string }>(
       `SELECT DISTINCT source_agent_id as agent_id FROM shared_memories WHERE pool_id = $1`,
       [poolId],
@@ -964,4 +944,4 @@ export class SharedPoolSleepCycle {
   }
 }
 
-export { DEFAULT_CONFIG as SLEEP_CYCLE_DEFAULTS };
+

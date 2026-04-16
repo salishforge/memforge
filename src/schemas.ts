@@ -31,7 +31,6 @@ export const ConsolidationSummarySchema = z.object({
   sentiment: z.enum(['neutral', 'positive', 'negative', 'mixed', 'urgent']).default('neutral'),
 });
 
-export type ValidatedConsolidationSummary = z.infer<typeof ConsolidationSummarySchema>;
 
 export const ReflectionResponseSchema = z.object({
   reflection: z.string().min(1).max(10_000),
@@ -40,7 +39,6 @@ export const ReflectionResponseSchema = z.object({
   reinforced_patterns: z.array(z.string()).max(20).default([]),
 });
 
-export type ValidatedReflectionResponse = z.infer<typeof ReflectionResponseSchema>;
 
 export const RevisionResponseSchema = z.object({
   action: z.enum(['none', 'augment', 'correct', 'merge', 'compress']),
@@ -50,7 +48,6 @@ export const RevisionResponseSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-export type ValidatedRevisionResponse = z.infer<typeof RevisionResponseSchema>;
 
 export const ProcedureExtractionSchema = z.object({
   procedures: z.array(z.object({
@@ -60,7 +57,6 @@ export const ProcedureExtractionSchema = z.object({
   })).max(10).default([]),
 });
 
-export type ValidatedProcedureExtraction = z.infer<typeof ProcedureExtractionSchema>;
 
 // ─── OAuth2 Introspect Schema ───────────────────────────────────────────────
 

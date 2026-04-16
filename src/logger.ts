@@ -14,7 +14,7 @@ interface RequestContext {
   requestId: string;
 }
 
-export const requestContext = new AsyncLocalStorage<RequestContext>();
+const requestContext = new AsyncLocalStorage<RequestContext>();
 
 // ─── Root logger ────────���───────────────────────────────────────────────────
 
@@ -72,4 +72,3 @@ export function requestLogMiddleware(req: Request, res: Response, next: NextFunc
   next();
 }
 
-export { rootLogger };

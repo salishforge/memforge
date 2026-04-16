@@ -7,12 +7,14 @@
 //   import { tools } from '@salishforge/memforge/tools';
 //   const response = await anthropic.messages.create({ tools, ... });
 
+import type { JsonSchemaProperty } from './types.js';
+
 export interface ToolDefinition {
   name: string;
   description: string;
   input_schema: {
     type: 'object';
-    properties: Record<string, unknown>;
+    properties: Record<string, JsonSchemaProperty>;
     required?: string[];
   };
 }
@@ -224,7 +226,7 @@ export const tools: ToolDefinition[] = [
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */
-export function toOpenAITools(): Array<{ type: 'function'; function: { name: string; description: string; parameters: unknown } }> {
+export function toOpenAITools(): Array<{ type: 'function'; function: { name: string; description: string; parameters: ToolDefinition['input_schema'] } }> {
   return tools.map((t) => ({
     type: 'function' as const,
     function: {

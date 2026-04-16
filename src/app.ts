@@ -953,11 +953,10 @@ export function createApp(deps: AppDependencies): express.Express {
     res.status(status).json({ ok: false, error: safeMessage });
   }
 
-  // ─── Shared Pool Routes (Phase 3) ──────────────────────────────────────
+  // ─── Shared Pool Routes ─────────────────────────────────────────────────
 
   // Pool routes use adminAuth for creation, agentId-scoped auth for member operations.
-  // F1 fix: agent_id derived from authenticated route param, not body (prevents impersonation).
-  // F8 fix: pool_type validated at REST layer.
+  // agent_id is always derived from the authenticated route param, not the request body (prevents impersonation).
 
   app.post('/pool', adminAuth, async (req: Request, res: Response) => {
     const { id, name, pool_type, description } = req.body as { id?: string; name?: string; pool_type?: string; description?: string };
@@ -971,7 +970,6 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  // F1 fix: join uses agentId from URL path (authenticated), not body
   app.post('/pool/:poolId/join/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     try {
       const agentId = getAgentId(req);
@@ -988,7 +986,6 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  // F1 fix: members endpoint requires membership (or admin)
   app.get('/pool/:poolId/members', requireScope('memforge:read'), async (req: Request, res: Response) => {
     try {
       const members = await manager.getPoolMembers(req.params['poolId'] ?? '');
@@ -996,7 +993,6 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
-  // F1/F7 fix: agent_id from URL path, memory_ids capped at 100
   app.post('/pool/:poolId/publish/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     const { memory_ids } = req.body as { memory_ids?: unknown[] };
     if (!Array.isArray(memory_ids) || memory_ids.length === 0) {
@@ -1005,7 +1001,6 @@ export function createApp(deps: AppDependencies): express.Express {
     if (memory_ids.length > 100) {
       fail(res, 400, '"memory_ids" cannot exceed 100 items per request'); return;
     }
-    // F7 fix: validate each element is numeric
     if (!memory_ids.every((id) => typeof id === 'number' || typeof id === 'string')) {
       fail(res, 400, '"memory_ids" must contain numeric IDs'); return;
     }

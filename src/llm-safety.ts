@@ -14,9 +14,9 @@ const log = getLogger('llm-safety');
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
-export type LLMLocality = 'local' | 'remote';
+type LLMLocality = 'local' | 'remote';
 
-export interface SafeLLMConfig {
+interface SafeLLMConfig {
   /** The underlying LLM provider */
   provider: LLMProvider;
   /** Whether this provider is local (Ollama) or remote (Anthropic, OpenAI) */

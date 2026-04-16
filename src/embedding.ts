@@ -18,7 +18,7 @@ export interface EmbeddingProvider {
 
 // ─── OpenAI-compatible provider ──────────────────────────────────────────────
 
-export interface OpenAIEmbeddingConfig {
+interface OpenAIEmbeddingConfig {
   /** API base URL (default: https://api.openai.com/v1) */
   baseUrl?: string;
   /** API key — falls back to OPENAI_API_KEY env var */
@@ -85,7 +85,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
 // ─── Ollama provider ─────────────────────────────────────────────────────────
 
-export interface OllamaEmbeddingConfig {
+interface OllamaEmbeddingConfig {
   /** Ollama API base URL (default: http://localhost:11434) */
   baseUrl?: string;
   /** Model name (default: nomic-embed-text) */
@@ -143,7 +143,6 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
 // ─── Local in-process provider (no external service) ────────────────────────
 // Uses @xenova/transformers (ONNX Runtime) for in-process embeddings.
-// Inspired by hippo-memory (MIT) which ships with local embeddings.
 //
 // Default: Xenova/all-MiniLM-L6-v2 (~22MB, 384 dimensions, ~50-100 embeds/sec)
 // Configurable via EMBEDDING_MODEL and EMBEDDING_DIMENSIONS env vars.
@@ -156,7 +155,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 //   Xenova/nomic-embed-text-v1    — 768 dim, 135MB, matches Ollama nomic-embed-text
 //   Xenova/gte-small              — 384 dim, 30MB, multilingual
 
-export interface LocalEmbeddingConfig {
+interface LocalEmbeddingConfig {
   /** Model identifier — any Xenova/* ONNX model on Hugging Face (default: Xenova/all-MiniLM-L6-v2) */
   model?: string;
   /** Vector dimensions — must match the model's output (default: 384) */
@@ -165,12 +164,15 @@ export interface LocalEmbeddingConfig {
   quantized?: boolean;
 }
 
+/** Function signature for a @xenova/transformers feature-extraction pipeline. */
+type FeatureExtractionPipeline = (text: string, options: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array }>;
+
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
   private readonly model: string;
   private readonly quantized: boolean;
-  private pipeline: unknown = null;
-  private loading: Promise<unknown> | null = null;
+  private pipeline: FeatureExtractionPipeline | null = null;
+  private loading: Promise<FeatureExtractionPipeline> | null = null;
 
   constructor(config: LocalEmbeddingConfig = {}) {
     // Default: bge-small-en-v1.5 — retrieval-optimized, 137 embeds/sec on CPU, best discrimination
@@ -180,7 +182,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.quantized = config.quantized ?? true;
   }
 
-  private async getPipeline(): Promise<unknown> {
+  private async getPipeline(): Promise<FeatureExtractionPipeline> {
     if (this.pipeline) return this.pipeline;
     if (this.loading) return this.loading;
 
@@ -188,7 +190,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       const { pipeline } = await import('@xenova/transformers');
       this.pipeline = await pipeline('feature-extraction', this.model, {
         quantized: this.quantized,
-      });
+      }) as FeatureExtractionPipeline;
       return this.pipeline;
     })();
 
@@ -196,7 +198,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const pipe = await this.getPipeline() as (text: string, options: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array }>;
+    const pipe = await this.getPipeline();
     const output = await pipe(text, { pooling: 'mean', normalize: true });
     return Array.from(output.data);
   }
@@ -213,8 +215,8 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 }
 
 // ─── Concurrency-limited wrapper ────────────────────────────────────────────
-// Wraps any embedding provider with a concurrency limiter to prevent
-// overwhelming external services (fixes #67).
+// Wraps any embedding provider with a semaphore to prevent overwhelming
+// external services under consolidation bursts.
 
 export class ConcurrencyLimitedEmbeddingProvider implements EmbeddingProvider {
   private readonly inner: EmbeddingProvider;
@@ -282,14 +284,13 @@ export function createEmbeddingProvider(type?: EmbeddingProviderType): Embedding
       provider = new OllamaEmbeddingProvider();
       break;
     case 'local':
-      // In-process embeddings via @xenova/transformers — no external service needed
-      return new LocalEmbeddingProvider(); // Local provider has natural concurrency control
+      // LocalEmbeddingProvider runs in-process and controls its own concurrency
+      return new LocalEmbeddingProvider();
     case 'none':
       return new NoOpEmbeddingProvider();
     default:
       throw new Error(`Unknown embedding provider: ${resolved}. Valid options: openai, ollama, local, none`);
   }
 
-  // Wrap external providers with concurrency limiter (fixes #67)
   return new ConcurrencyLimitedEmbeddingProvider(provider, concurrencyLimit);
 }

@@ -1,7 +1,7 @@
 // MemForge Standalone — Shared TypeScript types
 
-import type { EmbeddingProvider, EmbeddingProviderType } from './embedding.js';
-import type { LLMProvider, LLMProviderType, ConsolidationSummary } from './llm.js';
+import type { EmbeddingProvider } from './embedding.js';
+import type { LLMProvider } from './llm.js';
 import type { AuditChain } from './audit.js';
 
 export interface Agent {
@@ -28,7 +28,6 @@ export interface AddResult {
   deduplicated?: boolean;
 }
 
-/** Outcome type for memory tagging — inspired by MH-FLOCKE (Apache 2.0) + hippo-memory (MIT) */
 export type OutcomeType = 'error' | 'success' | 'decision' | 'observation' | 'neutral';
 
 // ─── Warm tier ───────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ export interface WarmRow {
 export interface QueryResult {
   id: bigint;
   content: string;
-  /** One-line summary (populated when consolidation uses LLM mode). Inspired by FABLE/MemPalace closets/drawers. */
+  /** One-line summary — populated when consolidation mode is LLM. */
   summary?: string;
   metadata: Record<string, unknown>;
   consolidated_at: Date;
@@ -62,7 +61,7 @@ export interface QueryResult {
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
 
-/** Search modes — 'code' mode uses simple tokenizer preserving symbols. Inspired by CCRider (MIT). */
+/** Search modes — 'code' mode uses a simple tokenizer that preserves symbols. */
 export type QueryMode = 'keyword' | 'semantic' | 'hybrid' | 'code';
 
 export interface QueryOptions {
@@ -78,7 +77,7 @@ export interface QueryOptions {
   before?: Date;
   /** Temporal decay rate per hour (0 = no decay, default from config) */
   decayRate?: number;
-  /** Token budget — return results fitting within this many tokens (estimate: content.length/4). Inspired by FABLE (arXiv 2601.18116). */
+  /** Token budget — return results fitting within this many tokens (estimate: content.length/4). */
   maxTokens?: number;
 }
 
@@ -276,9 +275,9 @@ export interface SleepCycleResult {
   phase4_entities_merged: number;
   phase5_reflection: boolean;
   phase5b_cold_purged: number;
-  /** Repeated temporal patterns crystallized as schema entities (#75) */
+  /** Repeated temporal patterns crystallized as schema entities */
   schemas_detected: number;
-  /** Memory conflicts resolved via heuristic strategy (#80) */
+  /** Memory conflicts resolved via heuristic multi-factor scoring */
   conflicts_resolved: number;
   audit_records_archived: number;
   tokens_used: number;
@@ -296,7 +295,7 @@ export interface SleepCycleConfig {
   includeReflection: boolean;
   /** Number of days to retain cold tier records; older records are deleted (optional) */
   coldRetentionDays?: number;
-  /** Max revisions per sleep cycle — caps LLM spending. Inspired by claude-code-toolkit (MIT) auto-dream. */
+  /** Max revisions per sleep cycle — caps LLM spending per run. */
   maxRevisionsPerCycle?: number;
   /** Importance score weights */
   weights: {
@@ -319,11 +318,11 @@ export interface MemoryHealth {
   knowledge_stability_pct: number;
   retrieval_count_24h: number;
   contradiction_rate: number;
-  /** Number of memories with staleness > 0.5 (#78) */
+  /** Number of memories with staleness_score > 0.5 */
   stale_memory_count: number;
-  /** Average staleness score across all warm-tier memories (#78) */
+  /** Average staleness score across all warm-tier memories */
   avg_staleness: number;
-  /** Knowledge gaps detected in the last 7 days (#77) */
+  /** Zero-result queries recorded in the last 7 days */
   knowledge_gap_count_7d: number;
 }
 
@@ -370,9 +369,9 @@ export interface MemForgeConfig {
   temporalDecayRate: number;
   /** Inner batch size for consolidation grouping (default 50, set to 1 for verbatim mode) */
   consolidationInnerBatchSize: number;
-  /** Keyword overlap boost factor for hybrid search (default 0.3, 0 = disabled). Inspired by MemPalace (MIT). */
+  /** Keyword overlap boost factor for hybrid search (default 0.3, 0 = disabled). */
   keywordOverlapBoost: number;
-  /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). Inspired by MemPalace (MIT). */
+  /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). */
   temporalProximityDays: number;
   /** Enable LLM post-retrieval reranking (default false — opt-in, adds ~2K tokens/query) */
   enableLlmRerank: boolean;
@@ -402,56 +401,49 @@ export interface MemoryHints {
   type?: 'fact' | 'event' | 'decision' | 'preference' | 'correction' | 'error';
 }
 
-// ─── Phase 3: Cross-Agent Shared Memory ─────────────────────────────────────
 
-export interface SharedPool {
-  id: string;
-  name: string;
+/** PostgreSQL query parameter — union of types accepted by the `pg` driver's parameterized queries. */
+export type SqlParam = string | number | bigint | boolean | Date | null | string[] | number[] | bigint[];
+
+/** JSON Schema property descriptor — used in tool definitions and MCP schemas. */
+export interface JsonSchemaProperty {
+  type: string;
   description?: string;
-  pool_type: 'team' | 'global';
-  created_at: Date;
-  metadata: Record<string, unknown>;
+  enum?: string[];
+  minimum?: number;
+  maximum?: number;
+  format?: string;
+  additionalProperties?: boolean;
+  items?: JsonSchemaProperty;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
 }
 
-export interface PoolMembership {
+// ─── Entity Deduplication Result ─────────────────────────────────────────────
+
+export interface EntityDeduplicationResult {
   agent_id: string;
-  pool_id: string;
-  role: 'member' | 'admin';
-  joined_at: Date;
+  entities_merged: number;
+  threshold: number;
 }
 
-export interface SharedMemory {
-  id: bigint;
-  pool_id: string;
-  source_agent_id: string;
-  content: string;
-  summary?: string;
-  source_chain: string[];
-  hop_count: number;
-  base_confidence: number;
-  importance: number;
-  corroboration_count: number;
-  published_at: Date;
-  rank?: number;
+// ─── Shared Pool Sleep Cycle ─────────────────────────────────────────────────
+
+export interface SharedPoolSleepCycleResult {
+  deduplicated: number;
+  conflicts_resolved: number;
+  reputation_updated: number;
+  evicted: number;
 }
 
-export interface AgentReputation {
-  agent_id: string;
-  domain: string;
-  score: number;
-  corroboration_count: number;
-  contradiction_count: number;
-  contribution_count: number;
-}
+// ─── Health Status ────────────────────────────────────────────────────────────
 
-export interface PublishResult {
-  pool_id: string;
-  published: number;
+export interface HealthStatus {
+  status: string;
+  ts: string;
+  embeddings: boolean;
+  summarization: boolean;
 }
-
-export type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
-};
 
 // ─── Resume Context ───────────────────────────────────────────────────────────
 
@@ -477,6 +469,3 @@ export interface ResumeContext {
   };
 }
 
-// Re-export provider types for convenience
-export type { EmbeddingProvider, EmbeddingProviderType };
-export type { LLMProvider, LLMProviderType, ConsolidationSummary };

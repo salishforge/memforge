@@ -13,6 +13,7 @@
 
 import { MemForgeClient } from './client.js';
 import { VERSION } from './version.js';
+import type { JsonSchemaProperty } from './types.js';
 
 // ─── MCP Protocol Types ──────────────────────────────────────────────────────
 // Minimal types for MCP stdio transport — no external SDK dependency required.
@@ -36,7 +37,7 @@ interface MCPToolDefinition {
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, unknown>;
+    properties: Record<string, JsonSchemaProperty>;
     required?: string[];
   };
 }

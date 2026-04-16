@@ -30,6 +30,8 @@ import type {
   MetaReflectionResult,
   ActiveMemoryResult,
   ResumeContext,
+  EntityDeduplicationResult,
+  HealthStatus,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -202,7 +204,7 @@ export class MemForgeClient {
   // ─── Entity Deduplication ─────────────────────────────────────────────
 
   /** Trigger entity deduplication for the knowledge graph. */
-  async deduplicateEntities(agentId: string, threshold?: number): Promise<{ agent_id: string; entities_merged: number; threshold: number }> {
+  async deduplicateEntities(agentId: string, threshold?: number): Promise<EntityDeduplicationResult> {
     return this.post(`/memory/${enc(agentId)}/dedup-entities`, threshold ? { threshold } : {});
   }
 
@@ -216,10 +218,10 @@ export class MemForgeClient {
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
-  async health(): Promise<{ status: string; ts: string; embeddings: boolean; summarization: boolean }> {
+  async health(): Promise<HealthStatus> {
     const res = await this._fetch(`${this.baseUrl}/health`, { headers: this.headers() });
     if (!res.ok) throw new Error(`MemForge health check failed: ${res.status}`);
-    return res.json() as Promise<{ status: string; ts: string; embeddings: boolean; summarization: boolean }>;
+    return res.json() as Promise<HealthStatus>;
   }
 
   // ─── Internal ───────────────────────────────────────────────────────────
@@ -235,7 +237,7 @@ export class MemForgeClient {
     return this.unwrap<T>(res);
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const res = await this._fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: this.headers(),
@@ -360,7 +362,7 @@ export class ResilientMemForgeClient {
     return this.safe('metaReflect', () => this.client.metaReflect(agentId, limit), null);
   }
 
-  async deduplicateEntities(agentId: string, threshold?: number): Promise<{ agent_id: string; entities_merged: number; threshold: number } | null> {
+  async deduplicateEntities(agentId: string, threshold?: number): Promise<EntityDeduplicationResult | null> {
     return this.safe('deduplicateEntities', () => this.client.deduplicateEntities(agentId, threshold), null);
   }
 
@@ -368,7 +370,7 @@ export class ResilientMemForgeClient {
     return this.safe('activeRecall', () => this.client.activeRecall(agentId, context, limit), { agent_id: agentId, memories: [], procedures: [] });
   }
 
-  async health(): Promise<{ status: string; ts: string; embeddings: boolean; summarization: boolean } | null> {
+  async health(): Promise<HealthStatus | null> {
     return this.safe('health', () => this.client.health(), null);
   }
 }
