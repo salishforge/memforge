@@ -200,7 +200,7 @@ export class MemoryManager {
       await this.registerAgent(agentId);
     }
 
-    // Content deduplication — inspired by CCRider (MIT) BLAKE3 content dedup
+    // Deduplicate by content hash — skip storing if identical content was added recently
     const contentHash = createHash('sha256').update(content).digest('hex');
     const dup = await this.pool.query<{ id: bigint; created_at: Date }>(
       `SELECT id, created_at FROM hot_tier
@@ -443,7 +443,6 @@ Ranking (numbers only):`;
       results.sort((a, b) => b.rank - a.rank);
     }
 
-    // Temporal proximity boost — inspired by MemPalace (MIT) hybrid v2
     // When time filters are present, boost memories near the reference date
     const proximityDays = this.config.temporalProximityDays ?? 0;
     if (proximityDays > 0 && (after || before)) {
@@ -618,7 +617,7 @@ Ranking (numbers only):`;
 
   /**
    * Code-preserving search using simple tokenizer (no stemming).
-   * Preserves camelCase, dots, underscores — inspired by CCRider (MIT) dual tokenizer approach.
+   * Preserves camelCase, dots, and underscores — avoids stemming that mangles identifiers.
    */
   private async queryCode(
     agentId: string,
@@ -769,7 +768,7 @@ Ranking (numbers only):`;
       }
     });
 
-    // Keyword overlap boost — inspired by MemPalace (MIT) hybrid v1 scoring
+    // Keyword overlap boost: score up results that share query terms
     const overlapAlpha = this.config.keywordOverlapBoost ?? 0;
     if (overlapAlpha > 0) {
       const queryWords = new Set(searchText.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
@@ -1082,7 +1081,6 @@ Ranking (numbers only):`;
           }
         }
 
-        // Store summary alongside verbatim content — inspired by FABLE/MemPalace closets/drawers
         const summaryText = summary ? summary.summary : null;
 
         const warmRow = await client.query<{ id: bigint }>(
@@ -2092,7 +2090,6 @@ Ranking (numbers only):`;
         );
       }
 
-      // Track retrieval success for graduation — inspired by claude-code-toolkit (MIT)
       if (outcome === 'positive') {
         void this.pool.query(
           `UPDATE warm_tier SET
