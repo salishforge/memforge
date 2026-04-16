@@ -94,8 +94,7 @@ export class SleepCycleEngine {
     // Phase 2.5: Conflict Resolution — resolve contradicting memories
     const conflictsResolved = await this.phaseConflictResolution(agentId);
 
-    // Phase 3: Revision (bounded by token budget and max revisions per cycle)
-    // Revision cap inspired by claude-code-toolkit (MIT) auto-dream max-5-changes pattern
+    // Phase 3: Revision (bounded by token budget and optional per-cycle cap)
     const maxRevisions = this.config.maxRevisionsPerCycle ?? flaggedIds.length;
     let revised = 0;
     let skipped = 0;
@@ -168,13 +167,11 @@ export class SleepCycleEngine {
   }
 
   // ─── Phase 0: Autonomous Weight Adaptation ─────────────────────────────────
-  // Inspired by MH-FLOCKE (Apache 2.0) autonomous closed-loop parameter tuning.
-  // Uses simple count correlation: for each scoring dimension, check if positive-
-  // feedback memories have above-median values. Adjust weights toward dimensions
-  // that correlate with positive outcomes. Learning rate: 0.01 per cycle.
+  // Nudges scoring weights toward dimensions that correlate with positive retrieval
+  // outcomes. Uses count correlation against the median importance threshold.
+  // Learning rate: 0.01 per cycle. Requires 100+ feedback events to activate.
 
   private async phaseWeightAdaptation(agentId: string): Promise<void> {
-    // Only adapt after 100+ feedback events
     const feedbackCount = await this.pool.query<{ count: string }>(
       `SELECT COUNT(*)::text as count FROM retrieval_log WHERE agent_id = $1 AND outcome IS NOT NULL`,
       [agentId],

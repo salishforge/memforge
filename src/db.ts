@@ -47,16 +47,6 @@ export function getPool(databaseUrl?: string): Pool {
   return _pool;
 }
 
-/** Returns current pool connection counts. */
-export function poolStats(): { totalCount: number; idleCount: number; waitingCount: number } {
-  if (!_pool) return { totalCount: 0, idleCount: 0, waitingCount: 0 };
-  return {
-    totalCount: _pool.totalCount,
-    idleCount: _pool.idleCount,
-    waitingCount: _pool.waitingCount,
-  };
-}
-
 /** Call once on shutdown to drain the pool cleanly. */
 export async function closePool(): Promise<void> {
   if (_healthCheckTimer) {

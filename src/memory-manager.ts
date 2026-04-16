@@ -2539,7 +2539,7 @@ Guidelines:
     let published = 0;
     for (const memId of memoryIds) {
       const mem = await this.pool.query<{
-        content: string; summary: string | null; embedding: unknown;
+        content: string; summary: string | null; embedding: string | null;
         confidence: number; importance: number; metadata: Record<string, unknown>;
       }>(
         `SELECT content, summary, embedding, confidence, importance, metadata FROM warm_tier WHERE id = $1 AND agent_id = $2`,
