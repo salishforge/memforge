@@ -32,8 +32,6 @@ export interface LLMProvider {
   readonly model: string;
 }
 
-// ─── System prompt ───────────────────────────────────────────────────────────
-
 // ─── Prompt boundary helper ─────────────────────────────────────────────────
 
 /**
@@ -318,8 +316,7 @@ export class OllamaLLMProvider implements LLMProvider {
   }
 
   async summarize(rawContent: string, agentContext?: string): Promise<ConsolidationSummary> {
-    const text = await this.chat(CONSOLIDATION_SYSTEM_PROMPT, buildUserPrompt(rawContent, agentContext));
-    return parseSummaryResponse(text);
+    return runSummarize(this, rawContent, agentContext);
   }
 }
 

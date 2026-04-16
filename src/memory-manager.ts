@@ -254,11 +254,6 @@ export class MemoryManager {
     return result;
   }
 
-  // Dead code removed: postIngestAnalysis and llmIngestAnalysis were writing
-  // metadata keys (_similar_to, _extracted_entities, _llm_type, _llm_entities,
-  // _llm_importance) that were never read during retrieval or scoring.
-  // Re-add with read-side implementation when these signals are used.
-
   /**
    * Optional LLM-based reranking of retrieval results.
    * Activated by ENABLE_LLM_RERANK=true. Sends top results + question to LLM
@@ -319,7 +314,7 @@ Ranking (numbers only):`;
   /**
    * Search warm tier memory with support for keyword, semantic, or hybrid modes.
    *
-   * - keyword: PostgreSQL FTS with trigram fallback (original behavior)
+   * - keyword: PostgreSQL FTS with trigram fallback when FTS returns no results
    * - semantic: Vector cosine similarity via pgvector
    * - hybrid: Reciprocal rank fusion of keyword + semantic results
    *
@@ -2119,8 +2114,6 @@ Ranking (numbers only):`;
            )`,
           [agentId, retrievalIds],
         ).catch((err) => log.error({ err }, 'retrieval success tracking failed'));
-
-        // Dead code removed: _affinity_terms was written but never read during retrieval.
       }
     }
 

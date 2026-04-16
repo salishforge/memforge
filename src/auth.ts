@@ -65,7 +65,6 @@ export async function bearerAuth(
   const authHeader = req.headers['authorization'];
   if (!authHeader?.startsWith('Bearer ')) {
     if (!REQUIRED) {
-      // When auth is not required, grant full access for unauthenticated requests
       req.oauth2 = { client_id: 'anonymous', scope: 'memforge:read memforge:write' };
       next();
       return;

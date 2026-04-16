@@ -1,7 +1,7 @@
 // MemForge Standalone — Shared TypeScript types
 
-import type { EmbeddingProvider, EmbeddingProviderType } from './embedding.js';
-import type { LLMProvider, LLMProviderType, ConsolidationSummary } from './llm.js';
+import type { EmbeddingProvider } from './embedding.js';
+import type { LLMProvider } from './llm.js';
 import type { AuditChain } from './audit.js';
 
 export interface Agent {
@@ -503,6 +503,3 @@ export interface ResumeContext {
   };
 }
 
-// Re-export provider types for convenience
-export type { EmbeddingProvider, EmbeddingProviderType };
-export type { LLMProvider, LLMProviderType, ConsolidationSummary };

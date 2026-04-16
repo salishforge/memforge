@@ -13,7 +13,7 @@ import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
 import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
 import type { EmbeddingProvider } from './embedding.js';
-import type { SleepCycleConfig, SleepCycleResult, RevisionType } from './types.js';
+import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult } from './types.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
@@ -135,11 +135,7 @@ export class SleepCycleEngine {
 
     // Phase 5.5: Schema Detection (#75) — find repeated temporal sequences
     let schemasDetected = 0;
-    try {
-      schemasDetected = await this.phaseSchemaDetection(agentId);
-    } catch (err) {
-      log.error({ err }, 'schema detection failed');
-    }
+    schemasDetected = await this.phaseSchemaDetection(agentId);
 
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
@@ -516,8 +512,8 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
       try {
         const vec = await this.embedder.embed(revisedContent);
         newEmbedding = `[${vec.join(',')}]`;
-      } catch {
-        // Keep old embedding if re-embedding fails
+      } catch (err) {
+        log.error({ err, warmTierId: String(warmTierId) }, 're-embedding failed, keeping old embedding');
       }
     }
 
@@ -546,8 +542,6 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
     return totalTokens;
   }
-
-  // ─── Phase 4: Graph Maintenance ────────────────────────────────────────────
 
   // ─── Phase 2.5: Conflict Resolution (#80) ──────────────────────────────────
 
@@ -638,6 +632,8 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
     return resolved;
   }
+
+  // ─── Phase 4: Graph Maintenance ────────────────────────────────────────────
 
   private async phaseGraphMaintenance(agentId: string): Promise<number> {
     // Find active relationships where neither entity has been seen recently
@@ -879,7 +875,7 @@ export class SharedPoolSleepCycle {
     this.pool = pool;
   }
 
-  async run(poolId: string): Promise<{ deduplicated: number; conflicts_resolved: number; reputation_updated: number; evicted: number }> {
+  async run(poolId: string): Promise<SharedPoolSleepCycleResult> {
     let deduplicated = 0;
     const conflictsResolved = 0;
     let reputationUpdated = 0;

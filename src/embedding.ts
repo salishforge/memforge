@@ -213,8 +213,8 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 }
 
 // ─── Concurrency-limited wrapper ────────────────────────────────────────────
-// Wraps any embedding provider with a concurrency limiter to prevent
-// overwhelming external services (fixes #67).
+// Wraps any embedding provider with a semaphore to prevent overwhelming
+// external services under consolidation bursts.
 
 export class ConcurrencyLimitedEmbeddingProvider implements EmbeddingProvider {
   private readonly inner: EmbeddingProvider;
@@ -282,14 +282,13 @@ export function createEmbeddingProvider(type?: EmbeddingProviderType): Embedding
       provider = new OllamaEmbeddingProvider();
       break;
     case 'local':
-      // In-process embeddings via @xenova/transformers — no external service needed
-      return new LocalEmbeddingProvider(); // Local provider has natural concurrency control
+      // LocalEmbeddingProvider runs in-process and controls its own concurrency
+      return new LocalEmbeddingProvider();
     case 'none':
       return new NoOpEmbeddingProvider();
     default:
       throw new Error(`Unknown embedding provider: ${resolved}. Valid options: openai, ollama, local, none`);
   }
 
-  // Wrap external providers with concurrency limiter (fixes #67)
   return new ConcurrencyLimitedEmbeddingProvider(provider, concurrencyLimit);
 }
