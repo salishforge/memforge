@@ -2069,7 +2069,7 @@ Ranking (numbers only):`;
       throw new TypeError('outcome must be one of: positive, negative, neutral');
     }
 
-    // Only update retrieval events that haven't already received feedback (dedup, fixes A3)
+    // Only update retrieval events with no prior feedback (prevents duplicate ratings)
     const { rowCount } = await this.pool.query(
       `UPDATE retrieval_log
        SET outcome = $3, feedback_at = now(), feedback_metadata = $4
