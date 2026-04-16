@@ -13,6 +13,7 @@ import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import { createHash } from 'crypto';
 import { getLogger } from './logger.js';
+import type { JsonValue } from './types.js';
 
 const log = getLogger('cache');
 
@@ -121,7 +122,7 @@ export function timelineKey(agentId: string, from?: string, to?: string, limit =
 
 // ─── Core operations ──────────────────────────────────────────────────────────
 
-export async function cacheGet(key: string): Promise<unknown> {
+export async function cacheGet(key: string): Promise<JsonValue | null> {
   const redis = await getRedis();
   if (!redis) {
     counters.misses++;
@@ -132,7 +133,7 @@ export async function cacheGet(key: string): Promise<unknown> {
     const raw = await redis.get(key);
     if (raw !== null) {
       counters.hits++;
-      return JSON.parse(raw) as unknown;
+      return JSON.parse(raw) as JsonValue;
     }
     counters.misses++;
     return null;
@@ -144,7 +145,7 @@ export async function cacheGet(key: string): Promise<unknown> {
   }
 }
 
-export async function cacheSet(key: string, value: unknown, tier: CacheTier): Promise<void> {
+export async function cacheSet(key: string, value: JsonValue, tier: CacheTier): Promise<void> {
   const redis = await getRedis();
   if (!redis) return;
 
@@ -211,7 +212,17 @@ export function getLocalStats(): CacheCounters & { hit_rate: number } {
   };
 }
 
-export async function getRedisStats(): Promise<Record<string, unknown>> {
+interface RedisStats {
+  connected: boolean;
+  used_memory?: string;
+  total_keys?: number;
+  evictions?: number;
+  keyspace_hits?: number;
+  keyspace_misses?: number;
+  error?: string;
+}
+
+export async function getRedisStats(): Promise<RedisStats> {
   const redis = await getRedis();
   if (!redis?.isOpen) return { connected: false };
 
