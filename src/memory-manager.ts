@@ -47,6 +47,7 @@ import type {
   ResumeContext,
   OutcomeType,
   MemoryHints,
+  SqlParam,
 } from './types.js';
 
 const DEFAULTS: MemForgeConfig = {
@@ -590,7 +591,7 @@ Ranking (numbers only):`;
     before?: Date,
   ): Promise<QueryResult[]> {
     const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: unknown[] = [agentId, searchText];
+    const params: SqlParam[] =[agentId, searchText];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -627,7 +628,7 @@ Ranking (numbers only):`;
     before?: Date,
   ): Promise<QueryResult[]> {
     const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: unknown[] = [agentId, searchText];
+    const params: SqlParam[] =[agentId, searchText];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -660,7 +661,7 @@ Ranking (numbers only):`;
     after?: Date,
     before?: Date,
   ): Promise<QueryResult[]> {
-    const params: unknown[] = [agentId, searchText, `%${escapeLike(searchText)}%`];
+    const params: SqlParam[] =[agentId, searchText, `%${escapeLike(searchText)}%`];
     const timeFilter = this.buildTimeFilter(after, before, 4);
     if (after) params.push(after);
     if (before) params.push(before);
@@ -697,7 +698,7 @@ Ranking (numbers only):`;
     const queryEmbedding = await this.embedder.embed(searchText);
     const vectorLiteral = `[${queryEmbedding.join(',')}]`;
 
-    const params: unknown[] = [agentId, vectorLiteral];
+    const params: SqlParam[] =[agentId, vectorLiteral];
     const timeFilter = this.buildTimeFilter(after, before, 3);
     if (after) params.push(after);
     if (before) params.push(before);
@@ -823,7 +824,7 @@ Ranking (numbers only):`;
   ): Promise<TimelineEntry[]> {
     this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     const clauses: string[] = [];
 
     if (from) {
@@ -1402,7 +1403,7 @@ Ranking (numbers only):`;
   ): Promise<EntitySearchResult[]> {
     this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     const clauses: string[] = [];
 
     if (query) {
@@ -1811,7 +1812,7 @@ Ranking (numbers only):`;
   async getProcedures(agentId: string, query?: string, limit = 20): Promise<Procedure[]> {
     this.assertAgentId(agentId);
 
-    const params: unknown[] = [agentId];
+    const params: SqlParam[] =[agentId];
     let filter = '';
 
     if (query) {

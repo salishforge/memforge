@@ -542,7 +542,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     return totalTokens;
   }
 
-  // ─── Phase 2.5: Conflict Resolution (#80) ──────────────────────────────────
+  // ─── Phase 2.5: Conflict Resolution ───────────────────────────────────────
 
   private async phaseConflictResolution(agentId: string): Promise<number> {
     // Resolve unresolved conflicts using heuristic strategy:
@@ -774,7 +774,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
   // ─── Phase 5b: Cold Tier Retention Purge ──────────────────────────────────
 
-  // ─── Phase 5.5: Schema Detection (#75) ─────────────────────────────────────
+  // ─── Phase 5.5: Schema Detection ───────────────────────────────────────────
   // Based on Complementary Learning Systems theory (McClelland et al., 1995).
   // Detect repeated temporal sequences and crystallize them as schema entities.
 
@@ -864,7 +864,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
   }
 }
 
-// ─── Shared Pool Sleep Cycle (#84) ──────────────────────────────────────────
+// ─── Shared Pool Sleep Cycle ─────────────────────────────────────────────────
 // Separate maintenance cycle for shared memory pools.
 
 export class SharedPoolSleepCycle {
