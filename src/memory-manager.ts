@@ -212,8 +212,7 @@ export class MemoryManager {
       return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
     }
 
-    // Build enriched metadata from outcome_type and agent-provided hints
-    // F2 fix: strip reserved system keys that could be used for provenance/reputation forgery
+    // Strip reserved system keys to prevent provenance/reputation forgery via caller metadata
     const sanitizedMetadata = { ...metadata };
     delete sanitizedMetadata['_source_agent'];
     delete sanitizedMetadata['_from_pool'];
@@ -383,7 +382,7 @@ Ranking (numbers only):`;
       }
     }
 
-    // Phase 3: Search shared pools the agent belongs to, merge with trust scoring
+    // Search shared pools the agent belongs to, merge results with trust scoring
     const agentPools = await this.getAgentPools(agentId);
     if (agentPools.length > 0) {
       for (const pool of agentPools) {
@@ -459,8 +458,7 @@ Ranking (numbers only):`;
       results.sort((a, b) => b.rank - a.rank);
     }
 
-    // Structure-aware scoring — boost results linked to entities mentioned in query
-    // Inspired by FABLE (arXiv 2601.18116) structure-aware propagation
+    // Boost results linked to entities mentioned in the query
     if (results.length > 0) {
       // Detect entities: regex for proper nouns PLUS check against known entity names
       const queryUpper = opts.q;
@@ -511,8 +509,7 @@ Ranking (numbers only):`;
       results = await this.rerankWithLlm(opts.q, results);
     }
 
-    // Budget-controlled retrieval — trim results to fit within token budget
-    // Inspired by FABLE (arXiv 2601.18116) adaptive budget control
+    // Trim results to fit within caller-specified token budget
     if (opts.maxTokens && opts.maxTokens > 0) {
       let tokenCount = 0;
       const budgeted: QueryResult[] = [];
@@ -550,8 +547,7 @@ Ranking (numbers only):`;
       }
     }
 
-    // Knowledge gap detection (#77) — track queries that return no results
-    // Dedup by query text hash + cap at 1000 per agent (fixes A4 spam risk)
+    // Track zero-result queries as knowledge gaps; deduplicated and capped at 1000/agent
     if (results.length === 0) {
       void this.pool.query(
         `INSERT INTO knowledge_gaps (agent_id, query_text, gap_type)

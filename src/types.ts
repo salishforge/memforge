@@ -453,6 +453,26 @@ export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Record<string, unknown> ? DeepPartial<T[K]> : T[K];
 };
 
+/** PostgreSQL query parameter — union of types accepted by the `pg` driver's parameterized queries. */
+export type SqlParam = string | number | bigint | boolean | Date | null | string[] | number[] | bigint[];
+
+/** JSON-compatible value — any value that can survive JSON.stringify/parse round-trip. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/** JSON Schema property descriptor — used in tool definitions and MCP schemas. */
+export interface JsonSchemaProperty {
+  type: string;
+  description?: string;
+  enum?: string[];
+  minimum?: number;
+  maximum?: number;
+  format?: string;
+  additionalProperties?: boolean;
+  items?: JsonSchemaProperty;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+}
+
 // ─── Entity Deduplication Result ─────────────────────────────────────────────
 
 export interface EntityDeduplicationResult {

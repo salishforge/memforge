@@ -13,12 +13,14 @@ export {
   ConcurrencyLimitedEmbeddingProvider,
   NoOpEmbeddingProvider,
 } from './embedding.js';
+export type { EmbeddingProvider, EmbeddingProviderType } from './embedding.js';
 export {
   createLLMProvider,
   AnthropicLLMProvider,
   OpenAILLMProvider,
   OllamaLLMProvider,
 } from './llm.js';
+export type { LLMProvider, LLMProviderType, ConsolidationSummary } from './llm.js';
 export type {
   Agent,
   HotRow,
@@ -33,11 +35,6 @@ export type {
   ClearResult,
   AgentStats,
   MemForgeConfig,
-  EmbeddingProvider,
-  EmbeddingProviderType,
-  LLMProvider,
-  LLMProviderType,
-  ConsolidationSummary,
   Entity,
   Relationship,
   GraphNode,
