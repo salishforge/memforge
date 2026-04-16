@@ -2108,8 +2108,8 @@ Ranking (numbers only):`;
       }
     }
 
-    // Surprise tracking (#79) — memories with positive history that get negative feedback
-    // are "surprising" and should be prioritized for revision in sleep cycles
+    // Memories with a positive retrieval history that receive negative feedback are
+    // "surprising" — flag them for priority revision in the next sleep cycle
     if (outcome === 'negative' && updated > 0) {
       void this.pool.query(
         `UPDATE warm_tier SET surprise_score = LEAST(1.0, surprise_score + 0.3)
@@ -2121,7 +2121,7 @@ Ranking (numbers only):`;
       ).catch((err) => log.error({ err }, 'surprise tracking failed'));
     }
 
-    // Corroboration tracking (#78) — positive feedback corroborates the memory
+    // Positive feedback corroborates the memory — update last_corroborated for staleness tracking
     if (outcome === 'positive' && updated > 0) {
       void this.pool.query(
         `UPDATE warm_tier SET last_corroborated = now()
@@ -2133,8 +2133,7 @@ Ranking (numbers only):`;
       ).catch((err) => log.error({ err }, 'corroboration tracking failed'));
     }
 
-    // Phase 3: Reputation signal from feedback on shared pool memories
-    // If the retrieved memory came from a pool, boost/penalize the source agent's reputation
+    // Propagate feedback to the source agent's reputation when the memory came from a pool
     if (updated > 0 && (outcome === 'positive' || outcome === 'negative')) {
       void this.pool.query<{ metadata: Record<string, unknown> }>(
         `SELECT w.metadata FROM warm_tier w
@@ -2146,7 +2145,6 @@ Ranking (numbers only):`;
         for (const row of rows.rows) {
           const sourceAgent = (row.metadata as Record<string, unknown>)?.['_source_agent'] as string | undefined;
           if (sourceAgent) {
-            // F4 fix: use separate params for INSERT default vs UPDATE delta
             const delta = outcome === 'positive' ? 0.01 : -0.03;
             void this.pool.query(
               `INSERT INTO agent_reputation (agent_id, domain, score)
@@ -2484,7 +2482,7 @@ Guidelines:
     };
   }
 
-  // ─── Phase 3: Shared Memory Pools ──────────────────────────────────────
+  // ─── Shared Memory Pools ────────────────────────────────────────────────
 
   async createPool(poolId: string, name: string, poolType: 'team' | 'global' = 'team', description?: string): Promise<void> {
     await this.pool.query(
