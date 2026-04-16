@@ -1330,8 +1330,6 @@ Ranking (numbers only):`;
   async stats(agentId: string): Promise<AgentStats> {
     this.assertAgentId(agentId);
 
-    // Single-query stats: all tier counts + last consolidation + agent info
-    // Avoids 8 separate round-trips to the database
     const { rows: statsRows } = await this.pool.query<{
       last_seen: Date;
       hot_count: string;
