@@ -18,9 +18,6 @@ import type { JsonSchemaProperty } from './types.js';
 // ─── MCP Protocol Types ──────────────────────────────────────────────────────
 // Minimal types for MCP stdio transport — no external SDK dependency required.
 
-/** MCP protocol result value — structured JSON data with arbitrary nesting. */
-type MCPResultValue = string | number | boolean | null | MCPResultValue[] | { [key: string]: MCPResultValue };
-
 interface MCPRequest {
   jsonrpc: '2.0';
   id: number | string;
@@ -31,7 +28,7 @@ interface MCPRequest {
 interface MCPResponse {
   jsonrpc: '2.0';
   id: number | string;
-  result?: MCPResultValue;
+  result?: unknown;
   error?: { code: number; message: string };
 }
 

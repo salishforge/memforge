@@ -13,8 +13,6 @@ import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import { createHash } from 'crypto';
 import { getLogger } from './logger.js';
-import type { JsonValue } from './types.js';
-
 const log = getLogger('cache');
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -122,7 +120,7 @@ export function timelineKey(agentId: string, from?: string, to?: string, limit =
 
 // ─── Core operations ──────────────────────────────────────────────────────────
 
-export async function cacheGet(key: string): Promise<JsonValue | null> {
+export async function cacheGet(key: string): Promise<unknown> {
   const redis = await getRedis();
   if (!redis) {
     counters.misses++;
@@ -133,7 +131,7 @@ export async function cacheGet(key: string): Promise<JsonValue | null> {
     const raw = await redis.get(key);
     if (raw !== null) {
       counters.hits++;
-      return JSON.parse(raw) as JsonValue;
+      return JSON.parse(raw) as unknown;
     }
     counters.misses++;
     return null;
@@ -145,7 +143,7 @@ export async function cacheGet(key: string): Promise<JsonValue | null> {
   }
 }
 
-export async function cacheSet(key: string, value: JsonValue, tier: CacheTier): Promise<void> {
+export async function cacheSet(key: string, value: unknown, tier: CacheTier): Promise<void> {
   const redis = await getRedis();
   if (!redis) return;
 

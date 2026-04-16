@@ -28,7 +28,6 @@ export interface AddResult {
   deduplicated?: boolean;
 }
 
-/** Outcome type for memory tagging — inspired by MH-FLOCKE (Apache 2.0) + hippo-memory (MIT) */
 export type OutcomeType = 'error' | 'success' | 'decision' | 'observation' | 'neutral';
 
 // ─── Warm tier ───────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ export interface WarmRow {
 export interface QueryResult {
   id: bigint;
   content: string;
-  /** One-line summary (populated when consolidation uses LLM mode). Inspired by FABLE/MemPalace closets/drawers. */
+  /** One-line summary — populated when consolidation mode is LLM. */
   summary?: string;
   metadata: Record<string, unknown>;
   consolidated_at: Date;
@@ -62,7 +61,7 @@ export interface QueryResult {
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
 
-/** Search modes — 'code' mode uses simple tokenizer preserving symbols. Inspired by CCRider (MIT). */
+/** Search modes — 'code' mode uses a simple tokenizer that preserves symbols. */
 export type QueryMode = 'keyword' | 'semantic' | 'hybrid' | 'code';
 
 export interface QueryOptions {
@@ -78,7 +77,7 @@ export interface QueryOptions {
   before?: Date;
   /** Temporal decay rate per hour (0 = no decay, default from config) */
   decayRate?: number;
-  /** Token budget — return results fitting within this many tokens (estimate: content.length/4). Inspired by FABLE (arXiv 2601.18116). */
+  /** Token budget — return results fitting within this many tokens (estimate: content.length/4). */
   maxTokens?: number;
 }
 
@@ -296,7 +295,7 @@ export interface SleepCycleConfig {
   includeReflection: boolean;
   /** Number of days to retain cold tier records; older records are deleted (optional) */
   coldRetentionDays?: number;
-  /** Max revisions per sleep cycle — caps LLM spending. Inspired by claude-code-toolkit (MIT) auto-dream. */
+  /** Max revisions per sleep cycle — caps LLM spending per run. */
   maxRevisionsPerCycle?: number;
   /** Importance score weights */
   weights: {
@@ -370,9 +369,9 @@ export interface MemForgeConfig {
   temporalDecayRate: number;
   /** Inner batch size for consolidation grouping (default 50, set to 1 for verbatim mode) */
   consolidationInnerBatchSize: number;
-  /** Keyword overlap boost factor for hybrid search (default 0.3, 0 = disabled). Inspired by MemPalace (MIT). */
+  /** Keyword overlap boost factor for hybrid search (default 0.3, 0 = disabled). */
   keywordOverlapBoost: number;
-  /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). Inspired by MemPalace (MIT). */
+  /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). */
   temporalProximityDays: number;
   /** Enable LLM post-retrieval reranking (default false — opt-in, adds ~2K tokens/query) */
   enableLlmRerank: boolean;
@@ -405,9 +404,6 @@ export interface MemoryHints {
 
 /** PostgreSQL query parameter — union of types accepted by the `pg` driver's parameterized queries. */
 export type SqlParam = string | number | bigint | boolean | Date | null | string[] | number[] | bigint[];
-
-/** JSON-compatible value — any value that can survive JSON.stringify/parse round-trip. */
-export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /** JSON Schema property descriptor — used in tool definitions and MCP schemas. */
 export interface JsonSchemaProperty {

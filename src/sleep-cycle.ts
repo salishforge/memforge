@@ -1,12 +1,7 @@
 // MemForge — Sleep Cycle Engine
 //
 // Background processor that actively rewrites and refines stored memories
-// during idle periods. Runs in phases:
-//   Phase 1: Scoring (SQL only — recalculate importance/confidence)
-//   Phase 2: Triage (SQL only — evict low-importance, flag for revision)
-//   Phase 3: Revision (LLM — rewrite flagged memories)
-//   Phase 4: Graph maintenance (LLM — invalidate stale edges)
-//   Phase 5: Reflection (LLM — synthesize insights from revised base)
+// during idle periods. See ARCHITECTURE.md for the full phase breakdown.
 
 import type { Pool } from 'pg';
 import { wrapUserContent } from './llm.js';
@@ -82,7 +77,7 @@ export class SleepCycleEngine {
     const start = Date.now();
     let tokensUsed = 0;
 
-    // Phase 0: Autonomous weight adaptation — inspired by MH-FLOCKE (Apache 2.0)
+    // Phase 0: Autonomous weight adaptation
     await this.phaseWeightAdaptation(agentId);
 
     // Phase 1: Scoring
@@ -268,8 +263,6 @@ export class SleepCycleEngine {
       : this.config.weights;
 
     // Single SQL update that computes composite importance from multiple signals.
-    // Outcome multiplier inspired by MH-FLOCKE (Apache 2.0) embodied emotions
-    // and hippo-memory (MIT) error prioritization.
     const { rowCount } = await this.pool.query(
       `UPDATE warm_tier w SET importance = LEAST(1.0, GREATEST(0.0,
          (
@@ -332,7 +325,7 @@ export class SleepCycleEngine {
   // ─── Phase 2: Triage ───────────────────────────────────────────────────────
 
   private async phaseTriage(agentId: string): Promise<{ evicted: number; flaggedIds: bigint[] }> {
-    // Graduate high-confidence memories — inspired by claude-code-toolkit (MIT)
+    // Graduate stable high-confidence memories (3+ successful retrievals, confidence ≥ 0.9)
     await this.pool.query(
       `UPDATE warm_tier SET graduated = true
        WHERE agent_id = $1
@@ -769,10 +762,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     return merged;
   }
 
-  // ─── Phase 5b: Cold Tier Retention Purge ──────────────────────────────────
-
   // ─── Phase 5.5: Schema Detection ───────────────────────────────────────────
-  // Based on Complementary Learning Systems theory (McClelland et al., 1995).
   // Detect repeated temporal sequences and crystallize them as schema entities.
 
   private async phaseSchemaDetection(agentId: string): Promise<number> {
@@ -855,9 +845,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     );
     if (parseInt(recentRevisions.rows[0]?.count ?? '0', 10) < 3) return false;
 
-    // Delegate to the existing reflect() mechanism
-    // (The caller — MemoryManager — should handle this since it owns the reflect method)
-    return true; // Signal that reflection should be triggered
+    return true;
   }
 }
 
@@ -919,7 +907,7 @@ export class SharedPoolSleepCycle {
       [poolId],
     );
 
-    // Phase 3: Recompute reputation scores from accumulated signals
+    // Recompute reputation scores from accumulated signals
     const agents = await this.pool.query<{ agent_id: string }>(
       `SELECT DISTINCT source_agent_id as agent_id FROM shared_memories WHERE pool_id = $1`,
       [poolId],
