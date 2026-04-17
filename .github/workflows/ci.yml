@@ -4,12 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  typecheck-lint:
+  typecheck:
+    name: Type-check (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
         node: [20, 22]
     steps:
@@ -19,14 +26,64 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm run lint
-      - run: npm run test:security
+      - run: npm run type-check
 
-  integration-tests:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Assert dist/ is non-empty
+        run: |
+          if [ ! -d dist ] || [ -z "$(ls -A dist)" ]; then
+            echo "ERROR: dist/ directory is missing or empty after build"
+            exit 1
+          fi
+          echo "dist/ OK — $(find dist -type f | wc -l) files produced"
+
+  test-security:
+    name: Security tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:security
+
+  test-integration:
+    name: Integration tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
       matrix:
         node: [20, 22]
     services:
@@ -39,10 +96,11 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U memforge"
+          --health-cmd "pg_isready -U memforge -d memforge_test"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+          --health-start-period 30s
     env:
       DATABASE_URL: postgresql://memforge:test@localhost:5432/memforge_test
     steps:
@@ -54,14 +112,19 @@ jobs:
       - run: npm ci
       - name: Apply database schema
         run: psql "$DATABASE_URL" -f schema/schema.sql
-      - run: npm run test:integration
-      - run: npm run test:llm
-      - run: npm run test:http
+      - name: Run integration tests
+        run: npm run test:integration
+      - name: Run LLM-path tests
+        run: npm run test:llm
+      - name: Run HTTP API tests
+        run: npm run test:http
 
-  cache-tests:
+  test-cache:
+    name: Cache tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
         node: [20, 22]
     services:
@@ -73,7 +136,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     env:
       REDIS_URL: redis://localhost:6379
     steps:
@@ -84,3 +147,71 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:cache
+
+  test-load:
+    name: Load tests
+    # Heavy — runs on push to main and release workflows only, skipped on PRs.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: memforge_test
+          POSTGRES_USER: memforge
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memforge -d memforge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+    env:
+      DATABASE_URL: postgresql://memforge:test@localhost:5432/memforge_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Apply database schema
+        run: psql "$DATABASE_URL" -f schema/schema.sql
+      - name: Run load tests
+        run: npm run test:load
+
+  test-rls:
+    name: RLS enforcement verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: memforge_test
+          POSTGRES_USER: memforge
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memforge -d memforge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+    env:
+      DATABASE_URL: postgresql://memforge:test@localhost:5432/memforge_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Apply database schema
+        run: psql "$DATABASE_URL" -f schema/schema.sql
+      - name: Verify RLS enforcement
+        run: bash .github/scripts/verify-rls.sh
