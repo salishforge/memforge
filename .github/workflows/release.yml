@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  ci:
+    name: CI (full suite)
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to npm
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+      - run: npm ci
+      - run: npm run build
+      - name: Publish package
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so CHANGELOG is present
+          fetch-depth: 0
+      - name: Extract CHANGELOG section for this tag
+        id: changelog
+        run: |
+          # Strip leading 'v' from the tag name to match CHANGELOG headers like ## [3.0.0-beta.3]
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "WARNING: No CHANGELOG section found for version ${VERSION}"
+            NOTES="See [CHANGELOG.md](./CHANGELOG.md) for details."
+          fi
+          # Use GitHub's multiline output delimiter
+          {
+            echo "notes<<EOF_RELEASE_NOTES"
+            echo "$NOTES"
+            echo "EOF_RELEASE_NOTES"
+          } >> "$GITHUB_OUTPUT"
+      - name: Determine if prerelease
+        id: prerelease
+        run: |
+          if echo "$GITHUB_REF_NAME" | grep -qE '\-(alpha|beta|rc)'; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.notes }}
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}

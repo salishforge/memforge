@@ -12,7 +12,7 @@ Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, rev
 
 MemForge manages agent memory across three tiers (hot → warm → cold) with vector search, a knowledge graph, LLM-driven reflection, procedural learning, and a memory revision engine that actively improves stored knowledge during idle periods.
 
-> **For AI agents reading this:** See [CLAUDE.md](CLAUDE.md) for project instructions, code conventions, and architecture rules. See [BACKLOG.md](BACKLOG.md) for open issues and improvement areas.
+> **For AI agents reading this:** See [CLAUDE.md](CLAUDE.md) for project instructions, code conventions, and architecture rules. See the [GitHub issues](https://github.com/salishforge/memforge/issues) for open work and improvement areas, and [ROADMAP.md](ROADMAP.md) for the phased plan.
 
 ## Project Status
 
@@ -591,7 +591,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 - **No built-in scheduler** — Sleep cycles must be triggered externally (cron, MCP, webhook). This is by design — see Scheduling section above.
 - **Single process** — No clustering or worker threads. Sleep cycles run in the main event loop. For high-throughput deployments, run separate instances for API serving and sleep cycle processing.
 - **LLM-dependent features require API keys** — Summarize consolidation, reflection, meta-reflection, sleep cycle revision, and procedural extraction all require an LLM provider. Without one, MemForge still works as a tiered search engine with concat consolidation.
-- **No streaming consolidation** — Large hot-tier backlogs (10K+ events) load into memory at once. See [BACKLOG.md](BACKLOG.md) issue #6.
+- **No streaming consolidation** — Large hot-tier backlogs (10K+ events) load into memory at once. See [issue #11](https://github.com/salishforge/memforge/issues/11).
 - **Cold tier grows indefinitely** — No retention policy or hard deletion. Archived memories accumulate forever.
 - **Limited semantic search test coverage** — Mock LLM tests cover all LLM-dependent paths. Semantic/hybrid search paths still require a live embedding provider; no mock embedding provider exists yet.
 - **No HTTPS** — Run behind a TLS-terminating reverse proxy in production. See [SECURITY.md](SECURITY.md).
@@ -605,10 +605,9 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, data models, module structure |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
-| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.6.0 (latest: Python SDK, Active Knowledge Management, Docker standalone, webhooks) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history (latest: v3.0.0-beta.3 — RLS in canonical schema, documentation consolidation) |
 | [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic, Python SDK) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
-| [BACKLOG.md](BACKLOG.md) | Open issues, improvements, and challenges |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |
 | [SECURITY.md](SECURITY.md) | Security policy, architecture, hardening checklist |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Comprehensive threat model — attack vectors, bypass techniques, integrity |
