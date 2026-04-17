@@ -2,6 +2,34 @@
 
 All notable changes to MemForge are documented here.
 
+## [3.0.0-beta.3] - 2026-04-17 — Documentation & Schema Consolidation
+
+This release regularizes the `v3.0.0-beta.x` series. `v3.0.0-beta.1` and
+`v3.0.0-beta.2` were tagged without a CHANGELOG entry; the changes below
+cover everything since `v2.7.1` that had not yet been documented, plus the
+documentation and schema cleanup landed in beta.3 itself.
+
+### Added
+
+- **RLS policies and audit delete trigger in canonical `schema/schema.sql`** — Fresh installs are now secure-by-default. Previously, Row-Level Security and the audit chain delete prevention trigger required running `migration-v2.3.sql` as a separate step; both are now included in `schema.sql`. The application role (DB owner or member of `memforge_app`) continues to bypass RLS, so normal app operation is unchanged. RLS now protects against cross-agent reads when non-owner roles connect directly to the database.
+- **Idempotent `DROP POLICY IF EXISTS` before each `CREATE POLICY`** in both `schema.sql` and `migration-v2.3.sql`, so operators can safely re-run either script without errors.
+
+### Changed
+
+- **Version strings regularized across the project.** `package.json` bumped from `2.2.0` (stale) to `3.0.0-beta.3`. `CLAUDE.md` Section 11 and `ROADMAP.md` now agree on the current version.
+- **`migration-v2.3.sql` scope clarified** — the header now notes that Parts A (RLS) and B (audit trigger) have been folded into `schema.sql` for v3+ fresh installs; this migration should only be applied when upgrading a deployment originally installed on v2.2 or earlier.
+- **Type surface tightening across the codebase** (21 commits since `v3.0.0-beta.2`, PR #86 and related): unexported internal provider configs, narrowed JSON-schema types, DRY'd deduplication helpers, consolidated the pipeline type graph, removed dead types and stale re-exports, tightened SQL parameter types, dropped unnecessary try/catch blocks that hid errors, and narrowed cache return types.
+- **Comment cleanup across modules** — stale issue-number references, attribution comments, and "fix-reference" annotations removed in favor of comments that describe behavior. No functional changes.
+- **`ROADMAP.md`** updated to reflect that Phase 1 hardening is substantially complete (3 of 4 Tier 1 HARDENING items done; prompt injection defenses, consolidation race fixes, and sleep-cycle mutex are in place).
+
+### Removed
+
+- **`BACKLOG.md`** — the file was stale (its items had either been shipped or superseded by GitHub issues). README references have been redirected to the GitHub issue tracker and `ROADMAP.md`.
+
+### Internal (unreleased previously)
+
+- **`v3.0.0-beta.1` → `v3.0.0-beta.2` (cb83cf7)** — test and CI stabilization: test-race fixes in reflection/meta-reflection paths, SQL bug fixes in graph CTE and import-entities, HTTP test alignment, singleton DB pool teardown in CI, cache test hang fix, and lint cleanup. No production behavior changes.
+
 ## [2.7.1] - 2026-04-08 — Beta Release Cleanup
 
 ### Changed

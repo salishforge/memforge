@@ -605,7 +605,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, data models, module structure |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Developer setup, testing guide, extension points |
 | [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on the codebase |
-| [CHANGELOG.md](CHANGELOG.md) | Version history from v1.0.0 to v2.6.0 (latest: Python SDK, Active Knowledge Management, Docker standalone, webhooks) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history (latest: v3.0.0-beta.3 — RLS in canonical schema, documentation consolidation) |
 | [INTEGRATION.md](INTEGRATION.md) | How to wire MemForge into any agent (custom, LangChain, CrewAI, MCP, OpenAI, Anthropic, Python SDK) |
 | [ROADMAP.md](ROADMAP.md) | Long-term vision: 5-phase plan from production hardening to autonomous knowledge |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, code style, PR process |
