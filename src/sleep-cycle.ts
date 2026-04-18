@@ -122,6 +122,10 @@ export class SleepCycleEngine {
     }
 
     // Phase 5b: Cold tier retention purge (optional)
+    // Placed after Phase 2 (triage / eviction into cold_tier) so a row archived in
+    // this same cycle cannot be immediately deleted if it happened to land before the
+    // cutoff timestamp. Running after reflection keeps this phase in the "cleanup"
+    // tail of the cycle, consistent with Phase 6 (audit archive).
     let coldPurged = 0;
     if (this.config.coldRetentionDays) {
       coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
@@ -826,12 +830,33 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
   }
 
   private async phaseColdPurge(agentId: string, retentionDays: number): Promise<number> {
-    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-    const { rowCount } = await this.pool.query(
-      `DELETE FROM cold_tier WHERE agent_id = $1 AND archived_at < $2`,
-      [agentId, cutoff],
+    // DELETE ... RETURNING id so we know exactly which rows were removed for the audit entry.
+    // Single bulk delete is acceptable for Phase 1 — batching (LIMIT + loop) is a follow-up
+    // if prune counts grow large enough to risk long lock holds.
+    const { rows } = await this.pool.query<{ id: bigint }>(
+      `DELETE FROM cold_tier WHERE agent_id = $1
+         AND archived_at < now() - interval '1 day' * $2
+       RETURNING id`,
+      [agentId, retentionDays],
     );
-    return rowCount ?? 0;
+    const pruned = rows.length;
+
+    if (pruned === 0) return 0;
+
+    log.info({ agentId, pruned, retentionDays }, 'cold tier retention prune complete');
+
+    // One summary audit entry per prune run — individual cold_tier rows don't have their own
+    // audit chains (they're already the archive of evicted warm/hot rows). A batch entry on
+    // target_id=0 gives an attestable record that the deletion happened and when.
+    if (this.audit) {
+      void this.audit.recordBatch(
+        agentId, 'cold_tier', 'delete',
+        { pruned, retentionDays, deleted_ids: rows.map((r) => String(r.id)) },
+        'sleep_cycle',
+      ).catch((err: unknown) => log.error({ err }, 'cold tier prune audit failed'));
+    }
+
+    return pruned;
   }
 
   // ─── Phase 5: Reflection ───────────────────────────────────────────────────

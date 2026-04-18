@@ -620,7 +620,6 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for test architecture, coverage gaps, and h
 - **Single process** — No clustering or worker threads. Sleep cycles run in the main event loop. For high-throughput deployments, run separate instances for API serving and sleep cycle processing.
 - **LLM-dependent features require API keys** — Summarize consolidation, reflection, meta-reflection, sleep cycle revision, and procedural extraction all require an LLM provider. Without one, MemForge still works as a tiered search engine with concat consolidation.
 - **No streaming consolidation** — Large hot-tier backlogs (10K+ events) load into memory at once. See [issue #11](https://github.com/salishforge/memforge/issues/11).
-- **Cold tier grows indefinitely** — No retention policy or hard deletion. Archived memories accumulate forever.
 - **Limited semantic search test coverage** — Mock LLM tests cover all LLM-dependent paths. Semantic/hybrid search paths still require a live embedding provider; no mock embedding provider exists yet.
 - **No HTTPS** — Run behind a TLS-terminating reverse proxy in production. See [SECURITY.md](SECURITY.md).
 
