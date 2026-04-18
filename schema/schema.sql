@@ -1,6 +1,9 @@
 -- MemForge — PostgreSQL Canonical Schema
--- Single-file fresh-install schema incorporating all migrations through v3.0.
+-- Single-file fresh-install schema incorporating all migrations through v3.1.
 -- To install: psql "$DATABASE_URL" -f schema/schema.sql
+-- As of v3.1.0, namespace column added to memory tables (hot/warm/cold/reflections/
+-- procedures/consolidation_log/retrieval_log/memory_revisions). Entities and
+-- relationships remain agent-scoped only — see migration-v3.1.sql for rationale.
 -- As of v3.0.0-beta.3, RLS policies and the audit delete trigger are included
 -- here by default. Fresh installs are secure-by-default. Existing v2.2 deploys
 -- must still run migration-v2.3.sql (which remains functional for that purpose).
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS agents (
 -- ─────────────────────────────────────────────────────────────────────────────
 -- hot_tier — recent raw events (write-heavy, fast ingestion)
 -- Added in v2.4: content_hash
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS hot_tier (
   id           BIGSERIAL   PRIMARY KEY,
@@ -35,12 +39,14 @@ CREATE TABLE IF NOT EXISTS hot_tier (
   content      TEXT        NOT NULL,
   metadata     JSONB       NOT NULL DEFAULT '{}',
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  content_hash TEXT
+  content_hash TEXT,
+  namespace    TEXT        NOT NULL DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
 CREATE INDEX IF NOT EXISTS hot_tier_created_at_idx   ON hot_tier (created_at DESC);
 CREATE INDEX IF NOT EXISTS hot_tier_content_hash_idx ON hot_tier (agent_id, content_hash);
+CREATE INDEX IF NOT EXISTS hot_tier_namespace_idx    ON hot_tier (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- warm_tier — consolidated, full-text-searchable memory with embeddings
@@ -50,6 +56,7 @@ CREATE INDEX IF NOT EXISTS hot_tier_content_hash_idx ON hot_tier (agent_id, cont
 -- v2.4: outcome_type, graduated, retrieval_success_count, first_successful_retrieval,
 --        content_code_tsv, summary (v2.5)
 -- v2.6: surprise_score, staleness_score, last_corroborated
+-- v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS warm_tier (
   id                          BIGSERIAL   PRIMARY KEY,
@@ -86,7 +93,9 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   -- Active knowledge management (#79, #78)
   surprise_score              REAL        NOT NULL DEFAULT 0,
   staleness_score             REAL        NOT NULL DEFAULT 0,
-  last_corroborated           TIMESTAMPTZ
+  last_corroborated           TIMESTAMPTZ,
+  -- Namespace partitioning (#16) — defaults to 'default' so existing callers are unaffected
+  namespace                   TEXT        NOT NULL DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx   ON warm_tier (agent_id);
@@ -96,9 +105,11 @@ CREATE INDEX IF NOT EXISTS warm_tier_hot_ids_idx    ON warm_tier USING GIN (sour
 CREATE INDEX IF NOT EXISTS warm_tier_embedding_idx  ON warm_tier USING hnsw (embedding halfvec_cosine_ops);
 CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time_start, time_end);
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
+CREATE INDEX IF NOT EXISTS warm_tier_namespace_idx  ON warm_tier (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- cold_tier — archived / cleared memory (audit trail, never hard-deleted)
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS cold_tier (
   id                  BIGSERIAL   PRIMARY KEY,
@@ -108,15 +119,18 @@ CREATE TABLE IF NOT EXISTS cold_tier (
   content             TEXT        NOT NULL,
   metadata            JSONB       NOT NULL DEFAULT '{}',
   archived_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  original_created_at TIMESTAMPTZ NOT NULL
+  original_created_at TIMESTAMPTZ NOT NULL,
+  namespace           TEXT        NOT NULL DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS cold_tier_agent_id_idx    ON cold_tier (agent_id);
 CREATE INDEX IF NOT EXISTS cold_tier_source_idx      ON cold_tier (source_table, source_id);
 CREATE INDEX IF NOT EXISTS cold_tier_archived_at_idx ON cold_tier (archived_at DESC);
+CREATE INDEX IF NOT EXISTS cold_tier_namespace_idx   ON cold_tier (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- consolidation_log — audit trail for consolidation runs
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS consolidation_log (
   id                  BIGSERIAL   PRIMARY KEY,
@@ -128,11 +142,13 @@ CREATE TABLE IF NOT EXISTS consolidation_log (
   status              TEXT        NOT NULL DEFAULT 'running'
                                     CHECK (status IN ('running', 'complete', 'failed')),
   error               TEXT,
-  metadata            JSONB       NOT NULL DEFAULT '{}'
+  metadata            JSONB       NOT NULL DEFAULT '{}',
+  namespace           TEXT        NOT NULL DEFAULT 'default'
 );
 
-CREATE INDEX IF NOT EXISTS consolidation_log_agent_id_idx ON consolidation_log (agent_id);
-CREATE INDEX IF NOT EXISTS consolidation_log_started_idx  ON consolidation_log (started_at DESC);
+CREATE INDEX IF NOT EXISTS consolidation_log_agent_id_idx  ON consolidation_log (agent_id);
+CREATE INDEX IF NOT EXISTS consolidation_log_started_idx   ON consolidation_log (started_at DESC);
+CREATE INDEX IF NOT EXISTS consolidation_log_namespace_idx ON consolidation_log (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- entities — knowledge graph nodes extracted during consolidation
@@ -190,6 +206,7 @@ CREATE INDEX IF NOT EXISTS warm_tier_entities_entity_idx ON warm_tier_entities (
 -- ─────────────────────────────────────────────────────────────────────────────
 -- reflections — synthesized insights from periodic LLM review
 -- Added in v2.1: reflection_level, source_reflection_ids (meta-reflection)
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS reflections (
   id                    BIGSERIAL   PRIMARY KEY,
@@ -204,16 +221,20 @@ CREATE TABLE IF NOT EXISTS reflections (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Meta-reflection hierarchy (#v2.1)
   reflection_level      INT         NOT NULL DEFAULT 1,
-  source_reflection_ids BIGINT[]    NOT NULL DEFAULT '{}'
+  source_reflection_ids BIGINT[]    NOT NULL DEFAULT '{}',
+  -- Namespace partitioning (#16)
+  namespace             TEXT        NOT NULL DEFAULT 'default'
 );
 
-CREATE INDEX IF NOT EXISTS reflections_agent_id_idx ON reflections (agent_id);
-CREATE INDEX IF NOT EXISTS reflections_created_idx  ON reflections (created_at DESC);
-CREATE INDEX IF NOT EXISTS reflections_level_idx    ON reflections (agent_id, reflection_level);
+CREATE INDEX IF NOT EXISTS reflections_agent_id_idx  ON reflections (agent_id);
+CREATE INDEX IF NOT EXISTS reflections_created_idx   ON reflections (created_at DESC);
+CREATE INDEX IF NOT EXISTS reflections_level_idx     ON reflections (agent_id, reflection_level);
+CREATE INDEX IF NOT EXISTS reflections_namespace_idx ON reflections (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- retrieval_log — records every query hit for reinforcement analysis
 -- Added in v2.1: outcome, feedback_at, feedback_metadata
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS retrieval_log (
   id                BIGSERIAL   PRIMARY KEY,
@@ -227,16 +248,20 @@ CREATE TABLE IF NOT EXISTS retrieval_log (
   -- Downstream outcome feedback (#v2.1)
   outcome           TEXT        CHECK (outcome IN ('positive', 'negative', 'neutral')),
   feedback_at       TIMESTAMPTZ,
-  feedback_metadata JSONB       NOT NULL DEFAULT '{}'
+  feedback_metadata JSONB       NOT NULL DEFAULT '{}',
+  -- Namespace partitioning (#16)
+  namespace         TEXT        NOT NULL DEFAULT 'default'
 );
 
-CREATE INDEX IF NOT EXISTS retrieval_log_agent_idx   ON retrieval_log (agent_id);
-CREATE INDEX IF NOT EXISTS retrieval_log_warm_idx    ON retrieval_log (warm_tier_id);
-CREATE INDEX IF NOT EXISTS retrieval_log_created_idx ON retrieval_log (created_at DESC);
-CREATE INDEX IF NOT EXISTS retrieval_log_outcome_idx ON retrieval_log (agent_id, outcome) WHERE outcome IS NOT NULL;
+CREATE INDEX IF NOT EXISTS retrieval_log_agent_idx     ON retrieval_log (agent_id);
+CREATE INDEX IF NOT EXISTS retrieval_log_warm_idx      ON retrieval_log (warm_tier_id);
+CREATE INDEX IF NOT EXISTS retrieval_log_created_idx   ON retrieval_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS retrieval_log_outcome_idx   ON retrieval_log (agent_id, outcome) WHERE outcome IS NOT NULL;
+CREATE INDEX IF NOT EXISTS retrieval_log_namespace_idx ON retrieval_log (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- memory_revisions — tracks every rewrite of a warm-tier memory
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_revisions (
   id               BIGSERIAL   PRIMARY KEY,
@@ -250,14 +275,18 @@ CREATE TABLE IF NOT EXISTS memory_revisions (
   delta_summary    TEXT        NOT NULL DEFAULT '',
   confidence       REAL        NOT NULL DEFAULT 0.5,
   model_used       TEXT        NOT NULL DEFAULT '',
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Namespace partitioning (#16)
+  namespace        TEXT        NOT NULL DEFAULT 'default'
 );
 
-CREATE INDEX IF NOT EXISTS memory_revisions_agent_idx ON memory_revisions (agent_id);
-CREATE INDEX IF NOT EXISTS memory_revisions_warm_idx  ON memory_revisions (warm_tier_id);
+CREATE INDEX IF NOT EXISTS memory_revisions_agent_idx     ON memory_revisions (agent_id);
+CREATE INDEX IF NOT EXISTS memory_revisions_warm_idx      ON memory_revisions (warm_tier_id);
+CREATE INDEX IF NOT EXISTS memory_revisions_namespace_idx ON memory_revisions (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- procedures — learned condition→action rules (procedural memory)
+-- Added in v3.1: namespace
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS procedures (
   id                   BIGSERIAL   PRIMARY KEY,
@@ -270,11 +299,14 @@ CREATE TABLE IF NOT EXISTS procedures (
   last_accessed        TIMESTAMPTZ,
   active               BOOLEAN     NOT NULL DEFAULT true,
   metadata             JSONB       NOT NULL DEFAULT '{}',
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Namespace partitioning (#16)
+  namespace            TEXT        NOT NULL DEFAULT 'default'
 );
 
-CREATE INDEX IF NOT EXISTS procedures_agent_idx  ON procedures (agent_id);
-CREATE INDEX IF NOT EXISTS procedures_active_idx ON procedures (agent_id, active) WHERE active = true;
+CREATE INDEX IF NOT EXISTS procedures_agent_idx      ON procedures (agent_id);
+CREATE INDEX IF NOT EXISTS procedures_active_idx     ON procedures (agent_id, active) WHERE active = true;
+CREATE INDEX IF NOT EXISTS procedures_namespace_idx  ON procedures (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- audit_chain — immutable hash-chained audit log of all warm-tier mutations
