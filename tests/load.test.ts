@@ -102,9 +102,9 @@ describe('Consolidation throughput', () => {
     const result = await manager.consolidate(TEST_AGENT, 'concat');
     const elapsed = performance.now() - start;
 
-    console.log(`  Consolidation: ${result.warm_created} warm rows from 500 hot rows in ${elapsed.toFixed(0)}ms`);
+    console.log(`  Consolidation: ${result.warm_rows_created} warm rows from 500 hot rows in ${elapsed.toFixed(0)}ms`);
     assert.ok(elapsed < 5_000, `Consolidation took ${elapsed.toFixed(0)}ms — expected under 5s`);
-    assert.ok(result.warm_created > 0, 'warm rows created');
+    assert.ok(result.warm_rows_created > 0, 'warm rows created');
   });
 });
 
