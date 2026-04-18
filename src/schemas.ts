@@ -76,6 +76,17 @@ export const ColdTierRestoreSchema = z.object({
   namespace: NamespaceSchema.optional(),
 });
 
+export const PublishProceduresSchema = z.object({
+  min_confidence: z.number().min(0).max(1).default(0),
+  namespace: NamespaceSchema.optional(),
+});
+
+export const DeclareRoleSchema = z.object({
+  domain: z.string().min(1).max(128),
+  confidence: z.number().min(0).max(1).optional(),
+  description: z.string().max(1_000).optional(),
+});
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({

@@ -259,6 +259,82 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id', 'cold_id'],
     },
   },
+  {
+    name: 'memforge_publish_procedures',
+    description: 'Publish an agent\'s active procedures to a shared pool. Applies confidence discount per hop.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent whose procedures to publish' },
+        pool_id: { type: 'string', description: 'Target shared pool ID' },
+        min_confidence: { type: 'number', description: 'Minimum confidence threshold (0–1)', minimum: 0, maximum: 1 },
+        namespace: { type: 'string', description: 'Namespace to filter procedures' },
+      },
+      required: ['agent_id', 'pool_id'],
+    },
+  },
+  {
+    name: 'memforge_shared_procedures',
+    description: 'List active procedures shared in a pool, ranked by confidence and corroboration.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_id: { type: 'string', description: 'Pool ID to query' },
+        q: { type: 'string', description: 'Optional text filter on condition or action' },
+        limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 200 },
+      },
+      required: ['pool_id'],
+    },
+  },
+  {
+    name: 'memforge_expertise',
+    description: 'Rank pool members by expertise for a query topic. Returns agents with relevance scores and sample matching memories.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_id: { type: 'string', description: 'Pool to search across' },
+        q: { type: 'string', description: 'Topic or question to match against agent memories' },
+        limit: { type: 'integer', description: 'Max agents to return (default 10)', minimum: 1, maximum: 50 },
+      },
+      required: ['pool_id', 'q'],
+    },
+  },
+  {
+    name: 'memforge_declare_role',
+    description: 'Declare an expertise domain for an agent. Upserts on (agent_id, domain).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent to declare the role for' },
+        domain: { type: 'string', description: 'Domain name (e.g. "security", "frontend")' },
+        confidence: { type: 'number', description: 'Confidence in this role (0–1)', minimum: 0, maximum: 1 },
+        description: { type: 'string', description: 'Human-readable description of the role' },
+      },
+      required: ['agent_id', 'domain'],
+    },
+  },
+  {
+    name: 'memforge_roles',
+    description: 'Get all declared expertise roles for an agent, ordered by confidence.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_detect_roles',
+    description: 'Auto-detect expertise roles from knowledge graph and active procedures.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

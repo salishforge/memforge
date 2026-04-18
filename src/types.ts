@@ -511,6 +511,44 @@ export interface SleepAdvisoryThresholds {
   stabilityCeiling: number;
 }
 
+// ─── Shared Procedures ───────────────────────────────────────────────────────
+
+export interface SharedProcedure {
+  id: bigint;
+  pool_id: string;
+  source_agent_id: string;
+  condition: string;
+  action: string;
+  confidence: number;
+  hop_count: number;
+  corroboration_count: number;
+  active: boolean;
+  metadata: Record<string, unknown>;
+  published_at: Date;
+}
+
+// ─── Expertise Discovery ─────────────────────────────────────────────────────
+
+export interface ExpertiseResult {
+  agent_id: string;
+  score: number;
+  match_count: number;
+  top_memories: Array<{ id: bigint; content: string; importance: number }>;
+}
+
+// ─── Agent Roles ─────────────────────────────────────────────────────────────
+
+export interface AgentRole {
+  agent_id: string;
+  domain: string;
+  confidence: number;
+  description: string | null;
+  auto_detected: boolean;
+  evidence_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
 // ─── (continued) ─────────────────────────────────────────────────────────────
 
 /** PostgreSQL query parameter — union of types accepted by the `pg` driver's parameterized queries. */

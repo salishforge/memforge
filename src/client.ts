@@ -35,6 +35,9 @@ import type {
   ColdTierSearchResult,
   RestoreColdTierResult,
   SleepAdvisory,
+  SharedProcedure,
+  ExpertiseResult,
+  AgentRole,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -266,6 +269,54 @@ export class MemForgeClient {
     return this.get<SleepAdvisory>(`/memory/${enc(agentId)}/sleep/advisory`);
   }
 
+  // ─── Procedure Sharing ───────────────────────────────────────────────
+
+  /** Publish agent's active procedures to a shared pool with first-hand confidence discount. */
+  async publishProcedures(agentId: string, poolId: string, opts: { minConfidence?: number; namespace?: string } = {}): Promise<{ published: number }> {
+    return this.post<{ published: number }>(`/pool/${enc(poolId)}/procedures/publish/${enc(agentId)}`, opts);
+  }
+
+  /** Get active procedures shared in a pool. */
+  async getSharedProcedures(poolId: string, opts: { q?: string; limit?: number; offset?: number } = {}): Promise<SharedProcedure[]> {
+    const params = new URLSearchParams();
+    if (opts.q) params.set('q', opts.q);
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+    const qs = params.toString();
+    return this.get<SharedProcedure[]>(`/pool/${enc(poolId)}/procedures${qs ? '?' + qs : ''}`);
+  }
+
+  // ─── Expertise Discovery ─────────────────────────────────────────────
+
+  /** Rank pool members by expertise for a query topic. */
+  async expertiseDiscovery(poolId: string, query: string, opts: { limit?: number } = {}): Promise<ExpertiseResult[]> {
+    const params = new URLSearchParams({ q: query });
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    return this.get<ExpertiseResult[]>(`/pool/${enc(poolId)}/expertise?${params.toString()}`);
+  }
+
+  // ─── Agent Roles ─────────────────────────────────────────────────────
+
+  /** Declare or update an expertise role for an agent. */
+  async declareRole(agentId: string, domain: string, opts: { confidence?: number; description?: string } = {}): Promise<AgentRole> {
+    return this.post<AgentRole>(`/memory/${enc(agentId)}/roles`, { domain, ...opts });
+  }
+
+  /** Get all declared roles for an agent. */
+  async getRoles(agentId: string): Promise<AgentRole[]> {
+    return this.get<AgentRole[]>(`/memory/${enc(agentId)}/roles`);
+  }
+
+  /** Delete a role from an agent. */
+  async deleteRole(agentId: string, domain: string): Promise<{ deleted: boolean }> {
+    return this.delete<{ deleted: boolean }>(`/memory/${enc(agentId)}/roles/${enc(domain)}`);
+  }
+
+  /** Auto-detect expertise roles from knowledge graph and procedures. */
+  async autoDetectRoles(agentId: string): Promise<AgentRole[]> {
+    return this.post<AgentRole[]>(`/memory/${enc(agentId)}/roles/detect`, {});
+  }
+
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
@@ -293,6 +344,14 @@ export class MemForgeClient {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
+    });
+    return this.unwrap<T>(res);
+  }
+
+  private async delete<T>(path: string): Promise<T> {
+    const res = await this._fetch(`${this.baseUrl}${path}`, {
+      method: 'DELETE',
+      headers: this.headers(),
     });
     return this.unwrap<T>(res);
   }
@@ -431,6 +490,34 @@ export class ResilientMemForgeClient {
 
   async sleepAdvisory(agentId: string): Promise<SleepAdvisory | null> {
     return this.safe('sleepAdvisory', () => this.client.sleepAdvisory(agentId), null);
+  }
+
+  async publishProcedures(agentId: string, poolId: string, opts: Parameters<MemForgeClient['publishProcedures']>[2] = {}): Promise<{ published: number } | null> {
+    return this.safe('publishProcedures', () => this.client.publishProcedures(agentId, poolId, opts), null);
+  }
+
+  async getSharedProcedures(poolId: string, opts: Parameters<MemForgeClient['getSharedProcedures']>[1] = {}): Promise<SharedProcedure[]> {
+    return this.safe('getSharedProcedures', () => this.client.getSharedProcedures(poolId, opts), []);
+  }
+
+  async expertiseDiscovery(poolId: string, query: string, opts: Parameters<MemForgeClient['expertiseDiscovery']>[2] = {}): Promise<ExpertiseResult[]> {
+    return this.safe('expertiseDiscovery', () => this.client.expertiseDiscovery(poolId, query, opts), []);
+  }
+
+  async declareRole(agentId: string, domain: string, opts: Parameters<MemForgeClient['declareRole']>[2] = {}): Promise<AgentRole | null> {
+    return this.safe('declareRole', () => this.client.declareRole(agentId, domain, opts), null);
+  }
+
+  async getRoles(agentId: string): Promise<AgentRole[]> {
+    return this.safe('getRoles', () => this.client.getRoles(agentId), []);
+  }
+
+  async deleteRole(agentId: string, domain: string): Promise<{ deleted: boolean } | null> {
+    return this.safe('deleteRole', () => this.client.deleteRole(agentId, domain), null);
+  }
+
+  async autoDetectRoles(agentId: string): Promise<AgentRole[]> {
+    return this.safe('autoDetectRoles', () => this.client.autoDetectRoles(agentId), []);
   }
 
   async health(): Promise<HealthStatus | null> {

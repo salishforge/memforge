@@ -293,17 +293,98 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_publish_procedures',
+    description: 'Publish an agent\'s active procedures (condition→action rules) to a shared pool. Applies a 0.8× confidence discount per hop. The agent must be a pool member.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent whose procedures to publish' },
+        pool_id: { type: 'string', description: 'Target shared pool ID' },
+        min_confidence: { type: 'number', description: 'Minimum confidence threshold (0–1, default 0)', minimum: 0, maximum: 1 },
+        namespace: { type: 'string', description: 'Namespace to filter procedures (default: "default")' },
+      },
+      required: ['agent_id', 'pool_id'],
+    },
+  },
+  {
+    name: 'memforge_shared_procedures',
+    description: 'List active procedures shared in a pool, ranked by confidence and corroboration. Use to discover what condition→action rules other agents have learned.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pool_id: { type: 'string', description: 'Pool ID to query' },
+        q: { type: 'string', description: 'Optional text filter on condition or action' },
+        limit: { type: 'number', description: 'Max results (default 50, max 200)', minimum: 1, maximum: 200 },
+      },
+      required: ['pool_id'],
+    },
+  },
+  {
+    name: 'memforge_expertise',
+    description: 'Discover which pool members know the most about a topic. Returns agents ranked by relevance score with sample matching memories. Use to route questions to the right agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pool_id: { type: 'string', description: 'Pool to search across' },
+        q: { type: 'string', description: 'Topic or question to match against agent memories' },
+        limit: { type: 'number', description: 'Max agents to return (default 10, max 50)', minimum: 1, maximum: 50 },
+      },
+      required: ['pool_id', 'q'],
+    },
+  },
+  {
+    name: 'memforge_declare_role',
+    description: 'Declare an expertise domain for an agent. Roles are used by expertise discovery and for routing queries in multi-agent systems. Upserts on (agent_id, domain).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent to declare the role for' },
+        domain: { type: 'string', description: 'Domain name (e.g. "security", "frontend", "person")' },
+        confidence: { type: 'number', description: 'Confidence in this role (0–1)', minimum: 0, maximum: 1 },
+        description: { type: 'string', description: 'Human-readable description of the role' },
+      },
+      required: ['agent_id', 'domain'],
+    },
+  },
+  {
+    name: 'memforge_roles',
+    description: 'Get all declared expertise roles for an agent, ordered by confidence. Includes both manually declared and auto-detected roles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_detect_roles',
+    description: 'Auto-detect expertise roles from an agent\'s knowledge graph and active procedures. Updates or creates role entries with auto_detected=true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
 
 const AGENT_ID_RE = /^[\w.@:=-]+$/;
 
+// Tools that use pool_id as primary key instead of agent_id
+const POOL_ONLY_TOOLS = new Set(['memforge_shared_procedures', 'memforge_expertise']);
+
 function validateToolArgs(name: string, args: Record<string, unknown>): void {
-  // agent_id: required string, 1-256 chars, safe pattern
-  const agentId = args['agent_id'];
-  if (typeof agentId !== 'string' || agentId.length < 1 || agentId.length > 256 || !AGENT_ID_RE.test(agentId)) {
-    throw new Error('agent_id must be a string of 1-256 characters matching /^[\\w.@:=-]+$/');
+  // agent_id: required for agent-scoped tools
+  if (!POOL_ONLY_TOOLS.has(name)) {
+    const agentId = args['agent_id'];
+    if (typeof agentId !== 'string' || agentId.length < 1 || agentId.length > 256 || !AGENT_ID_RE.test(agentId)) {
+      throw new Error('agent_id must be a string of 1-256 characters matching /^[\\w.@:=-]+$/');
+    }
   }
 
   // q param: string, max 10000 chars
@@ -430,6 +511,35 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_sleep_advisory':
       return client.sleepAdvisory(agentId);
+
+    case 'memforge_publish_procedures':
+      return client.publishProcedures(agentId, args['pool_id'] as string, {
+        minConfidence: args['min_confidence'] as number | undefined,
+        namespace: args['namespace'] as string | undefined,
+      });
+
+    case 'memforge_shared_procedures':
+      return client.getSharedProcedures(args['pool_id'] as string, {
+        q: args['q'] as string | undefined,
+        limit: args['limit'] as number | undefined,
+      });
+
+    case 'memforge_expertise':
+      return client.expertiseDiscovery(args['pool_id'] as string, args['q'] as string, {
+        limit: args['limit'] as number | undefined,
+      });
+
+    case 'memforge_declare_role':
+      return client.declareRole(agentId, args['domain'] as string, {
+        confidence: args['confidence'] as number | undefined,
+        description: args['description'] as string | undefined,
+      });
+
+    case 'memforge_roles':
+      return client.getRoles(agentId);
+
+    case 'memforge_detect_roles':
+      return client.autoDetectRoles(agentId);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

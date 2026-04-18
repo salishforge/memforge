@@ -1235,6 +1235,99 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
+  // ─── Procedure Sharing Routes ─────────────────────────────────────────
+
+  app.post('/pool/:poolId/procedures/publish/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { PublishProceduresSchema } = await import('./schemas.js');
+    const parse = PublishProceduresSchema.safeParse(req.body);
+    if (!parse.success) { fail(res, 400, parse.error.issues[0]?.message ?? 'invalid request'); return; }
+    try {
+      const agentId = getAgentId(req);
+      const result = await manager.publishProcedures(agentId, req.params['poolId'] ?? '', {
+        minConfidence: parse.data.min_confidence,
+        namespace: parse.data.namespace,
+      });
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === 'NOT_MEMBER') { fail(res, 403, e.message); }
+      else { fail(res, 500, e.message); }
+    }
+  });
+
+  app.get('/pool/:poolId/procedures', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const q = typeof req.query['q'] === 'string' ? req.query['q'] : undefined;
+    const limit = req.query['limit'] !== undefined ? parseInt(req.query['limit'] as string, 10) : undefined;
+    const offset = req.query['offset'] !== undefined ? parseInt(req.query['offset'] as string, 10) : undefined;
+    try {
+      const procs = await manager.getSharedProcedures(req.params['poolId'] ?? '', { q, limit, offset });
+      ok(res, procs);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  // ─── Expertise Discovery Route ────────────────────────────────────────
+
+  app.get('/pool/:poolId/expertise', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const q = typeof req.query['q'] === 'string' ? req.query['q'] : undefined;
+    const limit = req.query['limit'] !== undefined ? parseInt(req.query['limit'] as string, 10) : undefined;
+    if (!q) { fail(res, 400, '"q" query parameter is required'); return; }
+    try {
+      const results = await manager.expertiseDiscovery(req.params['poolId'] ?? '', q, { limit });
+      ok(res, results);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) { fail(res, 400, e.message); }
+      else { fail(res, 500, e.message); }
+    }
+  });
+
+  // ─── Agent Roles Routes ───────────────────────────────────────────────
+
+  app.post('/memory/:agentId/roles', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const { DeclareRoleSchema } = await import('./schemas.js');
+    const parse = DeclareRoleSchema.safeParse(req.body);
+    if (!parse.success) { fail(res, 400, parse.error.issues[0]?.message ?? 'invalid request'); return; }
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    try {
+      const role = await manager.declareRole(agentId, parse.data.domain, {
+        confidence: parse.data.confidence,
+        description: parse.data.description,
+      });
+      ok(res, role);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.get('/memory/:agentId/roles', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    try {
+      const roles = await manager.getRoles(agentId);
+      ok(res, roles);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.delete('/memory/:agentId/roles/:domain', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    const domain = req.params['domain'] ?? '';
+    if (!domain) { fail(res, 400, 'domain is required'); return; }
+    try {
+      const result = await manager.deleteRole(agentId, domain);
+      if (!result.deleted) { fail(res, 404, `Role '${domain}' not found`); return; }
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.post('/memory/:agentId/roles/detect', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    try {
+      const roles = await manager.autoDetectRoles(agentId);
+      ok(res, roles);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
   // ─── Global error handler ─────────────────────────────────────────────
 
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

@@ -77,7 +77,7 @@ An agent with 6+ months of accumulated memory, warm tier at 50K+ entries, demons
 
 *Agents don't exist in isolation. Enable knowledge sharing and collective intelligence.*
 
-All Phase 3 core items are implemented:
+All Phase 3 items are implemented:
 - **Memory export/import** — JSONL export/import for backup, migration, seeding
 - **Shared memory pools** — hierarchical team/global pools with publish/subscribe
 - **Provenance chains** — source_chain tracking across agent hops
@@ -85,12 +85,9 @@ All Phase 3 core items are implemented:
 - **Per-domain reputation** — earned through corroboration/contradiction signals
 - **Pool sleep cycles** — deduplication, conflict resolution, corroboration promotion
 - **Cross-agent conflict detection** — private vs shared memory contradiction flagging
-
-### Remaining
-
-- **Procedure sharing** — condition→action rules offered across agents
-- **Expertise discovery** — route questions to the most relevant agent's memory
-- **Role-aware memory** — agents track their own expertise boundaries
+- **Procedure sharing** — condition→action rules published to pools with confidence discount; queryable by any pool member (`POST /pool/:id/procedures/publish/:agentId`, `GET /pool/:id/procedures`) — ✅ DONE (v3.1.0)
+- **Expertise discovery** — rank pool members by topic relevance via FTS across all member warm tiers (`GET /pool/:id/expertise?q=`) — ✅ DONE (v3.1.0)
+- **Role-aware memory** — agents declare or auto-detect expertise domains from knowledge graph entity distribution and procedure volume (`GET/POST /memory/:id/roles`, `POST /memory/:id/roles/detect`) — ✅ DONE (v3.1.0)
 
 ---
 

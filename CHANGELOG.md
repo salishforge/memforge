@@ -2,6 +2,48 @@
 
 All notable changes to MemForge are documented here.
 
+## [3.1.0] - 2026-04-18 — Phase 3 completion: Cross-Agent Learning
+
+Completes Phase 3 of the ROADMAP. Adds procedure sharing across pools,
+expertise discovery across pool members, and role-aware memory — the
+remaining three items that were deferred from the initial Phase 3 cut.
+
+### Added
+
+- **Procedure sharing** — `POST /pool/:id/procedures/publish/:agentId`
+  copies an agent's active procedures to a shared pool with a 0.8×
+  confidence discount (same hearsay model as memory publishing).
+  `GET /pool/:id/procedures?q=` returns active shared procedures ranked
+  by confidence and corroboration count. New `shared_procedures` table
+  (`schema/migration-v3.2.sql`). Available via HTTP, MCP
+  (`memforge_publish_procedures`, `memforge_shared_procedures`),
+  TypeScript SDK, and OpenAPI.
+
+- **Expertise discovery** — `GET /pool/:id/expertise?q=topic` ranks
+  pool members by FTS relevance score across all their warm-tier
+  memories. Returns per-agent score, match count, and top matching
+  memory excerpts. Use this to route questions to the right agent in
+  a multi-agent system. Available via HTTP, MCP (`memforge_expertise`),
+  TypeScript SDK, and OpenAPI.
+
+- **Role-aware memory** — agents declare or auto-detect expertise
+  domains. `POST /memory/:id/roles` declares a role (upserts on
+  `(agent_id, domain)`). `GET /memory/:id/roles` returns all roles
+  ordered by confidence. `DELETE /memory/:id/roles/:domain` removes
+  one. `POST /memory/:id/roles/detect` auto-detects domains from the
+  knowledge graph entity-type distribution and active procedure count —
+  no LLM required. New `agent_roles` table
+  (`schema/migration-v3.2.sql`). Available via HTTP, MCP
+  (`memforge_declare_role`, `memforge_roles`, `memforge_detect_roles`),
+  TypeScript SDK, and OpenAPI.
+
+### Changed
+
+- `deletePool()` comment updated to note that `shared_procedures` also
+  cascades on pool deletion.
+
+---
+
 ## [3.0.0-beta.4] - 2026-04-18 — Phase 2: Long-Term Memory at Scale
 
 Completes Phase 2 of the ROADMAP. Adds domain partitioning, cold-tier

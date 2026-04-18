@@ -57,6 +57,9 @@ import type {
   SleepAdvisorySignal,
   SleepAdvisoryThresholds,
   SleepUrgency,
+  SharedProcedure,
+  ExpertiseResult,
+  AgentRole,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 
@@ -2729,12 +2732,224 @@ Guidelines:
   }
 
   async deletePool(poolId: string): Promise<{ deleted: boolean }> {
-    // Cascade deletes shared_memories and pool_memberships via FK
+    // Cascade deletes shared_memories, shared_procedures, and pool_memberships via FK
     const { rowCount } = await this.pool.query(
       `DELETE FROM shared_pools WHERE id = $1`,
       [poolId],
     );
     return { deleted: (rowCount ?? 0) > 0 };
+  }
+
+  // ─── Procedure Sharing ──────────────────────────────────────────────────
+
+  async publishProcedures(agentId: string, poolId: string, opts: { minConfidence?: number; namespace?: string } = {}): Promise<{ published: number }> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(opts.namespace);
+    const minConf = opts.minConfidence ?? 0;
+
+    const membership = await this.pool.query(
+      `SELECT 1 FROM pool_memberships WHERE agent_id = $1 AND pool_id = $2`,
+      [agentId, poolId],
+    );
+    if (membership.rows.length === 0) {
+      throw Object.assign(new Error(`Agent '${agentId}' is not a member of pool '${poolId}'`), { code: 'NOT_MEMBER' });
+    }
+
+    const { rows: procs } = await this.pool.query<{ condition: string; action: string; confidence: number; metadata: Record<string, unknown> }>(
+      `SELECT condition, action, confidence, metadata FROM procedures
+       WHERE agent_id = $1 AND namespace = $2 AND active = true AND confidence >= $3`,
+      [agentId, ns, minConf],
+    );
+
+    let published = 0;
+    for (const p of procs) {
+      // Hop count 1 — direct publication from the owning agent
+      await this.pool.query(
+        `INSERT INTO shared_procedures (pool_id, source_agent_id, condition, action, confidence, hop_count, metadata)
+         VALUES ($1, $2, $3, $4, $5, 1, $6)
+         ON CONFLICT DO NOTHING`,
+        [poolId, agentId, p.condition, p.action, p.confidence * 0.8, JSON.stringify(p.metadata)],
+      );
+      published++;
+    }
+
+    return { published };
+  }
+
+  async getSharedProcedures(poolId: string, opts: { q?: string; limit?: number; offset?: number } = {}): Promise<SharedProcedure[]> {
+    const limit = Math.min(opts.limit ?? 50, 200);
+    const offset = opts.offset ?? 0;
+
+    const params: SqlParam[] = [poolId];
+    let filter = '';
+    if (opts.q) {
+      params.push(`%${escapeLike(opts.q)}%`);
+      filter = ` AND (condition ILIKE $${params.length} OR action ILIKE $${params.length})`;
+    }
+
+    const { rows } = await this.pool.query<SharedProcedure>(
+      `SELECT id, pool_id, source_agent_id, condition, action, confidence, hop_count,
+              corroboration_count, active, metadata, published_at
+       FROM shared_procedures
+       WHERE pool_id = $1 AND active = true${filter}
+       ORDER BY confidence DESC, corroboration_count DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    );
+    return rows;
+  }
+
+  // ─── Expertise Discovery ─────────────────────────────────────────────────
+
+  async expertiseDiscovery(poolId: string, query: string, opts: { limit?: number } = {}): Promise<ExpertiseResult[]> {
+    if (!query.trim()) throw new TypeError('query must be non-empty');
+    const limit = Math.min(opts.limit ?? 10, 50);
+
+    // FTS across warm_tier of all pool members, rank by best score per agent
+    const { rows } = await this.pool.query<{
+      agent_id: string;
+      score: number;
+      match_count: string;
+      top_ids: string;
+      top_contents: string;
+      top_importances: string;
+    }>(
+      `SELECT
+         wt.agent_id,
+         MAX(ts_rank_cd(wt.content_tsv, q)) AS score,
+         COUNT(*)::text AS match_count,
+         string_agg(wt.id::text, ',' ORDER BY ts_rank_cd(wt.content_tsv, q) DESC) AS top_ids,
+         string_agg(LEFT(wt.content, 200), '||' ORDER BY ts_rank_cd(wt.content_tsv, q) DESC) AS top_contents,
+         string_agg(wt.importance::text, ',' ORDER BY ts_rank_cd(wt.content_tsv, q) DESC) AS top_importances
+       FROM warm_tier wt
+       JOIN pool_memberships pm ON pm.agent_id = wt.agent_id AND pm.pool_id = $1,
+            plainto_tsquery('english', $2) AS q
+       WHERE wt.content_tsv @@ q
+       GROUP BY wt.agent_id
+       ORDER BY score DESC
+       LIMIT $3`,
+      [poolId, query, limit],
+    );
+
+    return rows.map((r) => {
+      const ids = (r.top_ids ?? '').split(',').slice(0, 3);
+      const contents = (r.top_contents ?? '').split('||').slice(0, 3);
+      const importances = (r.top_importances ?? '').split(',').slice(0, 3);
+      return {
+        agent_id: r.agent_id,
+        score: r.score,
+        match_count: parseInt(r.match_count, 10),
+        top_memories: ids.map((id, i) => ({
+          id: BigInt(id ?? '0'),
+          content: contents[i] ?? '',
+          importance: parseFloat(importances[i] ?? '0'),
+        })),
+      };
+    });
+  }
+
+  // ─── Agent Roles ─────────────────────────────────────────────────────────
+
+  async declareRole(agentId: string, domain: string, opts: { confidence?: number; description?: string } = {}): Promise<AgentRole> {
+    this.assertAgentId(agentId);
+    if (this.config.autoRegisterAgents) await this.registerAgent(agentId);
+
+    const confidence = Math.min(1, Math.max(0, opts.confidence ?? 0.5));
+    const { rows } = await this.pool.query<AgentRole>(
+      `INSERT INTO agent_roles (agent_id, domain, confidence, description, auto_detected, evidence_count)
+       VALUES ($1, $2, $3, $4, false, 0)
+       ON CONFLICT (agent_id, domain) DO UPDATE SET
+         confidence = EXCLUDED.confidence,
+         description = COALESCE(EXCLUDED.description, agent_roles.description),
+         auto_detected = false,
+         updated_at = now()
+       RETURNING *`,
+      [agentId, domain, confidence, opts.description ?? null],
+    );
+    return rows[0]!;
+  }
+
+  async getRoles(agentId: string): Promise<AgentRole[]> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<AgentRole>(
+      `SELECT agent_id, domain, confidence, description, auto_detected, evidence_count, created_at, updated_at
+       FROM agent_roles WHERE agent_id = $1 ORDER BY confidence DESC, domain`,
+      [agentId],
+    );
+    return rows;
+  }
+
+  async deleteRole(agentId: string, domain: string): Promise<{ deleted: boolean }> {
+    this.assertAgentId(agentId);
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM agent_roles WHERE agent_id = $1 AND domain = $2`,
+      [agentId, domain],
+    );
+    return { deleted: (rowCount ?? 0) > 0 };
+  }
+
+  async autoDetectRoles(agentId: string): Promise<AgentRole[]> {
+    this.assertAgentId(agentId);
+    if (this.config.autoRegisterAgents) await this.registerAgent(agentId);
+
+    // Derive domains from knowledge graph entity type distribution
+    const { rows: entityTypes } = await this.pool.query<{ entity_type: string; count: string }>(
+      `SELECT entity_type, count(*)::text AS count
+       FROM entities WHERE agent_id = $1
+       GROUP BY entity_type HAVING count(*) >= 2
+       ORDER BY count(*) DESC LIMIT 10`,
+      [agentId],
+    );
+
+    const totalEntities = entityTypes.reduce((s, r) => s + parseInt(r.count, 10), 0);
+
+    const { rows: procStats } = await this.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM procedures WHERE agent_id = $1 AND active = true`,
+      [agentId],
+    );
+    const procCount = parseInt(procStats[0]?.count ?? '0', 10);
+
+    const toUpsert: Array<{ domain: string; confidence: number; description: string; evidence: number }> = [];
+
+    for (const et of entityTypes) {
+      const count = parseInt(et.count, 10);
+      toUpsert.push({
+        domain: et.entity_type,
+        confidence: Math.min(0.9, 0.4 + count / Math.max(totalEntities, 1)),
+        description: `Auto-detected: ${count} ${et.entity_type} entities in knowledge graph`,
+        evidence: count,
+      });
+    }
+
+    if (procCount >= 5) {
+      toUpsert.push({
+        domain: 'procedural',
+        confidence: Math.min(0.9, 0.4 + procCount / 20),
+        description: `Auto-detected: ${procCount} active procedures`,
+        evidence: procCount,
+      });
+    }
+
+    if (toUpsert.length === 0) return [];
+
+    const roles: AgentRole[] = [];
+    for (const r of toUpsert) {
+      const { rows } = await this.pool.query<AgentRole>(
+        `INSERT INTO agent_roles (agent_id, domain, confidence, description, auto_detected, evidence_count)
+         VALUES ($1, $2, $3, $4, true, $5)
+         ON CONFLICT (agent_id, domain) DO UPDATE SET
+           confidence = GREATEST(agent_roles.confidence, EXCLUDED.confidence),
+           description = EXCLUDED.description,
+           auto_detected = true,
+           evidence_count = EXCLUDED.evidence_count,
+           updated_at = now()
+         RETURNING *`,
+        [agentId, r.domain, r.confidence, r.description, r.evidence],
+      );
+      if (rows[0]) roles.push(rows[0]);
+    }
+
+    return roles;
   }
 
   // ─── Export/Import ──────────────────────────────────────────────────────

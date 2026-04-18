@@ -547,6 +547,136 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/pool/{poolId}/procedures/publish/{agentId}': {
+        post: {
+          summary: 'Publish agent procedures to a shared pool',
+          tags: ['Pools'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'poolId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    min_confidence: { type: 'number', description: 'Minimum confidence threshold (default 0)', minimum: 0, maximum: 1 },
+                    namespace: { type: 'string', description: 'Namespace to filter procedures (default: "default")' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Number of procedures published' },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '403': { description: 'Agent is not a pool member' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/pool/{poolId}/procedures': {
+        get: {
+          summary: 'List procedures shared in a pool',
+          tags: ['Pools'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'poolId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'q', in: 'query', schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 200 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
+          ],
+          responses: {
+            '200': { description: 'Array of shared procedures' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/pool/{poolId}/expertise': {
+        get: {
+          summary: 'Discover which pool members know the most about a topic',
+          tags: ['Pools'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'poolId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'q', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', default: 10, maximum: 50 } },
+          ],
+          responses: {
+            '200': { description: 'Agents ranked by relevance score with sample memories' },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/roles': {
+        get: {
+          summary: 'Get all expertise roles for an agent',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'agentId', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': { description: 'Array of agent roles' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+        post: {
+          summary: 'Declare or update an expertise role for an agent',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'agentId', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['domain'],
+                  properties: {
+                    domain: { type: 'string', description: 'Domain name (1–128 chars)' },
+                    confidence: { type: 'number', minimum: 0, maximum: 1 },
+                    description: { type: 'string', maxLength: 1000 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Created or updated role' },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/roles/{domain}': {
+        delete: {
+          summary: 'Delete an expertise role from an agent',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'domain', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': { description: 'Deletion result' },
+            '404': { '$ref': '#/components/responses/NotFound' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/roles/detect': {
+        post: {
+          summary: 'Auto-detect expertise roles from knowledge graph and procedures',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'agentId', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': { description: 'Array of detected roles' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/admin/cache/stats': {
         get: {
           summary: 'Cache statistics (admin)',
