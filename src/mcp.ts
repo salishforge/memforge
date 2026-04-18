@@ -54,6 +54,7 @@ const TOOLS: MCPToolDefinition[] = [
         agent_id: { type: 'string', description: 'Agent/session identifier' },
         content: { type: 'string', description: 'Memory content to store' },
         metadata: { type: 'object', description: 'Optional structured metadata' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
       },
       required: ['agent_id', 'content'],
     },
@@ -68,6 +69,7 @@ const TOOLS: MCPToolDefinition[] = [
         q: { type: 'string', description: 'Natural language search query' },
         limit: { type: 'integer', description: 'Max results (default 10)' },
         mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'], description: 'Search mode' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
       },
       required: ['agent_id', 'q'],
     },
@@ -82,6 +84,7 @@ const TOOLS: MCPToolDefinition[] = [
         from: { type: 'string', description: 'Start of time range (ISO 8601)' },
         to: { type: 'string', description: 'End of time range (ISO 8601)' },
         limit: { type: 'integer', description: 'Max results (default 50)' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
       },
       required: ['agent_id'],
     },
@@ -145,6 +148,7 @@ const TOOLS: MCPToolDefinition[] = [
       properties: {
         agent_id: { type: 'string', description: 'Agent/session identifier' },
         mode: { type: 'string', enum: ['concat', 'summarize'], description: 'Consolidation mode' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
       },
       required: ['agent_id'],
     },
@@ -164,7 +168,7 @@ const TOOLS: MCPToolDefinition[] = [
   },
   {
     name: 'memforge_sleep',
-    description: 'Trigger a sleep cycle — scores importance, evicts low-value memories, revises low-confidence memories via LLM, maintains graph.',
+    description: 'Trigger a sleep cycle — scores importance, evicts low-value memories, revises low-confidence memories via LLM, maintains graph. Agent-wide: processes all namespaces for the agent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -192,6 +196,7 @@ const TOOLS: MCPToolDefinition[] = [
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: overall stats)' },
       },
       required: ['agent_id'],
     },
@@ -299,13 +304,14 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
   switch (name) {
     case 'memforge_add':
-      return client.add(agentId, args['content'] as string, args['metadata'] as Record<string, unknown> | undefined);
+      return client.add(agentId, args['content'] as string, args['metadata'] as Record<string, unknown> | undefined, args['namespace'] as string | undefined);
 
     case 'memforge_query':
       return client.query(agentId, {
         q: args['q'] as string,
         limit: args['limit'] as number | undefined,
         mode: args['mode'] as 'keyword' | 'semantic' | 'hybrid' | undefined,
+        namespace: args['namespace'] as string | undefined,
       });
 
     case 'memforge_timeline':
@@ -313,6 +319,7 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
         from: args['from'] as string | undefined,
         to: args['to'] as string | undefined,
         limit: args['limit'] as number | undefined,
+        namespace: args['namespace'] as string | undefined,
       });
 
     case 'memforge_entities':
@@ -332,7 +339,7 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
       return client.getReflections(agentId, args['limit'] as number | undefined);
 
     case 'memforge_consolidate':
-      return client.consolidate(agentId, args['mode'] as 'concat' | 'summarize' | undefined);
+      return client.consolidate(agentId, args['mode'] as 'concat' | 'summarize' | undefined, args['namespace'] as string | undefined);
 
     case 'memforge_procedures':
       return client.getProcedures(agentId, {
@@ -349,7 +356,7 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
       return client.memoryHealth(agentId);
 
     case 'memforge_stats':
-      return client.stats(agentId);
+      return client.stats(agentId, args['namespace'] as string | undefined);
 
     case 'memforge_feedback':
       return client.feedback(agentId, args['retrieval_ids'] as number[], args['outcome'] as 'positive' | 'negative' | 'neutral');

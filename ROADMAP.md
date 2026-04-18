@@ -56,7 +56,7 @@ All Phase 1 items are implemented:
 
 ### Memory Lifecycle Management
 
-- **Memory namespaces** — Partition memories by domain, project, or context so agents with broad responsibilities maintain focused retrieval ([#16](https://github.com/salishforge/memforge/issues/16)) — *in progress: backend (schema + MemoryManager + tests) in PR #TBD; HTTP/MCP/SDK/OpenAPI surface in follow-up (C.2)*
+- **Memory namespaces** — Partition memories by domain, project, or context so agents with broad responsibilities maintain focused retrieval ([#16](https://github.com/salishforge/memforge/issues/16)) — ✅ DONE: backend in PR #100; HTTP/MCP/TypeScript SDK/OpenAPI/Python SDK surface in this PR (C.2)
 - **Per-agent importance tuning** — Different agents need different memory profiles. A support agent should weight recency; a research agent should weight graph centrality ([#17](https://github.com/salishforge/memforge/issues/17)) — ✅ DONE: shipped in v2.4 migration (#57) — `agents.scoring_weights` JSONB column wired into sleep cycle phase 1
 - **Cold tier search and restoration** — Query archived memories and selectively restore them when context shifts back to old topics ([#14](https://github.com/salishforge/memforge/issues/14))
 

@@ -847,10 +847,12 @@ Ranking (numbers only):`;
     from?: Date,
     to?: Date,
     limit = 50,
+    namespace?: string,
   ): Promise<TimelineEntry[]> {
     this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
 
-    const params: SqlParam[] =[agentId];
+    const params: SqlParam[] = [agentId, ns];
     const clauses: string[] = [];
 
     if (from) {
@@ -868,7 +870,7 @@ Ranking (numbers only):`;
     const { rows } = await this.pool.query<TimelineEntry>(
       `SELECT id, content, metadata, time_start, time_end, consolidated_at, access_count
        FROM warm_tier
-       WHERE agent_id = $1
+       WHERE agent_id = $1 AND namespace = $2
          ${clauses.join(' ')}
        ORDER BY COALESCE(time_start, consolidated_at) ASC
        LIMIT $${limitIdx}`,
@@ -1359,9 +1361,14 @@ Ranking (numbers only):`;
 
   // ─── stats ────────────────────────────────────────────────────────────────
 
-  async stats(agentId: string): Promise<AgentStats> {
+  async stats(agentId: string, namespace?: string): Promise<AgentStats> {
     this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
 
+    // Namespaced subqueries filter by (agent_id, namespace). Entities and
+    // relationships are agent-scoped (not namespaced) by design — see
+    // migration-v3.1 header for why — so those counts are the full agent totals
+    // regardless of namespace filter.
     const { rows: statsRows } = await this.pool.query<{
       last_seen: Date;
       hot_count: string;
@@ -1374,18 +1381,18 @@ Ranking (numbers only):`;
     }>(
       `SELECT
          a.last_seen,
-         (SELECT count(*) FROM hot_tier WHERE agent_id = $1) AS hot_count,
-         (SELECT count(*) FROM warm_tier WHERE agent_id = $1) AS warm_count,
-         (SELECT count(*) FROM cold_tier WHERE agent_id = $1) AS cold_count,
+         (SELECT count(*) FROM hot_tier WHERE agent_id = $1 AND namespace = $2) AS hot_count,
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1 AND namespace = $2) AS warm_count,
+         (SELECT count(*) FROM cold_tier WHERE agent_id = $1 AND namespace = $2) AS cold_count,
          (SELECT count(*) FROM entities WHERE agent_id = $1) AS entity_count,
          (SELECT count(*) FROM relationships WHERE agent_id = $1) AS relationship_count,
-         (SELECT count(*) FROM reflections WHERE agent_id = $1) AS reflection_count,
+         (SELECT count(*) FROM reflections WHERE agent_id = $1 AND namespace = $2) AS reflection_count,
          (SELECT completed_at FROM consolidation_log
-          WHERE agent_id = $1 AND status = 'complete'
+          WHERE agent_id = $1 AND namespace = $2 AND status = 'complete'
           ORDER BY completed_at DESC LIMIT 1) AS last_consolidation
        FROM agents a
        WHERE a.id = $1`,
-      [agentId],
+      [agentId, ns],
     );
 
     if (statsRows.length === 0) {
@@ -2047,11 +2054,12 @@ Ranking (numbers only):`;
    * Generate a resumption context for an agent starting a new session.
    * Returns recent important memories, active procedures, and open contradictions.
    */
-  async resume(agentId: string, limit = 5): Promise<ResumeContext> {
+  async resume(agentId: string, limit = 5, namespace?: string): Promise<ResumeContext> {
     this.assertAgentId(agentId);
     if (limit < 1 || limit > 20) {
       throw new TypeError('limit must be between 1 and 20');
     }
+    const ns = resolveNamespace(namespace);
 
     // Get agent last_seen
     const agentRow = await this.pool.query<{ last_seen: Date }>(
@@ -2061,28 +2069,28 @@ Ranking (numbers only):`;
     const lastSeen = agentRow.rows[0]?.last_seen ?? null;
     const timeSinceMs = lastSeen ? Date.now() - lastSeen.getTime() : null;
 
-    // Top memories by importance
+    // Top memories by importance (scoped to namespace)
     const memories = await this.pool.query<{ id: bigint; content: string; importance: number; consolidated_at: Date }>(
       `SELECT id, content, importance, consolidated_at
-       FROM warm_tier WHERE agent_id = $1
-       ORDER BY importance DESC LIMIT $2`,
-      [agentId, limit],
+       FROM warm_tier WHERE agent_id = $1 AND namespace = $2
+       ORDER BY importance DESC LIMIT $3`,
+      [agentId, ns, limit],
     );
 
-    // Active procedures
+    // Active procedures (scoped to namespace)
     const procs = await this.pool.query<{ condition: string; action: string; confidence: number }>(
       `SELECT condition, action, confidence
-       FROM procedures WHERE agent_id = $1 AND active = true
+       FROM procedures WHERE agent_id = $1 AND namespace = $2 AND active = true
        ORDER BY confidence DESC LIMIT 10`,
-      [agentId],
+      [agentId, ns],
     );
 
-    // Open contradictions from recent reflections
+    // Open contradictions from recent reflections (scoped to namespace)
     const reflections = await this.pool.query<{ contradictions: string[] }>(
       `SELECT contradictions FROM reflections
-       WHERE agent_id = $1 AND array_length(contradictions, 1) > 0
+       WHERE agent_id = $1 AND namespace = $2 AND array_length(contradictions, 1) > 0
        ORDER BY created_at DESC LIMIT 3`,
-      [agentId],
+      [agentId, ns],
     );
     const contradictions: string[] = [];
     for (const r of reflections.rows) {
@@ -2091,11 +2099,11 @@ Ranking (numbers only):`;
       }
     }
 
-    // Memory health summary
+    // Memory health summary (scoped to namespace)
     const healthRow = await this.pool.query<{ total: string; avg_imp: number; avg_conf: number }>(
       `SELECT COUNT(*)::text as total, COALESCE(AVG(importance), 0) as avg_imp, COALESCE(AVG(confidence), 0) as avg_conf
-       FROM warm_tier WHERE agent_id = $1`,
-      [agentId],
+       FROM warm_tier WHERE agent_id = $1 AND namespace = $2`,
+      [agentId, ns],
     );
     const h = healthRow.rows[0];
 
@@ -2709,21 +2717,23 @@ Guidelines:
    * Export an agent's full memory as JSONL lines.
    * Includes warm-tier memories, entities, relationships, procedures, and reflections.
    */
-  async exportMemory(agentId: string): Promise<string[]> {
+  async exportMemory(agentId: string, namespace?: string): Promise<string[]> {
     this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
 
     const lines: string[] = [];
 
-    // Warm-tier memories
+    // Warm-tier memories (scoped to namespace)
     const memories = await this.pool.query<{ content: string; summary: string | null; metadata: Record<string, unknown>; importance: number; confidence: number; consolidated_at: Date }>(
-      `SELECT content, summary, metadata, importance, confidence, consolidated_at FROM warm_tier WHERE agent_id = $1 ORDER BY importance DESC`,
-      [agentId],
+      `SELECT content, summary, metadata, importance, confidence, consolidated_at FROM warm_tier WHERE agent_id = $1 AND namespace = $2 ORDER BY importance DESC`,
+      [agentId, ns],
     );
     for (const m of memories.rows) {
       lines.push(JSON.stringify({ type: 'memory', content: m.content, summary: m.summary, metadata: m.metadata, importance: m.importance, confidence: m.confidence, consolidated_at: m.consolidated_at }));
     }
 
-    // Entities
+    // Entities — agent-scoped (not namespaced); included in every export so
+    // knowledge graph is portable even when re-importing into a single namespace.
     const entities = await this.pool.query<{ name: string; entity_type: string; mention_count: number }>(
       `SELECT name, entity_type, mention_count FROM entities WHERE agent_id = $1`,
       [agentId],
@@ -2732,7 +2742,7 @@ Guidelines:
       lines.push(JSON.stringify({ type: 'entity', name: e.name, entity_type: e.entity_type, mention_count: e.mention_count }));
     }
 
-    // Relationships
+    // Relationships — agent-scoped (not namespaced), same reasoning as entities.
     const rels = await this.pool.query<{ source: string; target: string; relation_type: string; weight: number }>(
       `SELECT s.name as source, t.name as target, r.relation_type, r.weight
        FROM relationships r
@@ -2745,19 +2755,19 @@ Guidelines:
       lines.push(JSON.stringify({ type: 'relationship', source: r.source, target: r.target, relation_type: r.relation_type, weight: r.weight }));
     }
 
-    // Procedures
+    // Procedures (scoped to namespace)
     const procs = await this.pool.query<{ condition: string; action: string; confidence: number; active: boolean }>(
-      `SELECT condition, action, confidence, active FROM procedures WHERE agent_id = $1`,
-      [agentId],
+      `SELECT condition, action, confidence, active FROM procedures WHERE agent_id = $1 AND namespace = $2`,
+      [agentId, ns],
     );
     for (const p of procs.rows) {
       lines.push(JSON.stringify({ type: 'procedure', condition: p.condition, action: p.action, confidence: p.confidence, active: p.active }));
     }
 
-    // Reflections
+    // Reflections (scoped to namespace)
     const reflections = await this.pool.query<{ content: string; key_insights: string[]; reflection_level: number }>(
-      `SELECT content, key_insights, reflection_level FROM reflections WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [agentId],
+      `SELECT content, key_insights, reflection_level FROM reflections WHERE agent_id = $1 AND namespace = $2 ORDER BY created_at DESC LIMIT 20`,
+      [agentId, ns],
     );
     for (const r of reflections.rows) {
       lines.push(JSON.stringify({ type: 'reflection', content: r.content, key_insights: r.key_insights, reflection_level: r.reflection_level }));

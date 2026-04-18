@@ -383,3 +383,70 @@ describe('Audit endpoints without audit chain', () => {
     assert.ok(body.error.includes('not configured') || body.error.includes('Audit'));
   });
 });
+
+// ─── Namespace support ───────────────────────────────────────────────────────
+
+describe('Namespace support', () => {
+  const NS_AGENT = 'test-agent-ns';
+
+  async function cleanupNsAgent(): Promise<void> {
+    await pool.query(`DELETE FROM warm_tier WHERE agent_id = $1`, [NS_AGENT]);
+    await pool.query(`DELETE FROM hot_tier WHERE agent_id = $1`, [NS_AGENT]);
+    await pool.query(`DELETE FROM agents WHERE id = $1`, [NS_AGENT]);
+  }
+
+  before(cleanupNsAgent);
+  after(cleanupNsAgent);
+
+  it('POST /memory/:agentId/add accepts namespace:"alpha" and consolidate scopes to it', async () => {
+    const addRes = await post(`/memory/${NS_AGENT}/add`, { content: 'alpha namespace memory', namespace: 'alpha' });
+    assert.equal(addRes.status, 200);
+    const addBody = await addRes.json() as { ok: boolean; data: { id: string } };
+    assert.equal(addBody.ok, true);
+    assert.ok(addBody.data.id, 'returns memory id');
+
+    // consolidate scoped to alpha
+    const conRes = await post(`/memory/${NS_AGENT}/consolidate`, { namespace: 'alpha' });
+    assert.equal(conRes.status, 200);
+    const conBody = await conRes.json() as { ok: boolean; data: { warm_rows_created: number } };
+    assert.equal(conBody.ok, true);
+    assert.ok(conBody.data.warm_rows_created >= 1, 'warm row created for alpha namespace');
+  });
+
+  it('GET /memory/:agentId/query?namespace=alpha returns only alpha rows', async () => {
+    const res = await get(`/memory/${NS_AGENT}/query?q=alpha+namespace&namespace=alpha`);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { ok: boolean; data: unknown[] };
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.data));
+  });
+
+  it('GET /memory/:agentId/query with no namespace does not see alpha rows in default namespace', async () => {
+    // Add a default-namespace memory first so the agent has rows
+    await post(`/memory/${NS_AGENT}/add`, { content: 'default namespace memory' });
+    await post(`/memory/${NS_AGENT}/consolidate`, {});
+
+    const res = await get(`/memory/${NS_AGENT}/query?q=alpha+namespace`);
+    assert.equal(res.status, 200);
+    const body = await res.json() as { ok: boolean; data: { content?: string; summary?: string }[] };
+    assert.equal(body.ok, true);
+    const texts = body.data.map((r) => (r.summary ?? r.content ?? '').toLowerCase());
+    assert.ok(!texts.some((t) => t.includes('alpha namespace memory')), 'default query does not cross into alpha namespace');
+  });
+
+  it('invalid namespace returns 400', async () => {
+    const res = await post(`/memory/${NS_AGENT}/add`, { content: 'test', namespace: 'Foo Bar' });
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.ok(body.error.toLowerCase().includes('namespace'), 'error mentions namespace');
+  });
+
+  it('invalid namespace on GET /query returns 400', async () => {
+    const res = await get(`/memory/${NS_AGENT}/query?q=test&namespace=Foo+Bar`);
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.ok(body.error.toLowerCase().includes('namespace'));
+  });
+});
