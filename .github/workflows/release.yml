@@ -28,10 +28,12 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - run: npm run build
+      # Auth via npm Trusted Publishing (OIDC). Requires:
+      # - id-token: write permission on this workflow (set above)
+      # - A trusted publisher configured on npmjs.com for this repo + workflow
+      # No NODE_AUTH_TOKEN is needed — npm CLI uses the Actions OIDC token.
       - name: Publish package
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     name: Create GitHub Release
