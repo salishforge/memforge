@@ -61,6 +61,21 @@ export const ImportSchema = z.object({
   namespace: NamespaceSchema.optional(),
 });
 
+export const ColdTierSearchSchema = z.object({
+  q: z.string().max(10_000).optional(),
+  namespace: NamespaceSchema.optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  source_table: z.enum(['hot_tier', 'warm_tier']).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export const ColdTierRestoreSchema = z.object({
+  cold_id: z.union([z.string().regex(/^\d+$/), z.number().int().positive()]),
+  namespace: NamespaceSchema.optional(),
+});
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({

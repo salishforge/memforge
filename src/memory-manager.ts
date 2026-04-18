@@ -49,6 +49,10 @@ import type {
   OutcomeType,
   MemoryHints,
   SqlParam,
+  ColdTierRow,
+  ColdTierSearchOptions,
+  ColdTierSearchResult,
+  RestoreColdTierResult,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 
@@ -2825,5 +2829,133 @@ Guidelines:
     }
 
     return { imported, errors };
+  }
+
+  // ─── Cold Tier Search ────────────────────────────────────────────────────
+
+  async searchColdTier(agentId: string, opts: ColdTierSearchOptions = {}): Promise<ColdTierSearchResult> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(opts.namespace);
+    const limit = Math.min(opts.limit ?? 50, 500);
+    const offset = opts.offset ?? 0;
+
+    const params: SqlParam[] = [agentId, ns];
+    const conditions: string[] = ['agent_id = $1', 'namespace = $2'];
+
+    if (opts.q) {
+      params.push(`%${escapeLike(opts.q)}%`);
+      conditions.push(`content ILIKE $${params.length}`);
+    }
+    if (opts.from) {
+      params.push(opts.from);
+      conditions.push(`archived_at >= $${params.length}`);
+    }
+    if (opts.to) {
+      params.push(opts.to);
+      conditions.push(`archived_at <= $${params.length}`);
+    }
+    if (opts.sourceTable) {
+      params.push(opts.sourceTable);
+      conditions.push(`source_table = $${params.length}`);
+    }
+
+    const where = conditions.join(' AND ');
+
+    const [dataResult, countResult] = await Promise.all([
+      this.pool.query<ColdTierRow>(
+        `SELECT id, agent_id, source_table, source_id, content, metadata, archived_at, original_created_at, namespace
+         FROM cold_tier
+         WHERE ${where}
+         ORDER BY archived_at DESC
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      ),
+      this.pool.query<{ total: string }>(
+        `SELECT count(*) AS total FROM cold_tier WHERE ${where}`,
+        params,
+      ),
+    ]);
+
+    return {
+      rows: dataResult.rows,
+      total: parseInt(countResult.rows[0]!.total, 10),
+    };
+  }
+
+  // ─── Cold Tier Restore ───────────────────────────────────────────────────
+
+  async restoreColdTier(agentId: string, coldTierId: bigint, opts: { namespace?: string } = {}): Promise<RestoreColdTierResult> {
+    this.assertAgentId(agentId);
+
+    const { rows: coldRows } = await this.pool.query<ColdTierRow>(
+      `SELECT id, agent_id, source_table, source_id, content, metadata, archived_at, original_created_at, namespace
+       FROM cold_tier WHERE id = $1 AND agent_id = $2`,
+      [coldTierId, agentId],
+    );
+
+    if (coldRows.length === 0) {
+      throw Object.assign(
+        new Error(`cold_tier row ${coldTierId} not found for agent ${agentId}`),
+        { code: 'NOT_FOUND' },
+      );
+    }
+
+    const cold = coldRows[0]!;
+    const targetNamespace = opts.namespace ? resolveNamespace(opts.namespace) : cold.namespace;
+
+    const restoredMetadata: Record<string, unknown> = {
+      ...cold.metadata,
+      _restored_from_cold_id: String(cold.id),
+    };
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: warmRows } = await client.query<{ id: bigint }>(
+        `INSERT INTO warm_tier
+           (agent_id, content, source_hot_ids, metadata, time_start, time_end,
+            importance, confidence, namespace)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [
+          agentId,
+          cold.content,
+          [],
+          JSON.stringify(restoredMetadata),
+          cold.original_created_at,
+          cold.original_created_at,
+          0.5,
+          0.5,
+          targetNamespace,
+        ],
+      );
+
+      const warmId = warmRows[0]!.id;
+
+      if (this.audit) {
+        await this.audit.record(
+          agentId, 'warm_tier', warmId, 'create',
+          null, cold.content,
+          { restored_from_cold_id: String(cold.id), namespace: targetNamespace },
+          'api', null, client,
+        );
+      }
+
+      await client.query('COMMIT');
+
+      log.info({ agentId, coldTierId: String(cold.id), warmId: String(warmId), namespace: targetNamespace }, 'cold tier row restored to warm tier');
+
+      return {
+        warm_tier_id: warmId,
+        cold_tier_id: cold.id,
+        content: cold.content,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

@@ -237,8 +237,6 @@ class MemForgeClient:
             body["revisionThreshold"] = revision_threshold
         if include_reflection is not None:
             body["includeReflection"] = include_reflection
-        if namespace:
-            body["namespace"] = namespace
         raw = await self._post(f"/memory/{agent_id}/sleep", body)
         return SleepCycleResult(**raw)
 
@@ -278,6 +276,47 @@ class MemForgeClient:
     async def deduplicate_entities(self, agent_id: str, threshold: float = 0.7) -> dict[str, Any]:
         """Merge duplicate entities in the knowledge graph."""
         return await self._post(f"/memory/{agent_id}/dedup-entities", {"threshold": threshold})
+
+    # ── Cold Tier ─────────────────────────────────────────────────────────
+
+    async def search_cold_tier(
+        self,
+        agent_id: str,
+        *,
+        q: str | None = None,
+        namespace: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        source_table: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Search archived cold tier memories. Use for audit, recovery, and compliance."""
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if q:
+            params["q"] = q
+        if namespace:
+            params["namespace"] = namespace
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if source_table:
+            params["source_table"] = source_table
+        return await self._get(f"/memory/{agent_id}/cold", params)
+
+    async def restore_cold_tier(
+        self,
+        agent_id: str,
+        cold_id: int | str,
+        *,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a cold tier row to warm tier. Non-destructive — cold row is preserved."""
+        body: dict[str, Any] = {"cold_id": str(cold_id)}
+        if namespace:
+            body["namespace"] = namespace
+        return await self._post(f"/memory/{agent_id}/restore", body)
 
     # ── Shared Pools (Phase 3) ─────────────────────────────────────────────
 
