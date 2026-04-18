@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema } from './schemas.js';
 import {
   cacheGet,
   cacheSet,
@@ -1014,6 +1014,89 @@ export function createApp(deps: AppDependencies): express.Express {
       ok(res, state);
     } catch (err) {
       fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * GET /memory/:agentId/cold
+   * Query params: q?, namespace?, from?, to?, source_table?, limit?, offset?
+   */
+  app.get('/memory/:agentId/cold', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const parsed = ColdTierSearchSchema.safeParse({
+      q: req.query['q'],
+      namespace: req.query['namespace'],
+      from: req.query['from'],
+      to: req.query['to'],
+      source_table: req.query['source_table'],
+      limit: req.query['limit'],
+      offset: req.query['offset'],
+    });
+
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid query parameters');
+      return;
+    }
+
+    const { q, namespace, from, to, source_table, limit, offset } = parsed.data;
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const result = await manager.searchColdTier(agentId, {
+        q,
+        namespace,
+        from: from ? new Date(from) : undefined,
+        to: to ? new Date(to) : undefined,
+        sourceTable: source_table,
+        limit,
+        offset,
+      });
+      ok(res, result);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * POST /memory/:agentId/restore
+   * Body: { cold_id: string|number, namespace?: string }
+   */
+  app.post('/memory/:agentId/restore', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = ColdTierRestoreSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid request body');
+      return;
+    }
+
+    const { cold_id, namespace } = parsed.data;
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const result = await manager.restoreColdTier(agentId, BigInt(cold_id), namespace ? { namespace } : {});
+      void invalidateAgent(agentId);
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === 'NOT_FOUND') {
+        fail(res, 404, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
     }
   });
 

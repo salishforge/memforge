@@ -228,6 +228,37 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id', 'context'],
     },
   },
+  {
+    name: 'memforge_cold_search',
+    description: 'Search archived (cold tier) memories. Use for audit, recovery, and compliance. Returns rows still within the retention window.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        q: { type: 'string', description: 'Substring match on content (case-insensitive)' },
+        namespace: { type: 'string', description: 'Filter by namespace; defaults to "default"' },
+        from: { type: 'string', format: 'date-time', description: 'Filter archived_at >= from' },
+        to: { type: 'string', format: 'date-time', description: 'Filter archived_at <= to' },
+        source_table: { type: 'string', enum: ['hot_tier', 'warm_tier'], description: 'Filter by origin tier' },
+        limit: { type: 'integer', description: 'Max results (default 50, max 500)', minimum: 1, maximum: 500 },
+        offset: { type: 'integer', description: 'Rows to skip for pagination', minimum: 0 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_cold_restore',
+    description: 'Restore a cold tier row back to warm tier for reactivation. Non-destructive — the original cold row is preserved for audit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        cold_id: { type: 'string', description: 'cold_tier row id to restore' },
+        namespace: { type: 'string', description: 'Override namespace on restore; defaults to cold row\'s original namespace' },
+      },
+      required: ['agent_id', 'cold_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

@@ -437,6 +437,63 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/cold': {
+        get: {
+          summary: 'Search cold tier (archived memories)',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Substring match on content (case-insensitive)' },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Filter by namespace (default: "default")' },
+            { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Filter archived_at >= from' },
+            { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Filter archived_at <= to' },
+            { name: 'source_table', in: 'query', schema: { type: 'string', enum: ['hot_tier', 'warm_tier'] }, description: 'Filter by source table' },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 50 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 }, description: 'Rows to skip for pagination' },
+          ],
+          responses: {
+            '200': {
+              description: 'Matching cold tier rows with total count for pagination',
+              content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/restore': {
+        post: {
+          summary: 'Restore a cold tier row to warm tier',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['cold_id'],
+                  properties: {
+                    cold_id: { oneOf: [{ type: 'string', pattern: '^\\d+$' }, { type: 'integer', minimum: 1 }], description: 'cold_tier row id to restore' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Override namespace on restore (defaults to cold row\'s original namespace)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'New warm_tier row id and restored content',
+              content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '404': { '$ref': '#/components/responses/NotFound' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/admin/cache/stats': {
         get: {
           summary: 'Cache statistics (admin)',

@@ -32,6 +32,8 @@ import type {
   ResumeContext,
   EntityDeduplicationResult,
   HealthStatus,
+  ColdTierSearchResult,
+  RestoreColdTierResult,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -225,6 +227,37 @@ export class MemForgeClient {
     return this.post<ActiveMemoryResult>(`/memory/${enc(agentId)}/active-recall`, { context, limit });
   }
 
+  // ─── Cold Tier ────────────────────────────────────────────────────────
+
+  /** Search archived cold tier memories. Use for audit, recovery, and compliance. */
+  async searchColdTier(agentId: string, opts: {
+    q?: string;
+    namespace?: string;
+    from?: string;
+    to?: string;
+    sourceTable?: 'hot_tier' | 'warm_tier';
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<ColdTierSearchResult> {
+    const params = new URLSearchParams();
+    if (opts.q) params.set('q', opts.q);
+    if (opts.namespace) params.set('namespace', opts.namespace);
+    if (opts.from) params.set('from', opts.from);
+    if (opts.to) params.set('to', opts.to);
+    if (opts.sourceTable) params.set('source_table', opts.sourceTable);
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+    const qs = params.toString();
+    return this.get<ColdTierSearchResult>(`/memory/${enc(agentId)}/cold${qs ? '?' + qs : ''}`);
+  }
+
+  /** Restore a cold tier row to warm tier. Non-destructive — the cold row is preserved. */
+  async restoreColdTier(agentId: string, coldId: number | bigint | string, opts: { namespace?: string } = {}): Promise<RestoreColdTierResult> {
+    const body: Record<string, unknown> = { cold_id: String(coldId) };
+    if (opts.namespace) body['namespace'] = opts.namespace;
+    return this.post<RestoreColdTierResult>(`/memory/${enc(agentId)}/restore`, body);
+  }
+
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
@@ -378,6 +411,14 @@ export class ResilientMemForgeClient {
 
   async activeRecall(agentId: string, context: string, limit?: number): Promise<ActiveMemoryResult> {
     return this.safe('activeRecall', () => this.client.activeRecall(agentId, context, limit), { agent_id: agentId, memories: [], procedures: [] });
+  }
+
+  async searchColdTier(agentId: string, opts: Parameters<MemForgeClient['searchColdTier']>[1] = {}): Promise<ColdTierSearchResult> {
+    return this.safe('searchColdTier', () => this.client.searchColdTier(agentId, opts), { rows: [], total: 0 });
+  }
+
+  async restoreColdTier(agentId: string, coldId: number | bigint | string, opts: Parameters<MemForgeClient['restoreColdTier']>[2] = {}): Promise<RestoreColdTierResult | null> {
+    return this.safe('restoreColdTier', () => this.client.restoreColdTier(agentId, coldId, opts), null);
   }
 
   async health(): Promise<HealthStatus | null> {

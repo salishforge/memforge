@@ -354,6 +354,49 @@ export interface ClearResult {
   warm_archived: number;
 }
 
+export interface ColdTierRow {
+  id: bigint;
+  agent_id: string;
+  source_table: 'hot_tier' | 'warm_tier';
+  source_id: bigint;
+  content: string;
+  metadata: Record<string, unknown>;
+  archived_at: Date;
+  original_created_at: Date;
+  namespace: string;
+}
+
+export interface ColdTierSearchOptions {
+  /** Substring match on content (ILIKE '%q%') */
+  q?: string;
+  /** Filter to a specific namespace (default: 'default') */
+  namespace?: string;
+  /** Filter archived_at >= from */
+  from?: Date;
+  /** Filter archived_at <= to */
+  to?: Date;
+  /** Filter by source table */
+  sourceTable?: 'hot_tier' | 'warm_tier';
+  /** Max rows to return (default 50, max 500) */
+  limit?: number;
+  /** Rows to skip for pagination */
+  offset?: number;
+}
+
+export interface ColdTierSearchResult {
+  rows: ColdTierRow[];
+  /** Total matching rows without limit/offset — use for pagination */
+  total: number;
+}
+
+export interface RestoreColdTierResult {
+  /** New warm_tier row id */
+  warm_tier_id: bigint;
+  /** Cold tier row that was the source */
+  cold_tier_id: bigint;
+  content: string;
+}
+
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
 export interface AgentStats {

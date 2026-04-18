@@ -166,6 +166,20 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
+    async def search_cold_tier(self, agent_id: str, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await self._client.search_cold_tier(agent_id, **kwargs)
+        except Exception as e:
+            self._handle(e)
+            return {"rows": [], "total": 0}
+
+    async def restore_cold_tier(self, agent_id: str, cold_id: int | str, **kwargs: Any) -> dict[str, Any] | None:
+        try:
+            return await self._client.restore_cold_tier(agent_id, cold_id, **kwargs)
+        except Exception as e:
+            self._handle(e)
+            return None
+
     async def health(self) -> dict[str, Any] | None:
         try:
             return await self._client.health()
