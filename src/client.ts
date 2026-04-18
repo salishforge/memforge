@@ -61,8 +61,8 @@ export class MemForgeClient {
   // ─── Memory Operations ──────────────────────────────────────────────────
 
   /** Add a memory event to the hot tier. */
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>): Promise<AddResult> {
-    return this.post<AddResult>(`/memory/${enc(agentId)}/add`, { content, metadata });
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string): Promise<AddResult> {
+    return this.post<AddResult>(`/memory/${enc(agentId)}/add`, { content, metadata, ...(namespace ? { namespace } : {}) });
   }
 
   /** Search warm tier memory. */
@@ -73,6 +73,7 @@ export class MemForgeClient {
     after?: string;
     before?: string;
     decay?: number;
+    namespace?: string;
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -80,6 +81,7 @@ export class MemForgeClient {
     if (options.after) params.set('after', options.after);
     if (options.before) params.set('before', options.before);
     if (options.decay !== undefined) params.set('decay', String(options.decay));
+    if (options.namespace) params.set('namespace', options.namespace);
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 
@@ -88,18 +90,23 @@ export class MemForgeClient {
     from?: string;
     to?: string;
     limit?: number;
+    namespace?: string;
   }): Promise<TimelineEntry[]> {
     const params = new URLSearchParams();
     if (options?.from) params.set('from', options.from);
     if (options?.to) params.set('to', options.to);
     if (options?.limit !== undefined) params.set('limit', String(options.limit));
+    if (options?.namespace) params.set('namespace', options.namespace);
     const qs = params.toString();
     return this.get<TimelineEntry[]>(`/memory/${enc(agentId)}/timeline${qs ? '?' + qs : ''}`);
   }
 
   /** Trigger hot→warm consolidation. */
-  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult> {
-    return this.post<ConsolidateResult>(`/memory/${enc(agentId)}/consolidate`, mode ? { mode } : {});
+  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string): Promise<ConsolidateResult> {
+    const body: Record<string, unknown> = {};
+    if (mode) body['mode'] = mode;
+    if (namespace) body['namespace'] = namespace;
+    return this.post<ConsolidateResult>(`/memory/${enc(agentId)}/consolidate`, body);
   }
 
   /** Archive and clear all memory for an agent. */
@@ -108,8 +115,9 @@ export class MemForgeClient {
   }
 
   /** Get memory tier statistics. */
-  async stats(agentId: string): Promise<AgentStats> {
-    return this.get<AgentStats>(`/memory/${enc(agentId)}/stats`);
+  async stats(agentId: string, namespace?: string): Promise<AgentStats> {
+    const qs = namespace ? `?namespace=${enc(namespace)}` : '';
+    return this.get<AgentStats>(`/memory/${enc(agentId)}/stats${qs}`);
   }
 
   // ─── Knowledge Graph ────────────────────────────────────────────────────
@@ -164,7 +172,8 @@ export class MemForgeClient {
 
   // ─── Sleep Cycle ───────────────────────────────────────────────────────────
 
-  /** Trigger a sleep cycle — scores, triages, revises, and maintains memory. */
+  /** Trigger a sleep cycle — scores, triages, revises, and maintains memory.
+   * Agent-wide: the cycle processes all namespaces for the agent. */
   async sleep(agentId: string, options?: {
     tokenBudget?: number;
     evictionThreshold?: number;
@@ -180,9 +189,10 @@ export class MemForgeClient {
   }
 
   /** Generate a session resumption context for an agent. */
-  async resume(agentId: string, limit?: number): Promise<ResumeContext> {
+  async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext> {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set('limit', String(limit));
+    if (namespace) params.set('namespace', namespace);
     const qs = params.toString();
     return this.get<ResumeContext>(`/memory/${enc(agentId)}/resume${qs ? `?${qs}` : ''}`);
   }
@@ -298,28 +308,28 @@ export class ResilientMemForgeClient {
   }
 
   // Memory operations — return empty results on failure
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>): Promise<AddResult | null> {
-    return this.safe('add', () => this.client.add(agentId, content, metadata), null);
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string): Promise<AddResult | null> {
+    return this.safe('add', () => this.client.add(agentId, content, metadata, namespace), null);
   }
 
-  async query(agentId: string, options: { q: string; limit?: number; mode?: QueryMode; after?: string; before?: string; decay?: number }): Promise<QueryResult[]> {
+  async query(agentId: string, options: { q: string; limit?: number; mode?: QueryMode; after?: string; before?: string; decay?: number; namespace?: string }): Promise<QueryResult[]> {
     return this.safe('query', () => this.client.query(agentId, options), []);
   }
 
-  async timeline(agentId: string, options?: { from?: string; to?: string; limit?: number }): Promise<TimelineEntry[]> {
+  async timeline(agentId: string, options?: { from?: string; to?: string; limit?: number; namespace?: string }): Promise<TimelineEntry[]> {
     return this.safe('timeline', () => this.client.timeline(agentId, options), []);
   }
 
-  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult | null> {
-    return this.safe('consolidate', () => this.client.consolidate(agentId, mode), null);
+  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string): Promise<ConsolidateResult | null> {
+    return this.safe('consolidate', () => this.client.consolidate(agentId, mode, namespace), null);
   }
 
   async clear(agentId: string): Promise<ClearResult | null> {
     return this.safe('clear', () => this.client.clear(agentId), null);
   }
 
-  async stats(agentId: string): Promise<AgentStats | null> {
-    return this.safe('stats', () => this.client.stats(agentId), null);
+  async stats(agentId: string, namespace?: string): Promise<AgentStats | null> {
+    return this.safe('stats', () => this.client.stats(agentId, namespace), null);
   }
 
   async searchEntities(agentId: string, options?: { q?: string; type?: string; limit?: number }): Promise<EntitySearchResult[]> {
@@ -350,8 +360,8 @@ export class ResilientMemForgeClient {
     return this.safe('memoryHealth', () => this.client.memoryHealth(agentId), null);
   }
 
-  async resume(agentId: string, limit?: number): Promise<ResumeContext | null> {
-    return this.safe('resume', () => this.client.resume(agentId, limit), null);
+  async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {
+    return this.safe('resume', () => this.client.resume(agentId, limit, namespace), null);
   }
 
   async feedback(agentId: string, retrievalIds: Array<number | bigint>, outcome: FeedbackOutcome, metadata?: Record<string, unknown>): Promise<FeedbackResult | null> {

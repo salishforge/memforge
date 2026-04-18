@@ -18,6 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope } from './auth.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema } from './schemas.js';
 import {
   cacheGet,
   cacheSet,
@@ -235,12 +236,13 @@ export function createApp(deps: AppDependencies): express.Express {
    * POST /memory/:agentId/add
    */
   app.post('/memory/:agentId/add', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { content, metadata, outcome_type, hints } = req.body as {
-      content?: string;
-      metadata?: Record<string, unknown>;
-      outcome_type?: string;
-      hints?: Record<string, unknown>;
-    };
+    const parsed = AddMemorySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0];
+      fail(res, 400, msg?.path[0] === 'namespace' ? `Invalid namespace: ${msg.message}` : `"content" (string) is required`);
+      return;
+    }
+    const { content, metadata, outcome_type, hints, namespace } = parsed.data;
 
     if (!content || typeof content !== 'string') {
       fail(res, 400, '"content" (string) is required');
@@ -269,7 +271,7 @@ export function createApp(deps: AppDependencies): express.Express {
     };
 
     try {
-      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral', hints as import('./types.js').MemoryHints | undefined);
+      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral', hints as import('./types.js').MemoryHints | undefined, namespace);
       void invalidateAgent(getAgentId(req));
       ok(res, {
         ...result,
@@ -300,6 +302,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const before = req.query['before'];
     const decay = req.query['decay'];
     const maxTokens = req.query['max_tokens'];
+    const rawNamespace = req.query['namespace'];
 
     if (!q || typeof q !== 'string') {
       fail(res, 400, '"q" query param (string) is required');
@@ -340,6 +343,16 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -349,7 +362,7 @@ export function createApp(deps: AppDependencies): express.Express {
     }
 
     // Cache key includes all query parameters (including max_tokens to prevent budget mismatch)
-    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}`;
+    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}:${namespace ?? ''}`;
     const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
     const cached = await cacheGet(key);
     if (cached !== null) {
@@ -369,6 +382,7 @@ export function createApp(deps: AppDependencies): express.Express {
         before: beforeDate,
         decayRate,
         maxTokens: maxTokensNum,
+        namespace,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
@@ -384,6 +398,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const from = req.query['from'];
     const to = req.query['to'];
     const limit = req.query['limit'];
+    const rawNamespace = req.query['namespace'];
 
     const fromDate = from ? new Date(from as string) : undefined;
     const toDate = to ? new Date(to as string) : undefined;
@@ -403,6 +418,16 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -412,7 +437,7 @@ export function createApp(deps: AppDependencies): express.Express {
     }
 
     // Check cache
-    const key = timelineKey(agentId, from as string | undefined, to as string | undefined, limitNum);
+    const key = timelineKey(agentId, from as string | undefined, to as string | undefined, limitNum) + (namespace ? `:${namespace}` : '');
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -423,7 +448,7 @@ export function createApp(deps: AppDependencies): express.Express {
     res.setHeader('X-Cache', 'MISS');
 
     try {
-      const entries = await manager.timeline(agentId, fromDate, toDate, limitNum);
+      const entries = await manager.timeline(agentId, fromDate, toDate, limitNum, namespace);
       void cacheSet(key, entries, 'search');
       ok(res, entries);
     } catch (err) {
@@ -555,15 +580,18 @@ export function createApp(deps: AppDependencies): express.Express {
    * Body: { mode?: "concat" | "summarize" }
    */
   app.post('/memory/:agentId/consolidate', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const { mode } = (req.body ?? {}) as { mode?: string };
-
-    if (mode && mode !== 'concat' && mode !== 'summarize') {
-      fail(res, 400, '"mode" must be one of: concat, summarize');
+    const parsed = ConsolidateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.path[0] === 'namespace'
+        ? `Invalid namespace: ${issue.message}`
+        : '"mode" must be one of: concat, summarize');
       return;
     }
+    const { mode, namespace } = parsed.data;
 
     try {
-      const result = await manager.consolidate(getAgentId(req), mode as ConsolidationMode | undefined);
+      const result = await manager.consolidate(getAgentId(req), mode as ConsolidationMode | undefined, namespace ? { namespace } : undefined);
       void invalidateAgent(getAgentId(req));
       ok(res, result);
     } catch (err) {
@@ -580,6 +608,17 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/stats
    */
   app.get('/memory/:agentId/stats', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawNamespace = req.query['namespace'];
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -588,7 +627,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    const key = statsKey(agentId);
+    const key = statsKey(agentId) + (namespace ? `:${namespace}` : '');
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -599,7 +638,7 @@ export function createApp(deps: AppDependencies): express.Express {
     res.setHeader('X-Cache', 'MISS');
 
     try {
-      const stats = await manager.stats(agentId);
+      const stats = await manager.stats(agentId, namespace);
       void cacheSet(key, stats, 'hot');
       ok(res, stats);
     } catch (err) {
@@ -638,14 +677,20 @@ export function createApp(deps: AppDependencies): express.Express {
    * Body: { tokenBudget?, evictionThreshold?, revisionThreshold?, includeReflection? }
    */
   app.post('/memory/:agentId/sleep', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const parsed = SleepSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid request body');
+      return;
+    }
+    const { tokenBudget, evictionThreshold, revisionThreshold, includeReflection } = parsed.data;
 
     try {
       const result = await manager.sleep(getAgentId(req), {
-        tokenBudget: typeof body['tokenBudget'] === 'number' ? body['tokenBudget'] : undefined,
-        evictionThreshold: typeof body['evictionThreshold'] === 'number' ? body['evictionThreshold'] : undefined,
-        revisionThreshold: typeof body['revisionThreshold'] === 'number' ? body['revisionThreshold'] : undefined,
-        includeReflection: typeof body['includeReflection'] === 'boolean' ? body['includeReflection'] : undefined,
+        tokenBudget,
+        evictionThreshold,
+        revisionThreshold,
+        includeReflection,
       });
       void invalidateAgent(getAgentId(req));
       ok(res, result);
@@ -677,14 +722,25 @@ export function createApp(deps: AppDependencies): express.Express {
    */
   app.get('/memory/:agentId/resume', requireScope('memforge:read'), async (req: Request, res: Response) => {
     const limit = req.query['limit'];
+    const rawNamespace = req.query['namespace'];
     const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 5;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 20) {
       fail(res, 400, '"limit" must be an integer between 1 and 20');
       return;
     }
 
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
     try {
-      const context = await manager.resume(getAgentId(req), limitNum);
+      const context = await manager.resume(getAgentId(req), limitNum, namespace);
       ok(res, context);
     } catch (err) {
       fail(res, 500, (err as Error).message);
@@ -809,8 +865,19 @@ export function createApp(deps: AppDependencies): express.Express {
    * Export agent's full memory as JSONL.
    */
   app.get('/memory/:agentId/export', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawNamespace = req.query['namespace'];
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
     try {
-      const lines = await manager.exportMemory(getAgentId(req));
+      const lines = await manager.exportMemory(getAgentId(req), namespace);
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Content-Disposition', `attachment; filename="${getAgentId(req)}-memory.jsonl"`);
       res.send(lines.join('\n') + '\n');
@@ -825,19 +892,42 @@ export function createApp(deps: AppDependencies): express.Express {
    * Body: JSONL text (one JSON object per line)
    */
   app.post('/memory/:agentId/import', requireScope('memforge:write'), async (req: Request, res: Response) => {
-    const body = req.body as { lines?: string[] } | string;
+    const body = req.body as { lines?: string[]; namespace?: string } | string;
     let lines: string[];
+    let bodyNamespace: string | undefined;
+
     if (typeof body === 'string') {
       lines = body.split('\n').filter((l) => l.trim());
     } else if (Array.isArray(body.lines)) {
       lines = body.lines;
+      if (body.namespace !== undefined) {
+        const nsResult = NamespaceSchema.safeParse(body.namespace);
+        if (!nsResult.success) {
+          fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+          return;
+        }
+        bodyNamespace = nsResult.data;
+      }
     } else {
       fail(res, 400, 'Body must be { "lines": [...] } or raw JSONL text');
       return;
     }
 
+    // For each record that doesn't carry its own namespace, inject the body-level fallback.
+    const enrichedLines = bodyNamespace
+      ? lines.map((line) => {
+          try {
+            const obj = JSON.parse(line) as Record<string, unknown>;
+            if (!obj['namespace']) obj['namespace'] = bodyNamespace;
+            return JSON.stringify(obj);
+          } catch {
+            return line;
+          }
+        })
+      : lines;
+
     try {
-      const result = await manager.importMemory(getAgentId(req), lines);
+      const result = await manager.importMemory(getAgentId(req), enrichedLines);
       void invalidateAgent(getAgentId(req));
       ok(res, result);
     } catch (err) {

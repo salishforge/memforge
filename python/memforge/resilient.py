@@ -75,9 +75,9 @@ class ResilientMemForgeClient:
             self._handle(e)
             return []
 
-    async def consolidate(self, agent_id: str, mode: str | None = None) -> ConsolidateResult | None:
+    async def consolidate(self, agent_id: str, mode: str | None = None, namespace: str | None = None) -> ConsolidateResult | None:
         try:
-            return await self._client.consolidate(agent_id, mode)
+            return await self._client.consolidate(agent_id, mode, namespace)
         except Exception as e:
             self._handle(e)
             return None
@@ -89,9 +89,9 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
-    async def stats(self, agent_id: str) -> AgentStats | None:
+    async def stats(self, agent_id: str, namespace: str | None = None) -> AgentStats | None:
         try:
-            return await self._client.stats(agent_id)
+            return await self._client.stats(agent_id, namespace)
         except Exception as e:
             self._handle(e)
             return None
@@ -145,9 +145,9 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
-    async def resume(self, agent_id: str, limit: int = 5) -> ResumeContext | None:
+    async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext | None:
         try:
-            return await self._client.resume(agent_id, limit)
+            return await self._client.resume(agent_id, limit, namespace)
         except Exception as e:
             self._handle(e)
             return None

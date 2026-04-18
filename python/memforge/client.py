@@ -86,6 +86,7 @@ class MemForgeClient:
         metadata: dict[str, Any] | None = None,
         outcome_type: str = "neutral",
         hints: MemoryHints | None = None,
+        namespace: str | None = None,
     ) -> AddResult:
         """Store a memory event in the hot tier."""
         body: dict[str, Any] = {"content": content}
@@ -95,6 +96,8 @@ class MemForgeClient:
             body["outcome_type"] = outcome_type
         if hints:
             body["hints"] = {k: v for k, v in hints.__dict__.items() if v is not None}
+        if namespace:
+            body["namespace"] = namespace
         raw = await self._post(f"/memory/{agent_id}/add", body)
         return AddResult(**{k: raw[k] for k in ("id", "agent_id", "created_at") if k in raw})
 
@@ -109,6 +112,7 @@ class MemForgeClient:
         before: str | None = None,
         decay: float | None = None,
         max_tokens: int | None = None,
+        namespace: str | None = None,
     ) -> list[QueryResult]:
         """Search warm-tier memory."""
         params: dict[str, Any] = {"q": q, "limit": limit}
@@ -122,6 +126,8 @@ class MemForgeClient:
             params["decay"] = decay
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
+        if namespace:
+            params["namespace"] = namespace
         raw = await self._get(f"/memory/{agent_id}/query", params)
         return [QueryResult(**r) for r in raw] if isinstance(raw, list) else []
 
@@ -132,6 +138,7 @@ class MemForgeClient:
         from_date: str | None = None,
         to_date: str | None = None,
         limit: int = 50,
+        namespace: str | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve memories in chronological order."""
         params: dict[str, Any] = {"limit": limit}
@@ -139,13 +146,17 @@ class MemForgeClient:
             params["from"] = from_date
         if to_date:
             params["to"] = to_date
+        if namespace:
+            params["namespace"] = namespace
         return await self._get(f"/memory/{agent_id}/timeline", params)
 
-    async def consolidate(self, agent_id: str, mode: str | None = None) -> ConsolidateResult:
+    async def consolidate(self, agent_id: str, mode: str | None = None, namespace: str | None = None) -> ConsolidateResult:
         """Trigger hot→warm consolidation."""
         body: dict[str, Any] = {}
         if mode:
             body["mode"] = mode
+        if namespace:
+            body["namespace"] = namespace
         raw = await self._post(f"/memory/{agent_id}/consolidate", body)
         return ConsolidateResult(**raw)
 
@@ -154,9 +165,12 @@ class MemForgeClient:
         raw = await self._post(f"/memory/{agent_id}/clear")
         return ClearResult(**raw)
 
-    async def stats(self, agent_id: str) -> AgentStats:
+    async def stats(self, agent_id: str, namespace: str | None = None) -> AgentStats:
         """Get memory tier statistics."""
-        raw = await self._get(f"/memory/{agent_id}/stats")
+        params: dict[str, Any] = {}
+        if namespace:
+            params["namespace"] = namespace
+        raw = await self._get(f"/memory/{agent_id}/stats", params or None)
         return AgentStats(**raw)
 
     # ── Knowledge Graph ──────────────────────────────────────────────────
@@ -213,7 +227,7 @@ class MemForgeClient:
         revision_threshold: float | None = None,
         include_reflection: bool | None = None,
     ) -> SleepCycleResult:
-        """Run a full sleep cycle."""
+        """Run a full sleep cycle. Agent-wide: processes all namespaces."""
         body: dict[str, Any] = {}
         if token_budget is not None:
             body["tokenBudget"] = token_budget
@@ -223,6 +237,8 @@ class MemForgeClient:
             body["revisionThreshold"] = revision_threshold
         if include_reflection is not None:
             body["includeReflection"] = include_reflection
+        if namespace:
+            body["namespace"] = namespace
         raw = await self._post(f"/memory/{agent_id}/sleep", body)
         return SleepCycleResult(**raw)
 
@@ -231,9 +247,12 @@ class MemForgeClient:
         raw = await self._get(f"/memory/{agent_id}/health")
         return MemoryHealth(**raw)
 
-    async def resume(self, agent_id: str, limit: int = 5) -> ResumeContext:
+    async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext:
         """Get session resumption context bundle."""
-        raw = await self._get(f"/memory/{agent_id}/resume", {"limit": limit})
+        params: dict[str, Any] = {"limit": limit}
+        if namespace:
+            params["namespace"] = namespace
+        raw = await self._get(f"/memory/{agent_id}/resume", params)
         return ResumeContext(**raw)
 
     # ── Feedback ─────────────────────────────────────────────────────────

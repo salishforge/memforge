@@ -29,6 +29,38 @@ export const NamespacedRequestSchema = z.object({
   namespace: NamespaceSchema.optional(),
 });
 
+// Per-route request schemas — each extends the base namespace holder.
+
+export const AddMemorySchema = z.object({
+  content: z.string(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  outcome_type: z.string().optional(),
+  hints: z.record(z.string(), z.unknown()).optional(),
+  namespace: NamespaceSchema.optional(),
+});
+
+export const ConsolidateSchema = z.object({
+  mode: z.enum(['concat', 'summarize']).optional(),
+  namespace: NamespaceSchema.optional(),
+});
+
+// Sleep is agent-wide — it runs the 10-phase cycle across all namespaces for
+// the agent. Namespace-scoped sleep would require extending every sleep phase
+// to filter by namespace; tracked as a future enhancement. The schema
+// intentionally does NOT accept a namespace field so the API doesn't claim
+// behavior it cannot deliver.
+export const SleepSchema = z.object({
+  tokenBudget: z.number().optional(),
+  evictionThreshold: z.number().optional(),
+  revisionThreshold: z.number().optional(),
+  includeReflection: z.boolean().optional(),
+});
+
+export const ImportSchema = z.object({
+  lines: z.array(z.string()).optional(),
+  namespace: NamespaceSchema.optional(),
+});
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({

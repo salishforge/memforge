@@ -29,6 +29,7 @@ export const tools: ToolDefinition[] = [
         agent_id: { type: 'string', description: 'The agent/session identifier' },
         content: { type: 'string', description: 'The memory content to store' },
         metadata: { type: 'object', description: 'Optional structured metadata', additionalProperties: true },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
       },
       required: ['agent_id', 'content'],
     },
@@ -45,6 +46,7 @@ export const tools: ToolDefinition[] = [
         mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'], description: 'Search mode (default: hybrid if embeddings available)' },
         after: { type: 'string', format: 'date-time', description: 'Only return memories after this timestamp' },
         before: { type: 'string', format: 'date-time', description: 'Only return memories before this timestamp' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
       },
       required: ['agent_id', 'q'],
     },
@@ -59,6 +61,7 @@ export const tools: ToolDefinition[] = [
         from: { type: 'string', format: 'date-time', description: 'Start of time range' },
         to: { type: 'string', format: 'date-time', description: 'End of time range' },
         limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 500 },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
       },
       required: ['agent_id'],
     },
@@ -122,6 +125,7 @@ export const tools: ToolDefinition[] = [
       properties: {
         agent_id: { type: 'string', description: 'The agent/session identifier' },
         mode: { type: 'string', enum: ['concat', 'summarize'], description: 'Consolidation mode (default: from server config)' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
       },
       required: ['agent_id'],
     },
@@ -141,7 +145,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'memforge_sleep',
-    description: 'Trigger a sleep cycle — background processing that scores memory importance, evicts low-value memories, revises low-confidence memories via LLM, and maintains the knowledge graph. Call during idle periods.',
+    description: 'Trigger a sleep cycle — background processing that scores memory importance, evicts low-value memories, revises low-confidence memories via LLM, and maintains the knowledge graph. Call during idle periods. Agent-wide: processes all namespaces.',
     input_schema: {
       type: 'object',
       properties: {
@@ -169,6 +173,7 @@ export const tools: ToolDefinition[] = [
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'The agent/session identifier' },
+        namespace: { type: 'string', description: 'Scope stats to this namespace; omit for overall stats' },
       },
       required: ['agent_id'],
     },

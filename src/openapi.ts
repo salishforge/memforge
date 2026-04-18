@@ -73,6 +73,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
                   properties: {
                     content: { type: 'string', description: 'Memory content to store' },
                     metadata: { type: 'object', additionalProperties: true },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
                   },
                 },
               },
@@ -97,6 +98,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'after', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Only return memories after this timestamp' },
             { name: 'before', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Only return memories before this timestamp' },
             { name: 'decay', in: 'query', schema: { type: 'number', minimum: 0 }, description: 'Temporal decay rate per hour (0 = no decay)' },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
           ],
           responses: {
             '200': { description: 'Search results with rank scores', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
@@ -114,6 +116,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Start of time range' },
             { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'End of time range' },
             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 50 } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
           ],
           responses: {
             '200': { description: 'Chronologically ordered memories', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
@@ -210,6 +213,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
                   type: 'object',
                   properties: {
                     mode: { type: 'string', enum: ['concat', 'summarize'], description: 'Consolidation mode (default: from server config)' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
                   },
                 },
               },
@@ -228,6 +232,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           tags: ['Memory'],
           parameters: [
             { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Scope stats to this namespace; omit for overall stats' },
           ],
           responses: {
             '200': { description: 'Memory stats', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
@@ -341,6 +346,92 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
           responses: {
             '200': { description: 'Relevant memories and procedures', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/sleep': {
+        post: {
+          summary: 'Trigger a sleep cycle — scores, evicts, revises memory',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    tokenBudget: { type: 'integer', description: 'Max LLM tokens (default 100000)' },
+                    evictionThreshold: { type: 'number' },
+                    revisionThreshold: { type: 'number' },
+                    includeReflection: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Sleep cycle result', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/resume': {
+        get: {
+          summary: 'Generate session resumption context',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 20, default: 5 } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
+          ],
+          responses: {
+            '200': { description: 'Resumption context', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/export': {
+        get: {
+          summary: 'Export agent memory as JSONL',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Scope export to this namespace (default: all namespaces)' },
+          ],
+          responses: {
+            '200': { description: 'JSONL export', content: { 'application/x-ndjson': { schema: { type: 'string' } } } },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/import': {
+        post: {
+          summary: 'Import JSONL into agent memory',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    lines: { type: 'array', items: { type: 'string' }, description: 'JSONL lines to import' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Fallback namespace for records without one (default: "default")' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Import result', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
             '400': { '$ref': '#/components/responses/BadRequest' },
             '500': { '$ref': '#/components/responses/InternalError' },
           },
