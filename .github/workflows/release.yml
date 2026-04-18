@@ -26,20 +26,30 @@ jobs:
           node-version: "22"
           cache: npm
           registry-url: "https://registry.npmjs.org"
+      # Activate npm >= 11.5.1 via corepack so Trusted Publishing (OIDC)
+      # works. The npm bundled with Node 22 on runners is 10.x, which does
+      # NOT speak the TP publish flow. corepack is Node's built-in package
+      # manager version manager — it swaps npm cleanly without the
+      # self-replace corruption that `npm install -g npm@latest` causes.
+      - name: Activate npm via corepack
+        run: |
+          corepack enable
+          corepack prepare npm@latest --activate
       - run: npm ci
       - run: npm run build
       # Auth strategy:
-      # - NODE_AUTH_TOKEN (npm Automation token) is the primary path today —
-      #   proven working across beta.3 and beta.4 releases.
-      # - `--provenance` still creates an OIDC-signed attestation published
-      #   to the sigstore transparency log (uses id-token: write above).
-      # - Trusted Publishing (OIDC-authenticated publish, not just
-      #   provenance) is configured on npmjs.com but currently falls through
-      #   to the token because the npm bundled with Node 22 runners may not
-      #   yet support the TP flow. Once runners ship npm >= 11.5.1 or
-      #   corepack is wired in for a specific npm version, NODE_AUTH_TOKEN
-      #   can be removed and the NPM_TOKEN secret deleted. Tracked as a
-      #   future follow-up — ship today, polish OIDC later.
+      # - Trusted Publishing (OIDC) is the primary path now that npm is
+      #   current via corepack. npm CLI requests an OIDC token from the
+      #   GitHub Actions runner (id-token: write) and uses it to authenticate
+      #   against npm's registry, which validates against the trusted
+      #   publisher configured at Packages → @salishforge/memforge →
+      #   Settings → Trusted publishing.
+      # - NODE_AUTH_TOKEN remains as a belt-and-suspenders fallback: if OIDC
+      #   fails for any reason (registry outage, config drift), the token
+      #   keeps us shipping. Once OIDC has validated across a few releases,
+      #   remove the env var below and delete the NPM_TOKEN secret.
+      # - `--provenance` creates OIDC-signed attestations in sigstore
+      #   regardless of auth path — the attestation only needs id-token: write.
       - name: Publish package
         run: npm publish --access public --provenance
         env:
