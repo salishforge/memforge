@@ -26,15 +26,18 @@ jobs:
           node-version: "22"
           cache: npm
           registry-url: "https://registry.npmjs.org"
-      # Activate npm >= 11.5.1 via corepack so Trusted Publishing (OIDC)
-      # works. The npm bundled with Node 22 on runners is 10.x, which does
-      # NOT speak the TP publish flow. corepack is Node's built-in package
-      # manager version manager — it swaps npm cleanly without the
-      # self-replace corruption that `npm install -g npm@latest` causes.
-      - name: Activate npm via corepack
+      # Install npm >= 11.5.1 to a dedicated prefix so Trusted Publishing
+      # (OIDC) works. The npm bundled with Node 22 on runners is 10.x, which
+      # does NOT speak the TP publish flow. Installing to a separate prefix
+      # (not global) avoids the self-replace corruption that
+      # `npm install -g npm@latest` causes. Corepack was tried first but
+      # gave us 10.9 — either it doesn't fully support npm in Node 22 or
+      # its `@latest` resolution is stale.
+      - name: Install recent npm to a separate prefix
         run: |
-          corepack enable
-          corepack prepare npm@latest --activate
+          mkdir -p /tmp/fresh-npm
+          npm install --prefix /tmp/fresh-npm --no-save --no-package-lock npm@latest
+          echo "/tmp/fresh-npm/node_modules/.bin" >> $GITHUB_PATH
       - run: npm ci
       - run: npm run build
       # Auth strategy:

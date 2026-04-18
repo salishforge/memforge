@@ -34,18 +34,22 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Activate npm via corepack
+      - name: Install recent npm to a separate prefix
+        # corepack's `prepare npm@latest` gave us npm 10.9 on Node 22 (bundled
+        # version wins). Install npm 11+ to a dedicated prefix and prepend its
+        # .bin to PATH so subsequent steps pick up the fresh npm without
+        # corrupting the Node-bundled one.
         run: |
-          corepack enable
-          corepack prepare npm@latest --activate
-          echo "✓ corepack activation complete"
+          mkdir -p /tmp/fresh-npm
+          npm install --prefix /tmp/fresh-npm --no-save --no-package-lock npm@latest
+          echo "/tmp/fresh-npm/node_modules/.bin" >> $GITHUB_PATH
 
       - name: Report npm version
         run: |
           echo "node version: $(node --version)"
           echo "npm version:  $(npm --version)"
-          # Trusted Publishing requires npm >= 11.5.1. Fail fast if corepack
-          # activation didn't give us a current npm.
+          # Trusted Publishing requires npm >= 11.5.1. Fail fast if the fresh
+          # install didn't give us a current npm.
           npm --version | awk -F. '{ if ($1 < 11 || ($1 == 11 && $2 < 5)) { print "FAIL: npm < 11.5"; exit 1 } }'
 
       - name: Install deps and build
