@@ -102,7 +102,14 @@ CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx   ON warm_tier (agent_id);
 CREATE INDEX IF NOT EXISTS warm_tier_tsv_idx        ON warm_tier USING GIN (content_tsv);
 CREATE INDEX IF NOT EXISTS warm_tier_code_tsv_idx   ON warm_tier USING GIN (content_code_tsv);
 CREATE INDEX IF NOT EXISTS warm_tier_hot_ids_idx    ON warm_tier USING GIN (source_hot_ids);
-CREATE INDEX IF NOT EXISTS warm_tier_embedding_idx  ON warm_tier USING hnsw (embedding halfvec_cosine_ops);
+-- HNSW index on warm_tier.embedding intentionally omitted here (#95): pgvector
+-- requires halfvec columns to have an explicit dimension spec before an HNSW
+-- index can be built, and the dimension is provider-specific (384 for
+-- bge-small-en-v1.5, 1536 for text-embedding-3-small, 768 for nomic-embed,
+-- etc.). After deploying, operators who use embeddings should apply
+-- schema/hnsw-indexes.example.sql (edit to match their provider's dimension).
+-- Without the HNSW index, semantic search falls back to seq scan — functional
+-- but slower for large warm tiers.
 CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time_start, time_end);
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
 CREATE INDEX IF NOT EXISTS warm_tier_namespace_idx  ON warm_tier (agent_id, namespace);
@@ -464,7 +471,9 @@ CREATE TABLE IF NOT EXISTS shared_memories (
 CREATE INDEX IF NOT EXISTS shared_memories_pool_idx      ON shared_memories (pool_id);
 CREATE INDEX IF NOT EXISTS shared_memories_source_idx    ON shared_memories (source_agent_id);
 CREATE INDEX IF NOT EXISTS shared_memories_tsv_idx       ON shared_memories USING GIN (content_tsv);
-CREATE INDEX IF NOT EXISTS shared_memories_embedding_idx ON shared_memories USING hnsw (embedding halfvec_cosine_ops);
+-- HNSW index on shared_memories.embedding intentionally omitted here (#95);
+-- see warm_tier above for the same reasoning. Apply via
+-- schema/hnsw-indexes.example.sql after choosing a dimension.
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- agent_reputation — per-domain reputation scores for cross-agent trust
