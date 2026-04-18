@@ -86,6 +86,11 @@ export class SleepCycleEngine {
     // Phase 2: Triage
     const { evicted, flaggedIds } = await this.phaseTriage(agentId);
 
+    // Phase 2b: Capacity eviction — enforce per-agent warm_tier hard cap.
+    // Runs after threshold eviction so the threshold pass already removed the
+    // cheapest evictees; we only evict further if the agent is still over cap.
+    const capacityEvicted = await this.phaseCapacityEviction(agentId);
+
     // Phase 2.5: Conflict Resolution — resolve contradicting memories
     const conflictsResolved = await this.phaseConflictResolution(agentId);
 
@@ -146,7 +151,7 @@ export class SleepCycleEngine {
       }
     }
 
-    return {
+    const result: SleepCycleResult = {
       agent_id: agentId,
       phase1_scores_updated: scoresUpdated,
       phase2_evicted: evicted,
@@ -163,6 +168,12 @@ export class SleepCycleEngine {
       tokens_used: tokensUsed,
       duration_ms: Date.now() - start,
     };
+
+    if (capacityEvicted > 0) {
+      result.capacity_evicted = capacityEvicted;
+    }
+
+    return result;
   }
 
   // ─── Phase 0: Autonomous Weight Adaptation ─────────────────────────────────
@@ -385,6 +396,60 @@ export class SleepCycleEngine {
       evicted,
       flaggedIds: flagged.rows.map((r) => r.id),
     };
+  }
+
+  // ─── Phase 2b: Capacity Eviction ──────────────────────────────────────────
+  // Enforces the per-agent warm_tier hard cap (warmTierMaxPerAgent).
+  // Graduation status does not exempt rows — the cap is a hard budget and
+  // value (importance) determines who is archived, not retrieval history.
+
+  private async phaseCapacityEviction(agentId: string): Promise<number> {
+    const cap = this.config.warmTierMaxPerAgent ?? 0;
+    if (!cap) return 0;
+
+    const countResult = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM warm_tier WHERE agent_id = $1`,
+      [agentId],
+    );
+    const priorCount = parseInt(countResult.rows[0]?.count ?? '0', 10);
+
+    if (priorCount <= cap) return 0;
+
+    const toEvict = priorCount - cap;
+
+    const evictResult = await this.pool.query<{ count: string }>(
+      `WITH candidates AS (
+         SELECT id, content, metadata, consolidated_at, namespace
+         FROM warm_tier
+         WHERE agent_id = $1
+         ORDER BY importance ASC
+         LIMIT $2
+         FOR UPDATE
+       ),
+       moved AS (
+         INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at, namespace)
+         SELECT $1, 'warm_tier', c.id, c.content, c.metadata, c.consolidated_at, c.namespace
+         FROM candidates c
+         RETURNING source_id
+       ),
+       deleted AS (
+         DELETE FROM warm_tier WHERE agent_id = $1 AND id IN (SELECT id FROM candidates)
+       )
+       SELECT count(*) FROM moved`,
+      [agentId, toEvict],
+    );
+    const capacityEvicted = parseInt(evictResult.rows[0]?.count ?? '0', 10);
+
+    log.info({ agentId, capacityEvicted, cap, priorCount }, 'capacity eviction complete');
+
+    if (this.audit && capacityEvicted > 0) {
+      void this.audit.recordBatch(agentId, 'warm_tier', 'evict',
+        { evicted_count: capacityEvicted, reason: 'capacity', cap, prior_count: priorCount },
+        'sleep_cycle',
+      ).catch((err) => log.error({ err }, 'capacity eviction audit failed'));
+    }
+
+    return capacityEvicted;
   }
 
   // ─── Phase 3: Revision ─────────────────────────────────────────────────────

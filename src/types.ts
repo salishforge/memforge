@@ -302,6 +302,8 @@ export interface SleepCycleResult {
   audit_records_archived: number;
   tokens_used: number;
   duration_ms: number;
+  /** Rows evicted by capacity budgeting (optional — absent when cap is disabled) */
+  capacity_evicted?: number;
 }
 
 export interface SleepCycleConfig {
@@ -317,6 +319,13 @@ export interface SleepCycleConfig {
   coldRetentionDays?: number;
   /** Max revisions per sleep cycle — caps LLM spending per run. */
   maxRevisionsPerCycle?: number;
+  /**
+   * Hard cap on warm_tier rows per agent. When set, capacity-based eviction runs
+   * after threshold eviction: the bottom (count - cap) rows by importance are
+   * archived to cold_tier until exactly cap rows remain. Unset or 0 disables the
+   * cap entirely so existing deployments are unaffected.
+   */
+  warmTierMaxPerAgent?: number;
   /** Importance score weights */
   weights: {
     recency: number;

@@ -66,6 +66,7 @@ const manager = new MemoryManager({
     coldRetentionDays: process.env['COLD_TIER_RETENTION_DAYS']
       ? Math.max(1, parseInt(process.env['COLD_TIER_RETENTION_DAYS'], 10))
       : undefined,
+    warmTierMaxPerAgent: parseInt(process.env['WARM_TIER_MAX_PER_AGENT'] ?? '0', 10),
     weights: {
       recency: 0.25,
       frequency: 0.20,
