@@ -2,6 +2,60 @@
 
 All notable changes to MemForge are documented here.
 
+## [3.2.0] - 2026-04-18 — Phase 4 (Sprint B): Continuous Adaptation
+
+Opens Phase 4 of the ROADMAP with temporal knowledge management,
+procedural evolution, and drift detection. Sleep cycles now penalize
+expired memories, evolve procedure confidence from observed outcomes,
+and record drift snapshots so advisory urgency reflects degrading
+trends.
+
+### Added
+
+- **Temporal knowledge management** — new `warm_tier.valid_until`
+  column (nullable) sets a validity window on a memory.
+  `POST /memory/:id/:warmId/validity` writes it; pass `valid_until: null`
+  to clear. Sleep cycle Phase 5.6 penalizes expired rows
+  (confidence −0.2 with floor 0.05, surprise_score = 1.0) so the
+  next cycle's triage flags them for LLM revision.
+- **Procedural evolution** — `POST /memory/:id/procedures/:procId/outcome`
+  records a `positive`/`negative`/`neutral` outcome against a
+  procedure. Sleep cycle Phase 5.7 adjusts confidence from the
+  observed distribution: ≥5 successes and ≤20% failure rate lifts
+  confidence by 0.05; ≥3 failures and >50% failure rate drops it by
+  0.1 and deactivates the procedure once confidence falls below 0.1.
+  New columns `success_count`, `failure_count`, `last_outcome`,
+  `last_outcome_at` on `procedures`.
+- **Drift detection** — new `drift_signals` table captures a per-cycle
+  snapshot of `contradiction_rate`, `staleness_p90`,
+  `revision_velocity`, `stale_cluster_count`, and `expired_count`.
+  Sleep cycle Phase 5.8 records one row per cycle.
+  `GET /memory/:id/drift` returns a trend classification
+  (`stable | degrading | recovering | insufficient_data`) from the
+  last 10 snapshots. `sleepAdvisory()` gains a seventh signal —
+  `knowledge_drift` — which escalates urgency when
+  contradiction or staleness trends rise.
+- **Embedding-model tracking** — new `warm_tier.embedding_model`
+  column (nullable) records which model produced each embedding so
+  future incremental re-embedding knows what to migrate.
+
+### Surface
+
+All three endpoints are exposed via HTTP, the TypeScript SDK
+(base + resilient clients: `setMemoryValidity`,
+`recordProcedureOutcome`, `detectDrift`), MCP tools
+(`memforge_set_validity`, `memforge_record_procedure_outcome`,
+`memforge_drift`), and the OpenAPI spec.
+
+### Schema
+
+Migration `schema/migration-v3.3.sql` — safe to run on existing
+databases. Adds columns and the `drift_signals` table; indexes:
+`warm_tier_valid_until_idx` (partial on `valid_until IS NOT NULL`),
+`drift_signals_agent_idx`.
+
+---
+
 ## [3.1.0] - 2026-04-18 — Phase 3 completion: Cross-Agent Learning
 
 Completes Phase 3 of the ROADMAP. Adds procedure sharing across pools,

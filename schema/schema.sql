@@ -95,10 +95,15 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   staleness_score             REAL        NOT NULL DEFAULT 0,
   last_corroborated           TIMESTAMPTZ,
   -- Namespace partitioning (#16) — defaults to 'default' so existing callers are unaffected
-  namespace                   TEXT        NOT NULL DEFAULT 'default'
+  namespace                   TEXT        NOT NULL DEFAULT 'default',
+  -- Temporal validity window (v3.3) — NULL = no expiry
+  valid_until                 TIMESTAMPTZ,
+  -- Tracks which embedding model produced the embedding (v3.3) — NULL = unknown/pre-tracking
+  embedding_model             TEXT
 );
 
-CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx   ON warm_tier (agent_id);
+CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
+CREATE INDEX IF NOT EXISTS warm_tier_valid_until_idx   ON warm_tier (agent_id, valid_until) WHERE valid_until IS NOT NULL;
 CREATE INDEX IF NOT EXISTS warm_tier_tsv_idx        ON warm_tier USING GIN (content_tsv);
 CREATE INDEX IF NOT EXISTS warm_tier_code_tsv_idx   ON warm_tier USING GIN (content_code_tsv);
 CREATE INDEX IF NOT EXISTS warm_tier_hot_ids_idx    ON warm_tier USING GIN (source_hot_ids);
@@ -308,7 +313,12 @@ CREATE TABLE IF NOT EXISTS procedures (
   metadata             JSONB       NOT NULL DEFAULT '{}',
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Namespace partitioning (#16)
-  namespace            TEXT        NOT NULL DEFAULT 'default'
+  namespace            TEXT        NOT NULL DEFAULT 'default',
+  -- Outcome tracking (v3.3) — counts positive/negative recordings
+  success_count        INT         NOT NULL DEFAULT 0,
+  failure_count        INT         NOT NULL DEFAULT 0,
+  last_outcome         TEXT        CHECK (last_outcome IN ('positive', 'negative', 'neutral')),
+  last_outcome_at      TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS procedures_agent_idx      ON procedures (agent_id);
@@ -526,6 +536,22 @@ CREATE TABLE IF NOT EXISTS agent_roles (
 );
 
 CREATE INDEX IF NOT EXISTS agent_roles_agent_idx ON agent_roles (agent_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- drift_signals — per-agent drift snapshots captured during each sleep cycle
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS drift_signals (
+  id                  BIGSERIAL   PRIMARY KEY,
+  agent_id            TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  measured_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  contradiction_rate  REAL        NOT NULL DEFAULT 0,
+  staleness_p90       REAL        NOT NULL DEFAULT 0,
+  revision_velocity   REAL        NOT NULL DEFAULT 0,
+  stale_cluster_count INT         NOT NULL DEFAULT 0,
+  expired_count       INT         NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS drift_signals_agent_idx ON drift_signals (agent_id, measured_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)

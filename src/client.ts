@@ -38,6 +38,8 @@ import type {
   SharedProcedure,
   ExpertiseResult,
   AgentRole,
+  DriftReport,
+  ProcedureOutcome,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -317,6 +319,26 @@ export class MemForgeClient {
     return this.post<AgentRole[]>(`/memory/${enc(agentId)}/roles/detect`, {});
   }
 
+  // ─── Phase 4: Continuous Adaptation ──────────────────────────────────────
+
+  /** Set or clear the validity window on a warm-tier memory. Pass null to remove expiry. */
+  async setMemoryValidity(agentId: string, warmId: number | bigint | string, validUntil: Date | string | null): Promise<{ updated: boolean }> {
+    const iso = validUntil === null
+      ? null
+      : validUntil instanceof Date ? validUntil.toISOString() : validUntil;
+    return this.post<{ updated: boolean }>(`/memory/${enc(agentId)}/${enc(String(warmId))}/validity`, { valid_until: iso });
+  }
+
+  /** Record a procedure outcome. Used to evolve procedure confidence over time. */
+  async recordProcedureOutcome(agentId: string, procedureId: number | bigint | string, outcome: ProcedureOutcome): Promise<{ updated: boolean }> {
+    return this.post<{ updated: boolean }>(`/memory/${enc(agentId)}/procedures/${enc(String(procedureId))}/outcome`, { outcome });
+  }
+
+  /** Fetch drift-detection report based on recent drift_signals snapshots. */
+  async detectDrift(agentId: string): Promise<DriftReport> {
+    return this.get<DriftReport>(`/memory/${enc(agentId)}/drift`);
+  }
+
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
@@ -518,6 +540,18 @@ export class ResilientMemForgeClient {
 
   async autoDetectRoles(agentId: string): Promise<AgentRole[]> {
     return this.safe('autoDetectRoles', () => this.client.autoDetectRoles(agentId), []);
+  }
+
+  async setMemoryValidity(agentId: string, warmId: number | bigint | string, validUntil: Date | string | null): Promise<{ updated: boolean } | null> {
+    return this.safe('setMemoryValidity', () => this.client.setMemoryValidity(agentId, warmId, validUntil), null);
+  }
+
+  async recordProcedureOutcome(agentId: string, procedureId: number | bigint | string, outcome: ProcedureOutcome): Promise<{ updated: boolean } | null> {
+    return this.safe('recordProcedureOutcome', () => this.client.recordProcedureOutcome(agentId, procedureId, outcome), null);
+  }
+
+  async detectDrift(agentId: string): Promise<DriftReport | null> {
+    return this.safe('detectDrift', () => this.client.detectDrift(agentId), null);
   }
 
   async health(): Promise<HealthStatus | null> {

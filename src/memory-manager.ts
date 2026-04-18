@@ -60,6 +60,9 @@ import type {
   SharedProcedure,
   ExpertiseResult,
   AgentRole,
+  DriftSnapshot,
+  DriftReport,
+  ProcedureOutcome,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 
@@ -2952,6 +2955,88 @@ Guidelines:
     return roles;
   }
 
+  // ─── Temporal Knowledge Management ─────────────────────────────────────────
+
+  async setMemoryValidity(agentId: string, warmTierId: bigint, validUntil: Date | null): Promise<{ updated: boolean }> {
+    this.assertAgentId(agentId);
+    const { rowCount } = await this.pool.query(
+      `UPDATE warm_tier SET valid_until = $3 WHERE agent_id = $1 AND id = $2`,
+      [agentId, warmTierId, validUntil],
+    );
+    return { updated: (rowCount ?? 0) > 0 };
+  }
+
+  // ─── Procedural Evolution ────────────────────────────────────────────────────
+
+  async recordProcedureOutcome(agentId: string, procedureId: bigint, outcome: ProcedureOutcome): Promise<{ updated: boolean }> {
+    this.assertAgentId(agentId);
+    const { rowCount } = await this.pool.query(
+      `UPDATE procedures
+       SET success_count   = success_count + CASE WHEN $3 = 'positive' THEN 1 ELSE 0 END,
+           failure_count   = failure_count + CASE WHEN $3 = 'negative' THEN 1 ELSE 0 END,
+           last_outcome    = $3,
+           last_outcome_at = now()
+       WHERE agent_id = $1 AND id = $2`,
+      [agentId, procedureId, outcome],
+    );
+    return { updated: (rowCount ?? 0) > 0 };
+  }
+
+  // ─── Drift Detection ─────────────────────────────────────────────────────────
+
+  async detectDrift(agentId: string): Promise<DriftReport> {
+    this.assertAgentId(agentId);
+
+    const { rows } = await this.pool.query<DriftSnapshot>(
+      `SELECT * FROM drift_signals WHERE agent_id = $1 ORDER BY measured_at DESC LIMIT 10`,
+      [agentId],
+    );
+
+    if (rows.length === 0) {
+      return {
+        agent_id: agentId,
+        drift_detected: false,
+        trend: 'insufficient_data',
+        latest: null,
+        signals: { contradiction_rate_trend: 0, staleness_trend: 0, revision_velocity_trend: 0 },
+      };
+    }
+
+    const latest = rows[0]!;
+
+    if (rows.length < 3) {
+      return {
+        agent_id: agentId,
+        drift_detected: false,
+        trend: 'insufficient_data',
+        latest,
+        signals: { contradiction_rate_trend: 0, staleness_trend: 0, revision_velocity_trend: 0 },
+      };
+    }
+
+    const oldest = rows[rows.length - 1]!;
+    const contradictionTrend = latest.contradiction_rate - oldest.contradiction_rate;
+    const stalenessTrend = latest.staleness_p90 - oldest.staleness_p90;
+    const velocityTrend = latest.revision_velocity - oldest.revision_velocity;
+
+    const degrading = contradictionTrend > 0.05 || stalenessTrend > 0.1;
+    const recovering = contradictionTrend < -0.05 && stalenessTrend < -0.05;
+
+    const trend = degrading ? 'degrading' : recovering ? 'recovering' : 'stable';
+
+    return {
+      agent_id: agentId,
+      drift_detected: degrading,
+      trend,
+      latest,
+      signals: {
+        contradiction_rate_trend: contradictionTrend,
+        staleness_trend: stalenessTrend,
+        revision_velocity_trend: velocityTrend,
+      },
+    };
+  }
+
   // ─── Export/Import ──────────────────────────────────────────────────────
 
   /**
@@ -3134,7 +3219,7 @@ Guidelines:
     const t: SleepAdvisoryThresholds = { ...SLEEP_ADVISORY_DEFAULTS, ...this.config.sleepAdvisoryThresholds };
 
     // ── Gather raw data in parallel ──────────────────────────────────────
-    const [hotRow, warmRow, agentRow, revisionDebtRow, reflectionRow, activityRow] = await Promise.all([
+    const [hotRow, warmRow, agentRow, revisionDebtRow, reflectionRow, activityRow, metaContradictionRow, driftRow] = await Promise.all([
       this.pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM hot_tier WHERE agent_id = $1`,
         [agentId],
@@ -3172,6 +3257,27 @@ Guidelines:
          ) AS has_activity`,
         [agentId],
       ),
+      // Meta-contradiction debt: meta-reflections (level > 1) with unresolved contradictions
+      // in the last 30 days. High counts signal blind spots or recurring conflict clusters
+      // that deeper revision cycles should address.
+      this.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+         FROM reflections
+         WHERE agent_id = $1
+           AND reflection_level > 1
+           AND array_length(contradictions, 1) > 0
+           AND created_at > now() - interval '30 days'`,
+        [agentId],
+      ),
+      // Drift signals: last 10 snapshots to detect degrading trend.
+      this.pool.query<{ contradiction_rate: number; staleness_p90: number; measured_at: Date }>(
+        `SELECT contradiction_rate, staleness_p90, measured_at
+         FROM drift_signals
+         WHERE agent_id = $1
+         ORDER BY measured_at DESC
+         LIMIT 10`,
+        [agentId],
+      ),
     ]);
 
     const hotCount   = parseInt(hotRow.rows[0]?.count ?? '0', 10);
@@ -3182,6 +3288,8 @@ Guidelines:
     const reflTotal  = parseInt(reflectionRow.rows[0]?.total ?? '0', 10);
     const reflWithContradictions = parseInt(reflectionRow.rows[0]?.with_contradictions ?? '0', 10);
     const hasActivity = activityRow.rows[0]?.has_activity ?? false;
+    const metaContradictionCount = parseInt(metaContradictionRow.rows[0]?.count ?? '0', 10);
+    const driftRows = driftRow.rows;
 
     const nowMs = Date.now();
     const timeSinceLastSleepMs = lastSleep ? nowMs - lastSleep.getTime() : null;
@@ -3276,6 +3384,55 @@ Guidelines:
       // The stability signal itself carries no positive urgency — it only caps others.
       urgency: 'none',
       description: `${(stabilityRatio * 100).toFixed(0)}% of warm-tier rows graduated${stabilityHit ? ' — stability ceiling active' : ''}`,
+    });
+
+    // ── Signal 6: meta_contradiction_debt ────────────────────────────────
+    // Meta-reflections (level > 1) surface recurring blind spots and
+    // contradiction clusters the first-order cycle missed. Unresolved ones
+    // indicate areas the next sleep cycle should focus deeper revision on.
+    const metaDebtUrgency: SleepUrgency =
+      metaContradictionCount >= 5 ? 'high'
+      : metaContradictionCount >= 2 ? 'medium'
+      : metaContradictionCount >= 1 ? 'low'
+      : 'none';
+    signals.push({
+      name: 'meta_contradiction_debt',
+      value: metaContradictionCount,
+      threshold: metaDebtUrgency === 'high' ? 5 : metaDebtUrgency === 'medium' ? 2 : 1,
+      urgency: metaDebtUrgency,
+      description: metaContradictionCount === 0
+        ? 'no unresolved meta-reflection contradictions'
+        : `${metaContradictionCount} meta-reflection${metaContradictionCount > 1 ? 's' : ''} with unresolved contradictions in the past 30 days`,
+    });
+
+    // ── Signal 7: knowledge_drift ────────────────────────────────────────
+    // Drift signal snapshots are recorded by each sleep cycle. Compare latest
+    // vs oldest of the last 10 samples; rising contradiction or staleness
+    // trends indicate a degrading knowledge base that needs a deeper cycle.
+    let driftUrgency: SleepUrgency = 'none';
+    let driftValue = 0;
+    let driftDescription = 'no drift snapshots recorded yet';
+    if (driftRows.length >= 3) {
+      const latest = driftRows[0]!;
+      const oldest = driftRows[driftRows.length - 1]!;
+      const contradictionTrend = latest.contradiction_rate - oldest.contradiction_rate;
+      const stalenessTrend = latest.staleness_p90 - oldest.staleness_p90;
+      driftValue = Math.max(contradictionTrend, stalenessTrend);
+      if (contradictionTrend > 0.15 || stalenessTrend > 0.25) {
+        driftUrgency = 'high';
+      } else if (contradictionTrend > 0.05 || stalenessTrend > 0.1) {
+        driftUrgency = 'medium';
+      } else if (contradictionTrend > 0.02 || stalenessTrend > 0.05) {
+        driftUrgency = 'low';
+      }
+      driftDescription = `drift trends: contradiction ${(contradictionTrend * 100).toFixed(0)}%, staleness ${(stalenessTrend * 100).toFixed(0)}%`;
+    }
+    signals.push({
+      name: 'knowledge_drift',
+      value: driftValue,
+      threshold: 0.05,
+      urgency: driftUrgency,
+      description: driftDescription,
     });
 
     // ── Compute overall urgency ──────────────────────────────────────────

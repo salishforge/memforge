@@ -222,6 +222,8 @@ export interface MetaReflectionResult {
 
 // ─── Procedural Memory ───────────────────────────────────────────────────────
 
+export type ProcedureOutcome = 'positive' | 'negative' | 'neutral';
+
 export interface Procedure {
   id: bigint;
   agent_id: string;
@@ -235,6 +237,10 @@ export interface Procedure {
   metadata: Record<string, unknown>;
   created_at: Date;
   namespace: string;
+  success_count: number;
+  failure_count: number;
+  last_outcome: ProcedureOutcome | null;
+  last_outcome_at: Date | null;
 }
 
 // ─── Memory Revision Engine ──────────────────────────────────────────────────
@@ -304,6 +310,10 @@ export interface SleepCycleResult {
   duration_ms: number;
   /** Rows evicted by capacity budgeting (optional — absent when cap is disabled) */
   capacity_evicted?: number;
+  /** Warm-tier rows whose valid_until has passed and were confidence-penalized */
+  temporal_expired?: number;
+  /** Procedures whose confidence was adjusted based on outcome history */
+  procedures_evolved?: number;
 }
 
 export interface SleepCycleConfig {
@@ -547,6 +557,31 @@ export interface AgentRole {
   evidence_count: number;
   created_at: Date;
   updated_at: Date;
+}
+
+// ─── Drift Detection ─────────────────────────────────────────────────────────
+
+export interface DriftSnapshot {
+  id: bigint;
+  agent_id: string;
+  measured_at: Date;
+  contradiction_rate: number;
+  staleness_p90: number;
+  revision_velocity: number;
+  stale_cluster_count: number;
+  expired_count: number;
+}
+
+export interface DriftReport {
+  agent_id: string;
+  drift_detected: boolean;
+  trend: 'stable' | 'degrading' | 'recovering' | 'insufficient_data';
+  latest: DriftSnapshot | null;
+  signals: {
+    contradiction_rate_trend: number;
+    staleness_trend: number;
+    revision_velocity_trend: number;
+  };
 }
 
 // ─── (continued) ─────────────────────────────────────────────────────────────

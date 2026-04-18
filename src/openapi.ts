@@ -677,6 +677,96 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/{warmId}/validity': {
+        post: {
+          summary: 'Set or clear validity window on a warm-tier memory',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'warmId', in: 'path', required: true, schema: { type: 'string' }, description: 'warm_tier row id' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    valid_until: { type: 'string', format: 'date-time', nullable: true, description: 'ISO-8601 expiry; null to clear' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Updated result { updated: boolean }' },
+            '404': { '$ref': '#/components/responses/NotFound' },
+          },
+        },
+      },
+      '/memory/{agentId}/procedures/{procId}/outcome': {
+        post: {
+          summary: 'Record a procedure outcome',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'procId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['outcome'],
+                  properties: {
+                    outcome: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Outcome recorded' },
+            '404': { '$ref': '#/components/responses/NotFound' },
+          },
+        },
+      },
+      '/memory/{agentId}/drift': {
+        get: {
+          summary: 'Drift-detection report based on recent drift_signals',
+          tags: ['Memory'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Drift report with trend classification',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      agent_id: { type: 'string' },
+                      drift_detected: { type: 'boolean' },
+                      trend: { type: 'string', enum: ['stable', 'degrading', 'recovering', 'insufficient_data'] },
+                      latest: { type: 'object', nullable: true },
+                      signals: {
+                        type: 'object',
+                        properties: {
+                          contradiction_rate_trend: { type: 'number' },
+                          staleness_trend: { type: 'number' },
+                          revision_velocity_trend: { type: 'number' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       '/admin/cache/stats': {
         get: {
           summary: 'Cache statistics (admin)',

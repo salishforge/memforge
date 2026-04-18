@@ -335,6 +335,43 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_set_validity',
+    description: 'Set or clear the validity window on a warm-tier memory. Memories past valid_until are penalized during sleep cycles.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id' },
+        valid_until: { type: 'string', format: 'date-time', description: 'ISO-8601 expiry timestamp; omit or pass null to clear.' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
+  {
+    name: 'memforge_record_procedure_outcome',
+    description: 'Record the outcome of executing a procedure. Procedures accumulate success/failure counts; their confidence evolves during sleep cycles.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        procedure_id: { type: 'string', description: 'procedures row id' },
+        outcome: { type: 'string', enum: ['positive', 'negative', 'neutral'], description: 'Outcome classification' },
+      },
+      required: ['agent_id', 'procedure_id', 'outcome'],
+    },
+  },
+  {
+    name: 'memforge_drift',
+    description: 'Fetch a drift-detection report based on recent drift_signals snapshots. Trend classification: stable | degrading | recovering | insufficient_data.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

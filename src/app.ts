@@ -1328,6 +1328,55 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
+  // ─── Phase 4: Continuous Adaptation ──────────────────────────────────────
+
+  app.post('/memory/:agentId/:warmId/validity', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    const warmIdStr = req.params['warmId'] ?? '';
+    let warmId: bigint;
+    try { warmId = BigInt(warmIdStr); } catch { fail(res, 400, 'invalid warm_tier id'); return; }
+    const body = (req.body ?? {}) as { valid_until?: string | null };
+    let validUntil: Date | null = null;
+    if (body.valid_until !== undefined && body.valid_until !== null) {
+      const parsed = new Date(body.valid_until);
+      if (Number.isNaN(parsed.getTime())) { fail(res, 400, 'valid_until must be an ISO-8601 timestamp or null'); return; }
+      validUntil = parsed;
+    }
+    try {
+      const result = await manager.setMemoryValidity(agentId, warmId, validUntil);
+      if (!result.updated) { fail(res, 404, 'memory not found'); return; }
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.post('/memory/:agentId/procedures/:procId/outcome', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    const procIdStr = req.params['procId'] ?? '';
+    let procId: bigint;
+    try { procId = BigInt(procIdStr); } catch { fail(res, 400, 'invalid procedure id'); return; }
+    const body = (req.body ?? {}) as { outcome?: string };
+    if (!body.outcome || !['positive', 'negative', 'neutral'].includes(body.outcome)) {
+      fail(res, 400, "outcome must be one of 'positive', 'negative', 'neutral'");
+      return;
+    }
+    try {
+      const result = await manager.recordProcedureOutcome(agentId, procId, body.outcome as 'positive' | 'negative' | 'neutral');
+      if (!result.updated) { fail(res, 404, 'procedure not found'); return; }
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.get('/memory/:agentId/drift', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    try {
+      const report = await manager.detectDrift(agentId);
+      ok(res, report);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
   // ─── Global error handler ─────────────────────────────────────────────
 
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

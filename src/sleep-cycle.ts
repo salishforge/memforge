@@ -140,6 +140,19 @@ export class SleepCycleEngine {
     let schemasDetected = 0;
     schemasDetected = await this.phaseSchemaDetection(agentId);
 
+    // Phase 5.6: Temporal Validation — penalize expired memories, flag for revision
+    const temporalExpired = await this.phaseTemporalValidation(agentId);
+
+    // Phase 5.7: Procedure Evolution — adjust confidence based on outcome history
+    const proceduresEvolved = await this.phaseProcedureEvolution(agentId);
+
+    // Phase 5.8: Drift Snapshot — record drift signals for trend detection
+    try {
+      await this.phaseDriftSnapshot(agentId, temporalExpired);
+    } catch (err) {
+      log.error({ err, agentId }, 'drift snapshot failed');
+    }
+
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
     if (this.audit) {
@@ -171,6 +184,12 @@ export class SleepCycleEngine {
 
     if (capacityEvicted > 0) {
       result.capacity_evicted = capacityEvicted;
+    }
+    if (temporalExpired > 0) {
+      result.temporal_expired = temporalExpired;
+    }
+    if (proceduresEvolved > 0) {
+      result.procedures_evolved = proceduresEvolved;
     }
 
     return result;
@@ -382,12 +401,21 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag low-confidence memories for revision, prioritized by surprise score then importance.
-    // High-surprise memories represent the biggest gap between expected and actual behavior — revise first.
+    // Flag low-confidence memories for revision.
+    // Priority order: memories with recent negative retrieval outcomes first (they caused
+    // observed failures), then by surprise score (prediction gap), then importance.
     const flagged = await this.pool.query<{ id: bigint }>(
-      `SELECT id FROM warm_tier
-       WHERE agent_id = $1 AND confidence < $2
-       ORDER BY surprise_score DESC, importance DESC
+      `SELECT wt.id
+       FROM warm_tier wt
+       LEFT JOIN (
+         SELECT warm_tier_id, count(*) AS neg_count
+         FROM retrieval_log
+         WHERE outcome = 'negative'
+           AND created_at > now() - interval '7 days'
+         GROUP BY warm_tier_id
+       ) neg ON neg.warm_tier_id = wt.id
+       WHERE wt.agent_id = $1 AND wt.confidence < $2
+       ORDER BY COALESCE(neg.neg_count, 0) DESC, wt.surprise_score DESC, wt.importance DESC
        LIMIT 50`,
       [agentId, this.config.revisionThreshold],
     );
@@ -894,6 +922,105 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     }
 
     return created;
+  }
+
+  // ─── Phase 5.6: Temporal Validation ───────────────────────────────────────
+  // Finds warm_tier rows whose valid_until has passed. Reduces their confidence
+  // by 0.2 (floor 0.05) and sets surprise_score to 1.0 so they bubble to the
+  // top of the revision queue in the next cycle's phaseTriage.
+
+  private async phaseTemporalValidation(agentId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE warm_tier
+       SET confidence    = GREATEST(0.05, confidence - 0.2),
+           surprise_score = 1.0
+       WHERE agent_id = $1
+         AND valid_until IS NOT NULL
+         AND valid_until < now()
+         AND confidence > 0.05`,
+      [agentId],
+    );
+    const expired = rowCount ?? 0;
+    if (expired > 0) {
+      log.info({ agentId, expired }, 'temporal validation: expired memories penalized');
+    }
+    return expired;
+  }
+
+  // ─── Phase 5.7: Procedure Evolution ───────────────────────────────────────
+  // Strengthens procedures with a strong positive outcome history (≥5 successes,
+  // failure_rate ≤ 0.2) and weakens/deactivates those with persistent failure
+  // rates (≥3 failures, failure_rate > 0.5). Deactivates below confidence 0.1.
+
+  private async phaseProcedureEvolution(agentId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE procedures
+       SET confidence = CASE
+             WHEN success_count >= 5
+               AND (failure_count::real / NULLIF(success_count + failure_count, 0)) <= 0.2
+             THEN LEAST(1.0, confidence + 0.05)
+             WHEN failure_count >= 3
+               AND (failure_count::real / NULLIF(success_count + failure_count, 0)) > 0.5
+             THEN GREATEST(0.0, confidence - 0.1)
+             ELSE confidence
+           END,
+           active = CASE
+             WHEN failure_count >= 3
+               AND (failure_count::real / NULLIF(success_count + failure_count, 0)) > 0.5
+               AND GREATEST(0.0, confidence - 0.1) < 0.1
+             THEN false
+             ELSE active
+           END
+       WHERE agent_id = $1
+         AND active = true
+         AND (success_count + failure_count) > 0`,
+      [agentId],
+    );
+    const evolved = rowCount ?? 0;
+    if (evolved > 0) {
+      log.info({ agentId, evolved }, 'procedure evolution: confidence adjusted');
+    }
+    return evolved;
+  }
+
+  // ─── Phase 5.8: Drift Snapshot ───────────────────────────────────────────
+  // Captures a point-in-time snapshot of drift signals so detectDrift() can
+  // compute trends across sleep cycles. One row per cycle.
+
+  private async phaseDriftSnapshot(agentId: string, expiredCount: number): Promise<void> {
+    const { rows } = await this.pool.query<{
+      contradiction_rate: number | null;
+      staleness_p90: number | null;
+      revision_velocity: number | null;
+      stale_cluster_count: string;
+    }>(
+      `SELECT
+         (SELECT CASE WHEN count(*) = 0 THEN 0.0
+                 ELSE avg(array_length(contradictions, 1))::float END
+          FROM reflections WHERE agent_id = $1 AND created_at > now() - interval '7 days') AS contradiction_rate,
+         (SELECT percentile_cont(0.9) WITHIN GROUP (ORDER BY staleness_score)
+          FROM warm_tier WHERE agent_id = $1) AS staleness_p90,
+         (SELECT count(*)::real / NULLIF((SELECT count(*) FROM warm_tier WHERE agent_id = $1), 0)
+          FROM memory_revisions WHERE agent_id = $1 AND created_at > now() - interval '24 hours') AS revision_velocity,
+         (SELECT count(*) FROM warm_tier WHERE agent_id = $1 AND staleness_score > 0.5) AS stale_cluster_count`,
+      [agentId],
+    );
+
+    const r = rows[0]!;
+
+    await this.pool.query(
+      `INSERT INTO drift_signals
+         (agent_id, contradiction_rate, staleness_p90, revision_velocity, stale_cluster_count, expired_count)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        agentId,
+        r.contradiction_rate ?? 0,
+        r.staleness_p90 ?? 0,
+        r.revision_velocity ?? 0,
+        parseInt(r.stale_cluster_count ?? '0', 10),
+        expiredCount,
+      ],
+    );
   }
 
   private async phaseColdPurge(agentId: string, retentionDays: number): Promise<number> {

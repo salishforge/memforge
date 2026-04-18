@@ -369,6 +369,43 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_set_validity',
+    description: 'Set or clear the validity window on a warm-tier memory. Memories past valid_until are penalized during sleep cycles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id' },
+        valid_until: { type: 'string', description: 'ISO-8601 expiry; omit or null to clear' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
+  {
+    name: 'memforge_record_procedure_outcome',
+    description: 'Record the outcome of executing a procedure. Success/failure counts drive confidence evolution during sleep cycles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        procedure_id: { type: 'string', description: 'procedures row id' },
+        outcome: { type: 'string', enum: ['positive', 'negative', 'neutral'], description: 'Outcome classification' },
+      },
+      required: ['agent_id', 'procedure_id', 'outcome'],
+    },
+  },
+  {
+    name: 'memforge_drift',
+    description: 'Fetch drift-detection report based on recent drift_signals snapshots. Trend classification: stable | degrading | recovering | insufficient_data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -540,6 +577,26 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_detect_roles':
       return client.autoDetectRoles(agentId);
+
+    case 'memforge_set_validity': {
+      const validUntilRaw = args['valid_until'];
+      let validUntil: Date | string | null = null;
+      if (validUntilRaw !== undefined && validUntilRaw !== null) {
+        if (typeof validUntilRaw !== 'string') throw new Error('valid_until must be an ISO-8601 string or null');
+        validUntil = validUntilRaw;
+      }
+      return client.setMemoryValidity(agentId, args['warm_id'] as string, validUntil);
+    }
+
+    case 'memforge_record_procedure_outcome':
+      return client.recordProcedureOutcome(
+        agentId,
+        args['procedure_id'] as string,
+        args['outcome'] as 'positive' | 'negative' | 'neutral',
+      );
+
+    case 'memforge_drift':
+      return client.detectDrift(agentId);
 
     default:
       throw new Error(`Unknown tool: ${name}`);
