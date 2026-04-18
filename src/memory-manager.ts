@@ -1903,6 +1903,43 @@ Ranking (numbers only):`;
     return result;
   }
 
+  // ─── Cold Tier Retention ─────────────────────────────────────────────────
+
+  /**
+   * Hard-delete cold_tier rows older than COLD_TIER_RETENTION_DAYS.
+   * No-op (zero queries) when retention is unset or 0.
+   *
+   * Decision: DELETE ... RETURNING id so the count is exact and the audit entry
+   * can record which IDs were removed. A single bulk DELETE is used — batching is
+   * a follow-up if prune volumes grow large enough to matter.
+   */
+  async pruneColdTier(agentId: string): Promise<{ pruned: number }> {
+    this.assertAgentId(agentId);
+
+    const retentionDays = this.config.sleepCycle.coldRetentionDays ?? 0;
+    if (!retentionDays) return { pruned: 0 };
+
+    const { rows } = await this.pool.query<{ id: bigint }>(
+      `DELETE FROM cold_tier WHERE agent_id = $1
+         AND archived_at < now() - interval '1 day' * $2
+       RETURNING id`,
+      [agentId, retentionDays],
+    );
+    const pruned = rows.length;
+
+    log.info({ agentId, pruned, retentionDays }, 'cold tier retention prune complete');
+
+    if (this.audit && pruned > 0) {
+      void this.audit.recordBatch(
+        agentId, 'cold_tier', 'delete',
+        { pruned, retentionDays, deleted_ids: rows.map((r) => String(r.id)) },
+        'sleep_cycle',
+      ).catch((err: unknown) => log.error({ err }, 'cold tier prune audit failed'));
+    }
+
+    return { pruned };
+  }
+
   // ─── Memory Health ────────────────────────────────────────────────────────
 
   /**
