@@ -1,0 +1,59 @@
+name: Test npm publish auth (manual)
+
+# Manual-only workflow to validate that npm Trusted Publishing (OIDC) works
+# end-to-end before committing to it for the real release pipeline.
+#
+# Runs `npm publish --dry-run --access public --provenance` with NO
+# NODE_AUTH_TOKEN set — so if the dry-run succeeds, OIDC is authenticating
+# correctly and we can safely remove the token fallback from release.yml
+# (and delete the NPM_TOKEN repo secret).
+#
+# If this workflow fails at the publish step with 401/403/404:
+# - Either corepack didn't successfully activate npm >= 11.5.1, or
+# - The trusted publisher on npm.com isn't accepting the OIDC claim.
+# Inspect the "Report npm version" step to confirm npm is current.
+#
+# Trigger: Actions tab → "Test npm publish auth (manual)" → Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-auth:
+    name: Dry-run publish via corepack-activated npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Activate npm via corepack
+        run: |
+          corepack enable
+          corepack prepare npm@latest --activate
+          echo "✓ corepack activation complete"
+
+      - name: Report npm version
+        run: |
+          echo "node version: $(node --version)"
+          echo "npm version:  $(npm --version)"
+          # Trusted Publishing requires npm >= 11.5.1. Fail fast if corepack
+          # activation didn't give us a current npm.
+          npm --version | awk -F. '{ if ($1 < 11 || ($1 == 11 && $2 < 5)) { print "FAIL: npm < 11.5"; exit 1 } }'
+
+      - name: Install deps and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Dry-run publish (OIDC only, no NODE_AUTH_TOKEN)
+        run: npm publish --dry-run --access public --provenance
+        # Intentionally no `env: NODE_AUTH_TOKEN: ...` — this is the whole point:
+        # validate that trusted publishing alone can authenticate the publish.
