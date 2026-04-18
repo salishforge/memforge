@@ -57,23 +57,19 @@ jobs:
           fi
           echo "Publishing ${VERSION} with dist-tag ${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-      # Auth strategy:
-      # - Trusted Publishing (OIDC) is the primary path now that npm 11+ is
-      #   available via prefix-install. npm CLI requests an OIDC token from
-      #   the GitHub Actions runner (id-token: write) and uses it to auth
-      #   against npm, which validates against the trusted publisher
-      #   configured at Packages → @salishforge/memforge → Settings →
-      #   Trusted publishing.
-      # - NODE_AUTH_TOKEN remains as a belt-and-suspenders fallback: if OIDC
-      #   fails for any reason (registry outage, config drift), the token
-      #   keeps us shipping. Once OIDC has validated across a few releases,
-      #   remove the env var below and delete the NPM_TOKEN secret.
-      # - `--provenance` creates OIDC-signed attestations in sigstore
-      #   regardless of auth path — the attestation only needs id-token: write.
+      # Auth via npm Trusted Publishing (OIDC). Validated end-to-end by
+      # the manual `npm-auth-test.yml` workflow — dry-run publish succeeds
+      # with NO token set, proving OIDC alone authenticates. The npm CLI
+      # requests an OIDC token from the GitHub Actions runner (id-token:
+      # write permission) and exchanges it with npm's registry, which
+      # validates against the trusted publisher configured at Packages →
+      # @salishforge/memforge → Settings → Trusted publishing.
+      #
+      # `--provenance` signs an attestation into the sigstore transparency
+      # log so downstream consumers can verify the release came from this
+      # specific repo + workflow. Requires id-token: write (same claim).
       - name: Publish package
         run: npm publish --access public --provenance --tag "${{ steps.dist_tag.outputs.tag }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     name: Create GitHub Release
