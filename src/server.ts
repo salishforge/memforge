@@ -76,6 +76,15 @@ const manager = new MemoryManager({
     },
   },
   auditChain,
+  sleepAdvisoryThresholds: {
+    ...(process.env['SLEEP_ADVISORY_HOT_BACKLOG_LOW']      ? { hotBacklogLow:      parseInt(process.env['SLEEP_ADVISORY_HOT_BACKLOG_LOW'], 10) }      : {}),
+    ...(process.env['SLEEP_ADVISORY_HOT_BACKLOG_MEDIUM']   ? { hotBacklogMedium:   parseInt(process.env['SLEEP_ADVISORY_HOT_BACKLOG_MEDIUM'], 10) }   : {}),
+    ...(process.env['SLEEP_ADVISORY_HOT_BACKLOG_HIGH']     ? { hotBacklogHigh:     parseInt(process.env['SLEEP_ADVISORY_HOT_BACKLOG_HIGH'], 10) }     : {}),
+    ...(process.env['SLEEP_ADVISORY_CONTRADICTION_HIGH']   ? { contradictionHigh:  parseFloat(process.env['SLEEP_ADVISORY_CONTRADICTION_HIGH']) }     : {}),
+    ...(process.env['SLEEP_ADVISORY_REVISION_DEBT_MEDIUM'] ? { revisionDebtMedium: parseInt(process.env['SLEEP_ADVISORY_REVISION_DEBT_MEDIUM'], 10) } : {}),
+    ...(process.env['SLEEP_ADVISORY_MAX_AGE_HOURS']        ? { maxAgeHours:        parseFloat(process.env['SLEEP_ADVISORY_MAX_AGE_HOURS']) }          : {}),
+    ...(process.env['SLEEP_ADVISORY_STABILITY_CEILING']    ? { stabilityCeiling:   parseFloat(process.env['SLEEP_ADVISORY_STABILITY_CEILING']) }      : {}),
+  },
 });
 
 // ─── Webhooks ────────────────────────────────────────────────────────────────

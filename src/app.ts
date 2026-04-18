@@ -705,6 +705,26 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   /**
+   * GET /memory/:agentId/sleep/advisory
+   *
+   * Returns a structured sleep-cycle recommendation for external orchestrators.
+   * Advisory only — MemForge has no built-in scheduler.
+   */
+  app.get('/memory/:agentId/sleep/advisory', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    try {
+      const advisory = await manager.sleepAdvisory(getAgentId(req));
+      ok(res, advisory);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  /**
    * GET /memory/:agentId/health
    */
   app.get('/memory/:agentId/health', requireScope('memforge:read'), async (req: Request, res: Response) => {

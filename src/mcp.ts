@@ -282,6 +282,17 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id', 'cold_id'],
     },
   },
+  {
+    name: 'memforge_sleep_advisory',
+    description: 'Get an adaptive sleep-cycle recommendation. Advisory only — MemForge has no built-in scheduler. Callers (cron jobs, control planes) read the urgency and reason and decide whether to call memforge_sleep.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -416,6 +427,9 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
       return client.restoreColdTier(agentId, args['cold_id'] as string, {
         namespace: args['namespace'] as string | undefined,
       });
+
+    case 'memforge_sleep_advisory':
+      return client.sleepAdvisory(agentId);
 
     default:
       throw new Error(`Unknown tool: ${name}`);
