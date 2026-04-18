@@ -132,93 +132,9 @@ All responses: `{ ok: true, data: ... }` or `{ ok: false, error: "..." }`.
 
 ## Section 4: Architecture Overview
 
-### Storage: Tiered Memory
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full architecture details (tiered storage, retrieval pipeline, sleep cycle phases, knowledge graph).
 
-```
-Hot Tier  ──► Warm Tier  ──► Cold Tier
-(hot_tier)   (warm_tier)   (cold_tier)
-raw events   consolidated,  archived,
-             searchable,    audit trail
-             scored
-```
-
-Hot tier fills on every `add()` call. Consolidation (concat or LLM summarize) produces warm-tier rows with embeddings, importance scores, and knowledge graph links. Clear/archival moves all tiers to cold.
-
-### Retrieval Pipeline
-
-```
-Raw query text
-  ├─► Query preprocessing
-  │     ├─► strip question scaffolding ("what is", "tell me about", …)
-  │     ├─► extract time references (yesterday, last week → after/before filters)
-  │     └─► compound query splitting (at conjunctions → up to 3 sub-queries)
-  │
-  └─► Per sub-query (multi-query retrieval, results merged by highest rank)
-        ├─► plainto_tsquery (FTS)        ─┐
-        ├─► websearch_to_tsquery (FTS)    ├─► asymmetric RRF (semantic 1.5×)
-        └─► pgvector HNSW (semantic,      ─┘
-              halfvec float16 — 2x storage compression)
-              ─► result dedup (first 100 chars fingerprint)
-              ─► min quality threshold (≥10% of top score)
-              ─► entity detection boost (terms in knowledge graph)
-              ─► keyword overlap boost
-              ─► temporal proximity boost
-              ─► importance × score
-              ─► [optional LLM rerank]
-              ─► top-k results
-```
-
-Query preprocessing normalises natural-language phrasing and auto-applies time filters. Compound queries are split at conjunctions and run as independent sub-queries, with results merged by best rank (up to 3 sub-queries). Asymmetric RRF weights semantic results 1.5× higher than keyword to improve precision in hybrid mode. Result deduplication, a minimum quality threshold, entity detection boost, keyword overlap boost, and temporal proximity boost all tune the final ranking. Configurable boosts tune scoring per deployment.
-
-### Active Ingest
-
-Active ingest (v2.2.0) lets agents participate in their own memory management:
-
-1. **Hints API** — Submit keywords/entities/temporal anchors that bias retrieval without writing a memory.
-2. **Preference extraction** — Auto-extracted from content during consolidation when `ENABLE_LLM_INGEST=true`.
-3. **Entity detection** — Heuristic pre-screening before LLM calls reduces unnecessary API usage.
-4. **Supersession** — New memories can mark prior memories stale, propagating confidence decay.
-
-### Sleep Cycle (10 Phases)
-
-Triggered externally (cron, MCP, idle webhook). Runs within a single PostgreSQL advisory lock per agent.
-
-| Phase | Name | Description |
-|-------|------|-------------|
-| 0 | Pre-flight | Refresh staleness scores; auto-reduce confidence on stale memories |
-| 1 | Scoring | Recalculate composite importance: `f(recency, frequency, centrality, reflection_count, revision_stability)`. Adapt weights based on retrieval outcome correlation. |
-| 2 | Triage | Evict below-threshold memories to cold tier; flag low-confidence for revision |
-| 2.5 | Conflict Resolution | Multi-factor conflict scoring (supersession → corroboration → temporal → confidence); resolve pairs recorded in `memory_conflicts` |
-| 3 | Revision | LLM reviews flagged memories with context (entities, retrieval history, neighbors). High-`surprise_score` memories processed first (prioritized experience replay). Decisions: augment, correct, merge, compress, or leave. |
-| 4 | Graph Maintenance | Decay stale edges, deduplicate similar entities (trigram similarity) |
-| 4b | Temporal Chains | Link temporally adjacent memories in `memory_sequences` table |
-| 5 | Reflection | Synthesize insights from revised knowledge base; extract procedural rules |
-| 5.5 | Schema Detection | Crystallize repeated temporal patterns as `entity_type='schema'` entries |
-| 5b | Meta-Reflection | Second-order reflection when sufficient first-order reflections have accumulated |
-| 6 | Gap Analysis | Record zero-result query patterns in `knowledge_gaps` table; include in health metrics |
-
-Each phase respects a configurable token budget (`SLEEP_CYCLE_TOKEN_BUDGET`).
-
-### Active Knowledge Management
-
-Six features that keep memories accurate and current between sleep cycles:
-
-| Feature | Mechanism | Effect |
-|---------|-----------|--------|
-| **Staleness detection** | `staleness_score` computed in Phase 0 based on age, corroboration, and access patterns | Confidence auto-decays on stale memories; `health()` reports `stale_memory_count` and `avg_staleness` |
-| **Prioritized experience replay** | `surprise_score` tracked on negative-after-positive feedback transitions | Phase 3 revision processes high-surprise memories first |
-| **Conflict resolution** | Phase 2.5 multi-factor scoring: supersession → corroboration → temporal → confidence | Winner marked in `memory_conflicts`; loser confidence decayed |
-| **Temporal event chains** | Phase 4b links temporally adjacent warm-tier memories | `memory_sequences` table enables causal chain queries |
-| **Knowledge gap detection** | Zero-result queries recorded in `knowledge_gaps` table | `health()` reports `knowledge_gap_count_7d`; gaps deduped + 1000/agent cap |
-| **Schema detection** | Phase 5.5 detects repeated temporal patterns | Patterns crystallized as `entity_type='schema'` knowledge graph entries |
-
-### Knowledge Graph
-
-Entities stored in `entities` table; relationships in `relationships` table with `valid_from`/`valid_until` for temporal validity. Graph traversal uses recursive CTEs — no external graph database. Entity dedup uses trigram similarity (`pg_trgm`).
-
-### Logging and Observability
-
-All log output is structured JSON via pino. Request correlation IDs (`X-Request-Id`) propagate through all log entries. Prometheus metrics at `/metrics`. OpenAPI spec at `/api/spec.json`; `/api/docs` redirects to `/api/spec.json`.
+Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW). 10-phase sleep cycle for revision/reflection. Knowledge graph via recursive CTEs. Active ingest with hints, supersession, and entity detection.
 
 ## Section 5: Key Files
 
@@ -361,155 +277,29 @@ Webhook payloads are `POST`ed as JSON: `{ event, agentId, data, timestamp }`.
 - All tables have `agent_id` columns with foreign key to `agents` table
 - Use `CASCADE` on foreign keys where appropriate
 
-## Section 9: Model Routing Strategy
+## Section 9: Model Routing
 
-When spawning subagents with the Agent tool, select the model tier based on task impact:
-
-| Model | Use For |
-|-------|---------|
-| **Opus 4.6** (`model: "opus"`) | Planning, architecture, security reviews, audit, integration design, complex multi-file coding |
-| **Sonnet 4.6** (`model: "sonnet"`) | Documentation, moderate coding, code review, test writing, refactoring |
-| **Haiku 4.5** (`model: "haiku"`) | Quick lookups, simple file searches, boilerplate generation, formatting |
-| **gemma4:31b-cloud** (via `ollama run`) | Parallel routine coding where output is easy to verify: scaffolding, repetitive transforms, bulk edits, simple implementations |
-
-**Principles:**
-- Use Claude models when output quality affects production results. Use gemma4 via Ollama CLI to preserve Anthropic API quota on commodity tasks.
-- Don't use Opus for tasks Sonnet handles well. Don't use Sonnet for tasks Haiku or gemma4 handles well.
-- Ollama models are invoked via shell (`ollama run gemma4:31b-cloud "prompt"`) — Claude Code does not support routing subagents to non-Anthropic providers.
-- Ollama API key is in `~/.claude/ollama.env`.
+See `~/.claude/templates/` for delegation templates and `.claude/agents/feature-dev.md` for the MemForge Sonnet agent definition. Model routing strategy is documented in the global cost optimization plan.
 
 ## Section 10: Testing
-
-### Test Suites
-
-| Suite | File | Requires | What It Tests |
-|-------|------|----------|---------------|
-| Integration | `tests/integration.test.ts` | PostgreSQL | MemoryManager API, CRUD, consolidation, graph, feedback, hints, resume |
-| Mock LLM | `tests/llm-mock.test.ts` | PostgreSQL | All LLM-dependent paths (summarize, reflect, revise) via mock provider |
-| HTTP API | `tests/http.test.ts` | PostgreSQL | All 18 REST endpoints via supertest — auth, validation, errors |
-| Cache | `tests/cache.test.ts` | Redis | Cache hit/miss, invalidation, TTL |
-| Load | `tests/load.test.ts` | PostgreSQL | p95 latency targets under 50 concurrent requests |
-| Security | `tests/security.test.ts` | PostgreSQL | Zod validation, injection boundaries, auth bypass attempts |
-| Benchmarks | `benchmarks/` | PostgreSQL + dataset | LongMemEval 500-question harness |
-
-### Run Commands
 
 ```bash
 npm run type-check        # Must pass before running tests
 npm test                  # All suites
 npm run test:integration  # Integration tests (requires PostgreSQL)
-npm run test:cache        # Cache tests (requires Redis)
-npm run test:llm          # Mock LLM tests (no API keys needed)
 npm run test:http         # HTTP API tests (no port binding)
+npm run test:llm          # Mock LLM tests (no API keys needed)
+npm run test:cache        # Cache tests (requires Redis)
 npm run test:load         # Load tests
 npm run test:security     # Security / input-validation tests
-npm run benchmark         # LongMemEval harness
 ```
 
-### Test Rules
-
-- Tests use Node.js built-in `node:test` runner — no Jest, no Vitest
-- Integration tests require a real PostgreSQL database with schema applied
-- Each `describe` block cleans up in `before` and `after`
-- Use a dedicated `TEST_AGENT` constant to avoid collision
-- Run `npm run type-check` before running tests — type errors cause confusing failures
-
-### Writing Mock LLM Tests
-
-```typescript
-const mockLlm: LLMProvider = {
-  model: 'mock-model',
-  async chat(system: string, user: string): Promise<string> {
-    return JSON.stringify({ reflection: '...', key_insights: [...] });
-  },
-  async summarize(raw: string): Promise<ConsolidationSummary> {
-    return { summary: raw, keyFacts: [], entities: [], relationships: [] };
-  },
-};
-```
+- Node.js built-in `node:test` runner — no Jest/Vitest
+- Run `type-check` before tests — type errors cause confusing failures
+- See [DEVELOPMENT.md](DEVELOPMENT.md) for test details and mock LLM patterns
 
 ## Section 11: Recent Changes
 
-### v2.6.0 — Active Knowledge Management + Integration Improvements
+See [CHANGELOG.md](CHANGELOG.md) for full version history. Current version: v3.0.0-beta.3.
 
-#### Python SDK (`python/`)
-- **`MemForgeClient`** — 18 async methods mirroring the TypeScript SDK, built on `httpx`
-- **`ResilientMemForgeClient`** — Graceful degradation wrapper; returns safe defaults on errors
-- **`ConversationMemory`** — Chat-oriented adapter: `add_turn()`, `get_context()`, `start_session()`, `end_session()`
-- Tool definitions for OpenAI function calling and Anthropic tool_use formats
-- Install: `pip install memforge` or `cd python && pip install -e .` for development
-
-#### Framework Examples (`examples/`)
-- `simple_chatbot.py` — Minimal Python chatbot with MemForge memory
-- `openai_tools.py` — OpenAI function calling with MemForge tools
-- `claude_tools.py` — Anthropic tool_use with MemForge tools
-- `langchain_memory.py` — LangChain memory integration
-- `quickstart.py` / `quickstart.ts` — Hello-world walkthroughs in Python and TypeScript
-
-#### Docker Standalone
-- `Dockerfile.standalone` — Single container with embedded PostgreSQL; no separate Postgres required
-- `docker run -p 3333:3333 salishforge/memforge:standalone`
-
-#### Export / Import
-- `GET /memory/:agentId/export` — Download all warm-tier memories as JSONL
-- `POST /memory/:agentId/import` — Bulk-load memories from JSONL (migration, seeding)
-
-#### Webhooks
-- `WEBHOOK_URL` + `WEBHOOK_EVENTS` env vars
-- Events: `consolidated`, `revised`, `reflected`, `evicted`, `graduated`
-- Payload: `{ event, agentId, data, timestamp }`
-
-#### ChatGPT Plugin
-- `public/ai-plugin.json` — ChatGPT plugin manifest for direct ChatGPT integration
-
-### v2.7.0 — halfvec Vector Storage
-
-- **halfvec (float16) vector storage** — Embedding columns converted from pgvector `vector` (float32) to `halfvec` (float16). 2x storage compression with zero quality loss. Requires pgvector 0.5+.
-- **Migration v2.7.sql** — Converts existing `vector` columns to `halfvec` for upgrading deployments.
-
-#### Active Knowledge Management (#75–#80)
-- **Staleness detection** (#78) — `staleness_score` column on `warm_tier`; computed in sleep Phase 0; confidence auto-reduced; `health()` reports `stale_memory_count` and `avg_staleness`
-- **Prioritized experience replay** (#79) — `surprise_score` column on `warm_tier`; tracked on negative-after-positive feedback; Phase 3 revises high-surprise memories first
-- **Conflict resolution** (#80) — Sleep Phase 2.5; multi-factor scoring (supersession → corroboration → temporal → confidence); `memory_conflicts` table records pairs, winners, and resolution strategy
-- **Temporal event chains** (#76) — Phase 4b links temporally adjacent memories; `memory_sequences` table with `gap_seconds`
-- **Knowledge gap detection** (#77) — Zero-result queries recorded in `knowledge_gaps` table; deduped + 1000/agent cap; `health()` reports `knowledge_gap_count_7d`
-- **Schema detection** (#75) — Sleep Phase 5.5 crystallizes repeated temporal patterns as `entity_type='schema'` entities
-- **Migration v2.6.sql** — 3 new tables (`memory_conflicts`, `memory_sequences`, `knowledge_gaps`), 3 new columns (`surprise_score`, `staleness_score`, `last_corroborated`)
-
-#### Security Round 9
-- Agent-scoped conflict resolution queries prevent cross-agent leakage
-- Multi-factor conflict heuristic replaces cascading approach (more deterministic)
-- Feedback deduplication: each `retrieval_id` can only be rated once per agent (prevents spam)
-- Knowledge gap dedup prevents duplicate zero-result entries
-- Batched retrieval logging via single `INSERT ... unnest()` (fixes per-query N+1)
-- All new endpoints and tables pass MEDIUM+ audit
-
-### v2.2.0 — Production Hardening, Embeddings, Retrieval Quality
-
-#### Production Hardening
-- CI/CD pipeline via GitHub Actions (type-check → lint → test → build)
-- Structured JSON logging via pino (`src/logger.ts`) with request correlation IDs
-- `createApp()` factory in `src/app.ts` — Express app is now testable without port binding
-- Mock LLM test suite covers all LLM-dependent paths without API keys
-- HTTP API test suite covers all 18 endpoints via supertest
-- Load tests validate p95 latency targets
-
-#### Embeddings
-- **In-process local embeddings** (`EMBEDDING_PROVIDER=local`) — uses `@xenova/transformers` with `Xenova/bge-small-en-v1.5` by default (7.3 ms/embed, ~137 embeds/sec on CPU). No external service required.
-- **Concurrency-limited external embeddings** — `ConcurrencyLimitedEmbeddingProvider` wraps Ollama/OpenAI with a semaphore (`EMBEDDING_CONCURRENCY_LIMIT`, default 3). Prevents request pileup under consolidation bursts.
-
-#### Security
-- 9 rounds of security audit (8 prior + round 9 for AKM features), all clean at MEDIUM+
-- Zod validation on all request boundaries (`src/schemas.ts`)
-- PostgreSQL advisory locks prevent concurrent sleep cycle races
-- Prompt injection boundaries: user content wrapped in XML delimiters + injection-resistance instructions
-- RLS migration (`schema/migration-v2.3.sql`) adds row-level security policies
-- SSRF prevention on outbound LLM/embedding provider URLs
-- Security headers via `helmet` middleware
-
-#### Retrieval Quality
-- Query preprocessing: strip question scaffolding, extract time references, split compound queries
-- Multi-query retrieval: compound queries split and run independently (up to 3 sub-queries)
-- Asymmetric RRF: semantic results weighted 1.5× in hybrid mode
-- Result deduplication, minimum quality threshold, entity detection boost, term-memory affinity
-- LongMemEval benchmark: **93.2% R@5** / 96.4% R@10 hybrid mode (500 questions, local embeddings)
+Key versions: v3.0.0-beta.3 (RLS + audit trigger in canonical schema, version regularization, doc cleanup), v2.7.1 (beta release cleanup, dead code removal), v2.7.0 (halfvec storage), v2.6.0 (active knowledge management, Python SDK), v2.2.0 (production hardening, embeddings, retrieval quality).

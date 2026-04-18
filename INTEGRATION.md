@@ -6,6 +6,7 @@ This guide explains how to wire MemForge into any AI agent, regardless of framew
 
 For step-by-step setup and tool references for specific platforms, see:
 
+- **[Claude Code (CLI/VS Code/JetBrains)](plugins/claude-code/README.md)** — MCP + hooks for automatic context preservation across compaction cycles and sessions
 - **[Claude Desktop](plugins/claude-desktop/README.md)** — MCP setup, auto-context hooks, [16 tools reference](plugins/claude-desktop/TOOLS.md)
 - **[Microsoft 365 Copilot](plugins/m365-copilot/README.md)** — API plugin, Power Automate flows, Copilot Studio, [tool reference](plugins/m365-copilot/TOOLS.md)
 - **[Power Automate templates](plugins/power-automate/)** — Pre-built flows for email capture, meeting context, nightly consolidation
