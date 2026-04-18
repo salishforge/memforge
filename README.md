@@ -1,6 +1,8 @@
 # MemForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/@salishforge/memforge.svg?label=npm&color=cb3837)](https://www.npmjs.com/package/@salishforge/memforge)
+[![npm downloads](https://img.shields.io/npm/dm/@salishforge/memforge.svg?color=blue)](https://www.npmjs.com/package/@salishforge/memforge)
 [![Status: Beta](https://img.shields.io/badge/Status-Beta-yellow.svg)](#project-status)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
@@ -144,7 +146,33 @@ const ctx = await memory.resume('agent-1');  // warm-start context bundle
 - **PostgreSQL** 16+ with `pgvector` and `pg_trgm` extensions
 - **Redis** (optional — degrades gracefully if unavailable)
 
-### Install & Run
+### Install & Run (via npm)
+
+For a lightweight deploy where you already have PostgreSQL available:
+
+```bash
+# Install the package globally (includes schema/ and the memforge + memforge-mcp bins)
+npm install -g @salishforge/memforge
+
+# Apply the schema the first time you point MemForge at a fresh database
+psql "$DATABASE_URL" -f "$(npm root -g)/@salishforge/memforge/schema/schema.sql"
+
+# Start the HTTP server on PORT (default 3333)
+export DATABASE_URL=postgresql://...     # required
+export MEMFORGE_TOKEN=...                # required — Bearer token for /memory/*
+memforge
+
+# Or start the MCP server over stdio (for Claude Desktop, Cursor, etc.)
+memforge-mcp
+```
+
+Prefer not to install globally? Replace the first step with `npm install @salishforge/memforge` in a project directory and use `npx memforge` / `npx memforge-mcp`; the schema is then at `./node_modules/@salishforge/memforge/schema/schema.sql`.
+
+Configure via environment variables — see [.env.example](.env.example) for the full list. At minimum set `DATABASE_URL` and `MEMFORGE_TOKEN`.
+
+### Install & Run (from source)
+
+For development, or if you want to modify MemForge:
 
 ```bash
 git clone https://github.com/salishforge/memforge.git
