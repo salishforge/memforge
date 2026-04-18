@@ -14,6 +14,21 @@ import { getLogger } from './logger.js';
 
 const log = getLogger('schemas');
 
+// ─── Namespace Validator ────────────────────────────────────────────────────
+// Safe-URL-ish token: lowercase letters, digits, underscore, hyphen.
+// Min length 1, max 128. Leading character must be alphanumeric.
+// Examples: 'default', 'frontend', 'ops-team', 'project_x42'
+export const NamespaceSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/i, 'namespace must start with a letter or digit and contain only letters, digits, underscores, or hyphens');
+
+// Request schema helpers for methods that accept an optional namespace
+export const NamespacedRequestSchema = z.object({
+  namespace: NamespaceSchema.optional(),
+});
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({

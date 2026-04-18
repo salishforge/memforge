@@ -19,6 +19,7 @@ export interface HotRow {
   content: string;
   metadata: Record<string, unknown>;
   created_at: Date;
+  namespace: string;
 }
 
 export interface AddResult {
@@ -43,6 +44,7 @@ export interface WarmRow {
   time_end: Date | null;
   access_count: number;
   last_accessed: Date | null;
+  namespace: string;
   /** Full-text search rank (present only in query results) */
   rank?: number;
 }
@@ -79,6 +81,8 @@ export interface QueryOptions {
   decayRate?: number;
   /** Token budget — return results fitting within this many tokens (estimate: content.length/4). */
   maxTokens?: number;
+  /** Namespace to search within (default: 'default') */
+  namespace?: string;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -104,6 +108,19 @@ export interface ConsolidateResult {
   warm_rows_created: number;
   consolidation_mode: ConsolidationMode;
   status: 'complete' | 'failed';
+}
+
+/** Options for consolidate() — namespace scopes which hot rows are processed. */
+export interface ConsolidateOptions {
+  namespace?: string;
+}
+
+/** Options for add() */
+export interface AddOptions {
+  metadata?: Record<string, unknown>;
+  outcomeType?: OutcomeType;
+  hints?: MemoryHints;
+  namespace?: string;
 }
 
 // ─── Knowledge Graph ─────────────────────────────────────────────────────────
@@ -181,6 +198,7 @@ export interface Reflection {
   source_reflection_ids: bigint[];
   metadata: Record<string, unknown>;
   created_at: Date;
+  namespace: string;
 }
 
 export interface ReflectionResult {
@@ -216,6 +234,7 @@ export interface Procedure {
   active: boolean;
   metadata: Record<string, unknown>;
   created_at: Date;
+  namespace: string;
 }
 
 // ─── Memory Revision Engine ──────────────────────────────────────────────────
@@ -262,6 +281,7 @@ export interface MemoryRevision {
   confidence: number;
   model_used: string;
   created_at: Date;
+  namespace: string;
 }
 
 export interface SleepCycleResult {

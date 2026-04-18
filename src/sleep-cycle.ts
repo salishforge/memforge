@@ -341,16 +341,18 @@ export class SleepCycleEngine {
       [agentId],
     );
 
-    // Evict low-importance memories to cold tier (graduated memories are protected)
+    // Evict low-importance memories to cold tier (graduated memories are protected).
+    // Namespace propagates from the source warm_tier row so cold_tier retains
+    // the correct partition for later targeted pruning.
     const evictResult = await this.pool.query<{ count: string }>(
       `WITH evictable AS (
-         SELECT id, content, metadata, consolidated_at
+         SELECT id, content, metadata, consolidated_at, namespace
          FROM warm_tier
          WHERE agent_id = $1 AND importance < $2 AND NOT graduated
        ),
        moved AS (
-         INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at)
-         SELECT $1, 'warm_tier', e.id, e.content, e.metadata, e.consolidated_at
+         INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at, namespace)
+         SELECT $1, 'warm_tier', e.id, e.content, e.metadata, e.consolidated_at, e.namespace
          FROM evictable e
          RETURNING source_id
        ),
@@ -389,8 +391,8 @@ export class SleepCycleEngine {
 
   private async reviseMemory(agentId: string, warmTierId: bigint): Promise<number> {
     // Gather the memory and its context
-    const memory = await this.pool.query<{ content: string; metadata: Record<string, unknown>; importance: number }>(
-      `SELECT content, metadata, importance FROM warm_tier WHERE id = $1 AND agent_id = $2`,
+    const memory = await this.pool.query<{ content: string; metadata: Record<string, unknown>; importance: number; namespace: string }>(
+      `SELECT content, metadata, importance, namespace FROM warm_tier WHERE id = $1 AND agent_id = $2`,
       [warmTierId, agentId],
     );
     if (memory.rows.length === 0) return 0;
@@ -491,12 +493,12 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     );
     const nextRevision = (revNum.rows[0]?.max ?? 0) + 1;
 
-    // Log the revision
+    // Log the revision — namespace inherited from the warm_tier row being revised
     const revisionResult = await this.pool.query<{ id: bigint }>(
-      `INSERT INTO memory_revisions (agent_id, warm_tier_id, revision_number, previous_content, new_content, revision_type, reason, delta_summary, confidence, model_used)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO memory_revisions (agent_id, warm_tier_id, revision_number, previous_content, new_content, revision_type, reason, delta_summary, confidence, model_used, namespace)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
-      [agentId, warmTierId, nextRevision, row.content, revisedContent, action as RevisionType, reason, deltaSummary, confidence, this.llm.model],
+      [agentId, warmTierId, nextRevision, row.content, revisedContent, action as RevisionType, reason, deltaSummary, confidence, this.llm.model, row.namespace],
     );
 
     // Update the warm tier row

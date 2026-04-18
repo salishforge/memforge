@@ -12,7 +12,7 @@ import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
-import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema } from './schemas.js';
+import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema } from './schemas.js';
 import { SleepCycleEngine } from './sleep-cycle.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
@@ -26,6 +26,7 @@ import type {
   QueryOptions,
   QueryMode,
   ConsolidateResult,
+  ConsolidateOptions,
   ClearResult,
   AgentStats,
   TimelineEntry,
@@ -49,6 +50,17 @@ import type {
   MemoryHints,
   SqlParam,
 } from './types.js';
+const DEFAULT_NAMESPACE = 'default';
+
+/** Resolve and validate a caller-supplied namespace, defaulting to 'default'. */
+function resolveNamespace(ns: string | undefined): string {
+  if (!ns) return DEFAULT_NAMESPACE;
+  const result = NamespaceSchema.safeParse(ns);
+  if (!result.success) {
+    throw new TypeError(`Invalid namespace '${ns}': ${result.error.issues[0]?.message ?? 'validation failed'}`);
+  }
+  return result.data;
+}
 
 const DEFAULTS: MemForgeConfig = {
   databaseUrl: process.env['DATABASE_URL'] ?? '',
@@ -190,23 +202,27 @@ export class MemoryManager {
     metadata: Record<string, unknown> = {},
     outcomeType: OutcomeType = 'neutral',
     hints?: MemoryHints,
+    namespace?: string,
   ): Promise<AddResult> {
     this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
       throw new TypeError('content must be a non-empty string');
     }
 
+    const ns = resolveNamespace(namespace);
+
     if (this.config.autoRegisterAgents) {
       await this.registerAgent(agentId);
     }
 
-    // Deduplicate by content hash — skip storing if identical content was added recently
+    // Deduplicate by content hash — skip storing if identical content was added recently.
+    // Dedup is namespace-scoped: the same content in different namespaces is stored independently.
     const contentHash = createHash('sha256').update(content).digest('hex');
     const dup = await this.pool.query<{ id: bigint; created_at: Date }>(
       `SELECT id, created_at FROM hot_tier
-       WHERE agent_id = $1 AND content_hash = $2 AND created_at > now() - interval '1 hour'
+       WHERE agent_id = $1 AND content_hash = $2 AND namespace = $3 AND created_at > now() - interval '1 hour'
        LIMIT 1`,
-      [agentId, contentHash],
+      [agentId, contentHash, ns],
     );
     if (dup.rows[0]) {
       await this.pool.query(`UPDATE hot_tier SET created_at = now() WHERE id = $1`, [dup.rows[0].id]);
@@ -233,10 +249,10 @@ export class MemoryManager {
     }
 
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns],
     );
 
     const result = rows[0]!;
@@ -329,6 +345,8 @@ Ranking (numbers only):`;
       throw new TypeError('search query must be a non-empty string');
     }
 
+    const ns = resolveNamespace(opts.namespace);
+
     // Query understanding: clean scaffolding, extract time hints, split compounds
     const parsed = parseQuery(opts.q);
     const searchText = parsed.cleanedText;
@@ -351,10 +369,10 @@ Ranking (numbers only):`;
       for (const subQ of parsed.subQueries.slice(0, 3)) { // cap at 3 sub-queries
         let subResults: QueryResult[];
         switch (mode) {
-          case 'keyword': subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before); break;
-          case 'semantic': subResults = await this.querySemantic(agentId, subQ, subLimit, after, before); break;
-          case 'hybrid': subResults = await this.queryHybrid(agentId, subQ, subLimit, after, before); break;
-          default: subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before);
+          case 'keyword': subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before, ns); break;
+          case 'semantic': subResults = await this.querySemantic(agentId, subQ, subLimit, after, before, ns); break;
+          case 'hybrid': subResults = await this.queryHybrid(agentId, subQ, subLimit, after, before, ns); break;
+          default: subResults = await this.queryKeyword(agentId, subQ, subLimit, after, before, ns);
         }
         for (const r of subResults) {
           const key = String(r.id);
@@ -369,16 +387,16 @@ Ranking (numbers only):`;
       // Single query path (most common)
       switch (mode) {
         case 'keyword':
-          results = await this.queryKeyword(agentId, searchText, resolvedLimit, after, before);
+          results = await this.queryKeyword(agentId, searchText, resolvedLimit, after, before, ns);
           break;
         case 'code':
-          results = await this.queryCode(agentId, searchText, resolvedLimit, after, before);
+          results = await this.queryCode(agentId, searchText, resolvedLimit, after, before, ns);
           break;
         case 'semantic':
-          results = await this.querySemantic(agentId, searchText, resolvedLimit, after, before);
+          results = await this.querySemantic(agentId, searchText, resolvedLimit, after, before, ns);
           break;
         case 'hybrid':
-          results = await this.queryHybrid(agentId, searchText, resolvedLimit, after, before);
+          results = await this.queryHybrid(agentId, searchText, resolvedLimit, after, before, ns);
           break;
       }
     }
@@ -571,9 +589,9 @@ Ranking (numbers only):`;
       const warmIds = results.map((r) => r.id);
       const positions = results.map((_, idx) => idx + 1);
       void this.pool.query(
-        `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position)
-         SELECT $1, unnest($2::bigint[]), $3, $4, unnest($5::int[])`,
-        [agentId, warmIds, opts.q, mode, positions],
+        `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace)
+         SELECT $1, unnest($2::bigint[]), $3, $4, unnest($5::int[]), $6`,
+        [agentId, warmIds, opts.q, mode, positions, ns],
       ).catch((err) => log.error({ err }, 'retrieval log failed'));
     }
 
@@ -588,9 +606,10 @@ Ranking (numbers only):`;
     limit: number,
     after?: Date,
     before?: Date,
+    namespace: string = DEFAULT_NAMESPACE,
   ): Promise<QueryResult[]> {
-    const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: SqlParam[] =[agentId, searchText];
+    const timeFilter = this.buildTimeFilter(after, before, 4);
+    const params: SqlParam[] =[agentId, searchText, namespace];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -601,6 +620,7 @@ Ranking (numbers only):`;
               ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
+         AND namespace = $3
          AND content_tsv @@ plainto_tsquery('english', $2)
          ${timeFilter}
        ORDER BY rank DESC
@@ -609,7 +629,7 @@ Ranking (numbers only):`;
     );
 
     if (rows.length === 0) {
-      return this.queryTrigram(agentId, searchText, limit, after, before);
+      return this.queryTrigram(agentId, searchText, limit, after, before, namespace);
     }
 
     return rows;
@@ -625,9 +645,10 @@ Ranking (numbers only):`;
     limit: number,
     after?: Date,
     before?: Date,
+    namespace: string = DEFAULT_NAMESPACE,
   ): Promise<QueryResult[]> {
-    const timeFilter = this.buildTimeFilter(after, before, 3);
-    const params: SqlParam[] =[agentId, searchText];
+    const timeFilter = this.buildTimeFilter(after, before, 4);
+    const params: SqlParam[] =[agentId, searchText, namespace];
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -638,6 +659,7 @@ Ranking (numbers only):`;
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
+         AND namespace = $3
          AND content_code_tsv @@ plainto_tsquery('simple', $2)
          ${timeFilter}
        ORDER BY rank DESC
@@ -647,7 +669,7 @@ Ranking (numbers only):`;
 
     // Fall back to trigram if FTS returns nothing
     if (rows.length === 0) {
-      return this.queryTrigram(agentId, searchText, limit, after, before);
+      return this.queryTrigram(agentId, searchText, limit, after, before, namespace);
     }
 
     return rows;
@@ -659,9 +681,10 @@ Ranking (numbers only):`;
     limit: number,
     after?: Date,
     before?: Date,
+    namespace: string = DEFAULT_NAMESPACE,
   ): Promise<QueryResult[]> {
-    const params: SqlParam[] =[agentId, searchText, `%${escapeLike(searchText)}%`];
-    const timeFilter = this.buildTimeFilter(after, before, 4);
+    const params: SqlParam[] =[agentId, searchText, `%${escapeLike(searchText)}%`, namespace];
+    const timeFilter = this.buildTimeFilter(after, before, 5);
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -672,6 +695,7 @@ Ranking (numbers only):`;
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
+         AND namespace = $4
          AND content ILIKE $3
          ${timeFilter}
        ORDER BY rank DESC
@@ -689,6 +713,7 @@ Ranking (numbers only):`;
     limit: number,
     after?: Date,
     before?: Date,
+    namespace: string = DEFAULT_NAMESPACE,
   ): Promise<QueryResult[]> {
     if (!this.embeddingsEnabled) {
       throw new Error('Semantic search requires an embedding provider — set EMBEDDING_PROVIDER');
@@ -697,8 +722,8 @@ Ranking (numbers only):`;
     const queryEmbedding = await this.embedder.embed(searchText);
     const vectorLiteral = `[${queryEmbedding.join(',')}]`;
 
-    const params: SqlParam[] =[agentId, vectorLiteral];
-    const timeFilter = this.buildTimeFilter(after, before, 3);
+    const params: SqlParam[] =[agentId, vectorLiteral, namespace];
+    const timeFilter = this.buildTimeFilter(after, before, 4);
     if (after) params.push(after);
     if (before) params.push(before);
     params.push(limit);
@@ -709,6 +734,7 @@ Ranking (numbers only):`;
               (1 - (embedding <=> $2::halfvec)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
+         AND namespace = $3
          AND embedding IS NOT NULL
          ${timeFilter}
        ORDER BY embedding <=> $2::halfvec
@@ -727,17 +753,18 @@ Ranking (numbers only):`;
     limit: number,
     after?: Date,
     before?: Date,
+    namespace: string = DEFAULT_NAMESPACE,
   ): Promise<QueryResult[]> {
     // If embeddings are not enabled, fall back to keyword-only
     if (!this.embeddingsEnabled) {
-      return this.queryKeyword(agentId, searchText, limit, after, before);
+      return this.queryKeyword(agentId, searchText, limit, after, before, namespace);
     }
 
     // Fetch more candidates for fusion — diminishing returns above ~60 per source
     const candidateLimit = Math.min(Math.max(limit * 2, 20), 60);
     const [keywordResults, semanticResults] = await Promise.all([
-      this.queryKeyword(agentId, searchText, candidateLimit, after, before),
-      this.querySemantic(agentId, searchText, candidateLimit, after, before),
+      this.queryKeyword(agentId, searchText, candidateLimit, after, before, namespace),
+      this.querySemantic(agentId, searchText, candidateLimit, after, before, namespace),
     ]);
 
     // Reciprocal rank fusion (k=60 is standard)
@@ -882,9 +909,10 @@ Ranking (numbers only):`;
    * @param agentId  Tenant identifier
    * @param mode     Override the configured consolidation mode for this run
    */
-  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult & { batchesProcessed?: number }> {
+  async consolidate(agentId: string, mode?: ConsolidationMode, opts?: ConsolidateOptions): Promise<ConsolidateResult & { batchesProcessed?: number }> {
     this.assertAgentId(agentId);
 
+    const ns = resolveNamespace(opts?.namespace);
     const resolvedMode = mode ?? this.config.consolidationMode;
     const INNER_BATCH_SIZE = Math.max(1, this.config.consolidationInnerBatchSize ?? 50);
     const outerCap = this.config.consolidationBatchSize;
@@ -893,7 +921,9 @@ Ranking (numbers only):`;
     // We cannot use pg_advisory_xact_lock here because each inner batch commits
     // its own transaction — a transaction-level lock would be released on each
     // COMMIT, allowing interleaving between concurrent callers.
-    const lockKey = `memforge:consolidate:${agentId}`;
+    // The lock key includes namespace so concurrent consolidations in different
+    // namespaces can proceed in parallel.
+    const lockKey = `memforge:consolidate:${agentId}:${ns}`;
     const lockClient = await this.pool.connect();
     // Retrieve the numeric lock ID from Postgres so we use the same hashtext()
     // result for both the lock and unlock calls.
@@ -913,16 +943,16 @@ Ranking (numbers only):`;
       // totals are written on completion. This matches the existing schema
       // which has one log row per run, not one per inner batch.
       const logRow = await lockClient.query<{ id: bigint }>(
-        `INSERT INTO consolidation_log (agent_id, metadata) VALUES ($1, $2) RETURNING id`,
-        [agentId, JSON.stringify({ consolidation_mode: resolvedMode })],
+        `INSERT INTO consolidation_log (agent_id, metadata, namespace) VALUES ($1, $2, $3) RETURNING id`,
+        [agentId, JSON.stringify({ consolidation_mode: resolvedMode }), ns],
       );
       runId = logRow.rows[0]!.id;
 
       // Determine upfront how many rows are available (for progress logging).
       // This is a snapshot — SKIP LOCKED in each inner batch handles races.
       const countRow = await lockClient.query<{ n: string }>(
-        `SELECT count(*) AS n FROM hot_tier WHERE agent_id = $1`,
-        [agentId],
+        `SELECT count(*) AS n FROM hot_tier WHERE agent_id = $1 AND namespace = $2`,
+        [agentId, ns],
       );
       const availableRows = Math.min(parseInt(countRow.rows[0]!.n, 10), outerCap);
 
@@ -966,11 +996,11 @@ Ranking (numbers only):`;
           }>(
             `SELECT id, content, metadata, created_at
              FROM hot_tier
-             WHERE agent_id = $1
+             WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
-             LIMIT $2
+             LIMIT $3
              FOR UPDATE SKIP LOCKED`,
-            [agentId, INNER_BATCH_SIZE],
+            [agentId, ns, INNER_BATCH_SIZE],
           );
 
           if (hotRows.rows.length === 0) {
@@ -1078,11 +1108,12 @@ Ranking (numbers only):`;
 
           const summaryText = summary ? summary.summary : null;
 
+          // Warm rows inherit the namespace of the hot rows they were consolidated from.
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
-             VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace)
+             VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8, $10)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, ns],
           );
           const warmRowId = warmRow.rows[0]!.id;
 
@@ -1184,8 +1215,8 @@ Ranking (numbers only):`;
           // Delete this inner batch's hot-tier rows by explicit ID — safe even
           // if the outer-cap count snapshot was stale; we only delete what we read.
           await client.query(
-            `DELETE FROM hot_tier WHERE agent_id = $1 AND id = ANY($2)`,
-            [agentId, batchIds],
+            `DELETE FROM hot_tier WHERE agent_id = $1 AND id = ANY($2) AND namespace = $3`,
+            [agentId, batchIds, ns],
           );
 
           await client.query('COMMIT');
@@ -1270,11 +1301,11 @@ Ranking (numbers only):`;
       // Advisory lock — serializes concurrent clear operations for the same agent
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`memforge:clear:${agentId}`]);
 
-      // Archive hot_tier rows
+      // Archive hot_tier rows — namespace propagates from source rows
       const hotResult = await client.query<{ count: string }>(
         `WITH moved AS (
-           INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at)
-           SELECT agent_id, 'hot_tier', id, content, metadata, created_at
+           INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at, namespace)
+           SELECT agent_id, 'hot_tier', id, content, metadata, created_at, namespace
            FROM hot_tier
            WHERE agent_id = $1
            RETURNING source_id
@@ -1285,11 +1316,11 @@ Ranking (numbers only):`;
 
       await client.query(`DELETE FROM hot_tier WHERE agent_id = $1`, [agentId]);
 
-      // Archive warm_tier rows
+      // Archive warm_tier rows — namespace propagates from source rows
       const warmResult = await client.query<{ count: string }>(
         `WITH moved AS (
-           INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at)
-           SELECT agent_id, 'warm_tier', id, content, metadata, consolidated_at
+           INSERT INTO cold_tier (agent_id, source_table, source_id, content, metadata, original_created_at, namespace)
+           SELECT agent_id, 'warm_tier', id, content, metadata, consolidated_at, namespace
            FROM warm_tier
            WHERE agent_id = $1
            RETURNING source_id
@@ -1913,26 +1944,28 @@ Ranking (numbers only):`;
    * can record which IDs were removed. A single bulk DELETE is used — batching is
    * a follow-up if prune volumes grow large enough to matter.
    */
-  async pruneColdTier(agentId: string): Promise<{ pruned: number }> {
+  async pruneColdTier(agentId: string, namespace?: string): Promise<{ pruned: number }> {
     this.assertAgentId(agentId);
 
     const retentionDays = this.config.sleepCycle.coldRetentionDays ?? 0;
     if (!retentionDays) return { pruned: 0 };
 
+    const ns = resolveNamespace(namespace);
+
     const { rows } = await this.pool.query<{ id: bigint }>(
-      `DELETE FROM cold_tier WHERE agent_id = $1
-         AND archived_at < now() - interval '1 day' * $2
+      `DELETE FROM cold_tier WHERE agent_id = $1 AND namespace = $2
+         AND archived_at < now() - interval '1 day' * $3
        RETURNING id`,
-      [agentId, retentionDays],
+      [agentId, ns, retentionDays],
     );
     const pruned = rows.length;
 
-    log.info({ agentId, pruned, retentionDays }, 'cold tier retention prune complete');
+    log.info({ agentId, namespace: ns, pruned, retentionDays }, 'cold tier retention prune complete');
 
     if (this.audit && pruned > 0) {
       void this.audit.recordBatch(
         agentId, 'cold_tier', 'delete',
-        { pruned, retentionDays, deleted_ids: rows.map((r) => String(r.id)) },
+        { pruned, retentionDays, namespace: ns, deleted_ids: rows.map((r) => String(r.id)) },
         'sleep_cycle',
       ).catch((err: unknown) => log.error({ err }, 'cold tier prune audit failed'));
     }
