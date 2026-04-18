@@ -861,62 +861,78 @@ Ranking (numbers only):`;
    * **concat** (default): Hot rows are grouped into batches and concatenated
    * with separator markers. Fast and free — no LLM calls.
    *
-   * **summarize**: Each batch is sent to an LLM for intelligent distillation.
+   * **summarize**: Each inner batch is sent to an LLM for intelligent distillation.
    * The LLM produces a narrative summary, extracts key facts, identifies
    * entities and relationships. The warm row stores the summary as content
    * and the structured extraction in metadata. Falls back to concat if the
    * LLM call fails.
    *
+   * Note: in summarize mode, LLM costs scale with the number of inner batches,
+   * not the total row count. This is intentional — a single LLM call for 500
+   * rows would not fit in context for large backlogs.
+   *
    * In both modes, embeddings are generated when an embedding provider is
    * configured, and temporal bounds are set from source event timestamps.
+   *
+   * **Streaming model**: each inner batch runs in its own transaction using
+   * SELECT … FOR UPDATE SKIP LOCKED, so partial failures leave earlier
+   * batches committed and the next consolidate() call resumes from where
+   * the failed batch left off (idempotent re-run property).
    *
    * @param agentId  Tenant identifier
    * @param mode     Override the configured consolidation mode for this run
    */
-  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult> {
+  async consolidate(agentId: string, mode?: ConsolidationMode): Promise<ConsolidateResult & { batchesProcessed?: number }> {
     this.assertAgentId(agentId);
 
     const resolvedMode = mode ?? this.config.consolidationMode;
+    const INNER_BATCH_SIZE = Math.max(1, this.config.consolidationInnerBatchSize ?? 50);
+    const outerCap = this.config.consolidationBatchSize;
+    // Session-level advisory lock: held across all inner transactions so that
+    // concurrent consolidate() calls for the same agent queue behind each other.
+    // We cannot use pg_advisory_xact_lock here because each inner batch commits
+    // its own transaction — a transaction-level lock would be released on each
+    // COMMIT, allowing interleaving between concurrent callers.
+    const lockKey = `memforge:consolidate:${agentId}`;
+    const lockClient = await this.pool.connect();
+    // Retrieve the numeric lock ID from Postgres so we use the same hashtext()
+    // result for both the lock and unlock calls.
+    const lockIdRow = await lockClient.query<{ id: string }>(`SELECT hashtext($1) AS id`, [lockKey]);
+    const lockId = lockIdRow.rows[0]!.id;
 
-    const client = await this.pool.connect();
     let runId: bigint = BigInt(0);
+    let totalHotProcessed = 0;
+    let totalWarmCreated = 0;
+    let batchIndex = 0;
 
     try {
-      await client.query('BEGIN');
+      await lockClient.query(`SELECT pg_advisory_lock($1::bigint)`, [lockId]);
 
-      // Advisory lock — serializes concurrent consolidations for the same agent
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`memforge:consolidate:${agentId}`]);
-
-      // Create audit log row
-      const logRow = await client.query<{ id: bigint }>(
+      // Create the consolidation_log row once per consolidate() call.
+      // Inner-batch progress is not individually logged — only the final
+      // totals are written on completion. This matches the existing schema
+      // which has one log row per run, not one per inner batch.
+      const logRow = await lockClient.query<{ id: bigint }>(
         `INSERT INTO consolidation_log (agent_id, metadata) VALUES ($1, $2) RETURNING id`,
         [agentId, JSON.stringify({ consolidation_mode: resolvedMode })],
       );
       runId = logRow.rows[0]!.id;
 
-      // Fetch all pending hot-tier rows for this agent (ordered oldest-first)
-      const hotRows = await client.query<{
-        id: bigint;
-        content: string;
-        metadata: Record<string, unknown>;
-        created_at: Date;
-      }>(
-        `SELECT id, content, metadata, created_at
-         FROM hot_tier
-         WHERE agent_id = $1
-         ORDER BY created_at ASC
-         LIMIT $2`,
-        [agentId, this.config.consolidationBatchSize],
+      // Determine upfront how many rows are available (for progress logging).
+      // This is a snapshot — SKIP LOCKED in each inner batch handles races.
+      const countRow = await lockClient.query<{ n: string }>(
+        `SELECT count(*) AS n FROM hot_tier WHERE agent_id = $1`,
+        [agentId],
       );
+      const availableRows = Math.min(parseInt(countRow.rows[0]!.n, 10), outerCap);
 
-      if (hotRows.rows.length === 0) {
-        await client.query(
+      if (availableRows === 0) {
+        await lockClient.query(
           `UPDATE consolidation_log
            SET status = 'complete', completed_at = now(), hot_rows_processed = 0, warm_rows_created = 0
            WHERE id = $1`,
           [runId],
         );
-        await client.query('COMMIT');
         return {
           run_id: runId,
           agent_id: agentId,
@@ -924,335 +940,321 @@ Ranking (numbers only):`;
           warm_rows_created: 0,
           consolidation_mode: resolvedMode,
           status: 'complete',
+          batchesProcessed: 0,
         };
       }
 
-      // Group hot rows into sub-batches (configurable for verbatim mode)
-      const BATCH_SIZE = Math.max(1, this.config.consolidationInnerBatchSize ?? 50);
-      const batches: Array<{
-        rawContent: string;
-        ids: bigint[];
-        oldest: Date;
-        newest: Date;
-        batchSize: number;
-      }> = [];
+      const totalBatches = Math.ceil(availableRows / INNER_BATCH_SIZE);
 
-      for (let i = 0; i < hotRows.rows.length; i += BATCH_SIZE) {
-        const batch = hotRows.rows.slice(i, i + BATCH_SIZE);
-        batches.push({
-          rawContent: batch.map((r) => r.content).join('\n\n---\n\n'),
-          ids: batch.map((r) => r.id),
-          oldest: batch[0]!.created_at,
-          newest: batch[batch.length - 1]!.created_at,
-          batchSize: batch.length,
-        });
-      }
-
-      // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7 across
-      // sampled pairs) — concat produces equivalent results without API cost.
-      const batchNeedsLlm = batches.map((batch) => {
-        if (resolvedMode !== 'summarize' || !this.llm) return false;
-        // Check intra-batch diversity via word-level Jaccard overlap
-        const rows = batch.rawContent.split('\n\n---\n\n');
-        if (rows.length < 2) return true; // single-row batch always needs LLM
-        // Sample pairwise overlap (truncate to 10K chars per row for DoS prevention)
-        const wordSets = rows.slice(0, 10).map((r) =>
-          new Set(r.slice(0, 10_000).toLowerCase().split(/\s+/).filter((w) => w.length > 2)),
-        );
-        let highOverlapCount = 0;
-        let comparisons = 0;
-        for (let i = 0; i < wordSets.length; i++) {
-          for (let j = i + 1; j < wordSets.length; j++) {
-            const a = wordSets[i]!;
-            const b = wordSets[j]!;
-            const intersection = [...a].filter((w) => b.has(w)).length;
-            const jaccard = intersection / Math.max(a.size, b.size, 1);
-            if (jaccard > 0.7) highOverlapCount++;
-            comparisons++;
-          }
-        }
-        // If >70% of sampled pairs have high overlap, skip LLM — concat is sufficient
-        return comparisons > 0 && highOverlapCount / comparisons < 0.7;
-      });
-
-      // Detect polarity contradictions within batches and flag as metadata
-      const POLARITY_PAIRS = [
-        ['enabled', 'disabled'], ['true', 'false'], ['added', 'removed'],
-        ['created', 'deleted'], ['started', 'stopped'], ['open', 'closed'],
-      ];
-      const batchContradictions = batches.map((batch) => {
-        const lower = batch.rawContent.toLowerCase();
-        const found: string[] = [];
-        for (const [a, b] of POLARITY_PAIRS) {
-          if (a && b && lower.includes(a) && lower.includes(b)) {
-            found.push(`${a}/${b}`);
-          }
-        }
-        return found;
-      });
-
-      // ── Summarize mode: send each batch to LLM ──────────────────────────
-      let summaries: Array<ConsolidationSummary | null> | null = null;
-      if (resolvedMode === 'summarize' && this.llm) {
+      // ── Inner-batch streaming loop ─────────────────────────────────────
+      // Each iteration acquires the next N rows, processes them fully, then
+      // commits. If an iteration throws, rows remain in hot_tier and the next
+      // consolidate() call picks them up — idempotent re-run.
+      while (totalHotProcessed < outerCap) {
+        const client = await this.pool.connect();
         try {
-          summaries = await Promise.all(
-            batches.map(async (batch, idx) => {
-              // Skip LLM for high-overlap batches (heuristic pre-screening)
-              if (!batchNeedsLlm[idx]) return null;
-              try {
-                return await this.llm!.summarize(batch.rawContent);
-              } catch (err) {
-                log.error({ err }, 'LLM summarization failed for batch, falling back to concat');
-                return null;
-              }
-            }),
+          await client.query('BEGIN');
+
+          // SKIP LOCKED: skip rows locked by any other session (shouldn't
+          // happen given the advisory lock above, but defensive against
+          // operator-initiated concurrent processes outside MemForge).
+          const hotRows = await client.query<{
+            id: bigint;
+            content: string;
+            metadata: Record<string, unknown>;
+            created_at: Date;
+          }>(
+            `SELECT id, content, metadata, created_at
+             FROM hot_tier
+             WHERE agent_id = $1
+             ORDER BY created_at ASC
+             LIMIT $2
+             FOR UPDATE SKIP LOCKED`,
+            [agentId, INNER_BATCH_SIZE],
           );
-        } catch (err) {
-          log.error({ err }, 'LLM summarization failed, falling back to concat for all batches');
-          summaries = null;
-        }
-      }
 
-      // ── Determine final content for each batch ──────────────────────────
-      const finalContents = batches.map((batch, i) => {
-        const summary = summaries?.[i];
-        if (summary) {
-          return summary.summary;
-        }
-        return batch.rawContent;
-      });
-
-      // ── Generate embeddings for final content ───────────────────────────
-      let embeddings: number[][] | null = null;
-      if (this.embeddingsEnabled) {
-        try {
-          embeddings = await this.embedder.embedBatch(finalContents);
-        } catch (err) {
-          log.error({ err }, 'embedding failed during consolidation');
-        }
-      }
-
-      // ── Insert warm rows and populate knowledge graph ──────────────────
-      let warmCreated = 0;
-
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i]!;
-        const summary = summaries?.[i] ?? null;
-        const embedding = embeddings?.[i] ?? null;
-        const vectorLiteral = embedding ? `[${embedding.join(',')}]` : null;
-
-        // Build metadata — always includes batch info, adds extraction if summarized
-        const metadata: Record<string, unknown> = {
-          batch_size: batch.batchSize,
-          oldest: batch.oldest,
-          newest: batch.newest,
-          consolidation_mode: summary ? 'summarize' : 'concat',
-        };
-
-        if (summary) {
-          metadata.key_facts = summary.keyFacts;
-          metadata.entities = summary.entities;
-          metadata.relationships = summary.relationships;
-          metadata.sentiment = summary.sentiment;
-        }
-
-        // Add heuristic contradiction flags if detected
-        const contradictions = batchContradictions[i];
-        if (contradictions && contradictions.length > 0) {
-          metadata._contradictions = contradictions;
-        }
-        if (!batchNeedsLlm[i] && resolvedMode === 'summarize') {
-          metadata._llm_skipped = true;
-        }
-
-        // Determine dominant outcome_type from hot-tier rows in this batch
-        const batchRows = hotRows.rows.filter((r) => batch.ids.includes(r.id));
-        const outcomeCounts = new Map<string, number>();
-        for (const r of batchRows) {
-          const ot = (r.metadata as Record<string, unknown>)?.['_outcome_type'] as string | undefined ?? 'neutral';
-          outcomeCounts.set(ot, (outcomeCounts.get(ot) ?? 0) + 1);
-        }
-        let dominantOutcome = 'neutral';
-        let maxCount = 0;
-        for (const [ot, count] of outcomeCounts) {
-          if (count > maxCount || (count === maxCount && ['error', 'decision'].includes(ot))) {
-            dominantOutcome = ot;
-            maxCount = count;
+          if (hotRows.rows.length === 0) {
+            await client.query('ROLLBACK');
+            break; // No more rows — done
           }
-        }
 
-        const summaryText = summary ? summary.summary : null;
+          const rawContent = hotRows.rows.map((r) => r.content).join('\n\n---\n\n');
+          const batchIds = hotRows.rows.map((r) => r.id);
+          const oldest = hotRows.rows[0]!.created_at;
+          const newest = hotRows.rows[hotRows.rows.length - 1]!.created_at;
+          const batchSize = hotRows.rows.length;
 
-        const warmRow = await client.query<{ id: bigint }>(
-          `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
-           VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8)
-           RETURNING id`,
-          [
-            agentId,
-            finalContents[i],
-            batch.ids,
-            JSON.stringify(metadata),
-            vectorLiteral,
-            batch.oldest,
-            batch.newest,
-            dominantOutcome,
-            summaryText,
-          ],
-        );
-        const warmRowId = warmRow.rows[0]!.id;
-        warmCreated++;
-
-        // Link to closest preceding warm-tier memory to build temporal event chains
-        void client.query(
-          `INSERT INTO memory_sequences (agent_id, predecessor_id, successor_id, gap_seconds)
-           SELECT $1, w.id, $2, EXTRACT(EPOCH FROM ($3::timestamptz - w.time_end))
-           FROM warm_tier w
-           WHERE w.agent_id = $1 AND w.id != $2
-             AND w.time_end IS NOT NULL AND w.time_end < $3::timestamptz
-             AND w.time_end > $3::timestamptz - interval '24 hours'
-           ORDER BY w.time_end DESC LIMIT 1
-           ON CONFLICT DO NOTHING`,
-          [agentId, warmRowId, batch.oldest],
-        ).catch((err) => log.error({ err }, 'temporal sequence link failed'));
-
-        // Audit: record warm-tier creation
-        if (this.audit) {
-          const cHash = await this.audit.record(
-            agentId, 'warm_tier', warmRowId, 'create',
-            null, finalContents[i]!,
-            { source_hot_ids: batch.ids.map(String), batch_size: batch.batchSize, mode: summary ? 'summarize' : 'concat' },
-            'consolidation', summary ? this.llm?.model ?? null : null, client,
-          );
-          await client.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [warmRowId, cHash]);
-        }
-
-        // ── Populate knowledge graph from LLM extraction ────────────────
-        if (summary && (summary.entities.length > 0 || summary.relationships.length > 0)) {
-          const entityIdMap = new Map<string, bigint>();
-
-          // Batch upsert entities
-          if (summary.entities.length > 0) {
-            const names = summary.entities.map((e) => e.name);
-            const types = summary.entities.map((e) => e.type);
-            const entityRows = await client.query<{ id: bigint; name: string; entity_type: string }>(
-              `INSERT INTO entities (agent_id, name, entity_type)
-               SELECT $1, unnest($2::text[]), unnest($3::text[])
-               ON CONFLICT (agent_id, name) DO UPDATE
-                 SET mention_count = entities.mention_count + 1,
-                     last_seen = now(),
-                     entity_type = CASE
-                       WHEN entities.entity_type = 'other' THEN EXCLUDED.entity_type
-                       ELSE entities.entity_type
-                     END
-               RETURNING id, name, entity_type`,
-              [agentId, names, types],
+          // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7
+          // across sampled pairs) — concat produces equivalent results without API cost.
+          const needsLlm = (() => {
+            if (resolvedMode !== 'summarize' || !this.llm) return false;
+            const rows = rawContent.split('\n\n---\n\n');
+            if (rows.length < 2) return true;
+            const wordSets = rows.slice(0, 10).map((r) =>
+              new Set(r.slice(0, 10_000).toLowerCase().split(/\s+/).filter((w) => w.length > 2)),
             );
-            for (const row of entityRows.rows) {
-              entityIdMap.set(row.name, row.id);
+            let highOverlapCount = 0;
+            let comparisons = 0;
+            for (let i = 0; i < wordSets.length; i++) {
+              for (let j = i + 1; j < wordSets.length; j++) {
+                const a = wordSets[i]!;
+                const b = wordSets[j]!;
+                const intersection = [...a].filter((w) => b.has(w)).length;
+                const jaccard = intersection / Math.max(a.size, b.size, 1);
+                if (jaccard > 0.7) highOverlapCount++;
+                comparisons++;
+              }
             }
+            return comparisons > 0 && highOverlapCount / comparisons < 0.7;
+          })();
 
-            if (this.audit) {
+          // Detect polarity contradictions to flag in metadata
+          const POLARITY_PAIRS = [
+            ['enabled', 'disabled'], ['true', 'false'], ['added', 'removed'],
+            ['created', 'deleted'], ['started', 'stopped'], ['open', 'closed'],
+          ] as const;
+          const contradictions: string[] = [];
+          const lower = rawContent.toLowerCase();
+          for (const [a, b] of POLARITY_PAIRS) {
+            if (lower.includes(a) && lower.includes(b)) contradictions.push(`${a}/${b}`);
+          }
+
+          // ── Summarize mode: LLM call per inner batch ───────────────────
+          // One LLM call per inner batch (not one for all rows) is deliberate:
+          // a single call for the full outer batch (up to 500 rows) would exceed
+          // context limits for large agent backlogs.
+          let summary: ConsolidationSummary | null = null;
+          if (needsLlm && this.llm) {
+            try {
+              summary = await this.llm.summarize(rawContent);
+            } catch (err) {
+              log.error({ err }, 'LLM summarization failed for inner batch, falling back to concat');
+            }
+          }
+
+          const finalContent = summary ? summary.summary : rawContent;
+
+          // ── Generate embedding ─────────────────────────────────────────
+          let embedding: number[] | null = null;
+          if (this.embeddingsEnabled) {
+            try {
+              embedding = await this.embedder.embed(finalContent);
+            } catch (err) {
+              log.error({ err }, 'embedding failed during consolidation inner batch');
+            }
+          }
+          const vectorLiteral = embedding ? `[${embedding.join(',')}]` : null;
+
+          // Build metadata
+          const metadata: Record<string, unknown> = {
+            batch_size: batchSize,
+            oldest,
+            newest,
+            consolidation_mode: summary ? 'summarize' : 'concat',
+          };
+          if (summary) {
+            metadata.key_facts = summary.keyFacts;
+            metadata.entities = summary.entities;
+            metadata.relationships = summary.relationships;
+            metadata.sentiment = summary.sentiment;
+          }
+          if (contradictions.length > 0) metadata._contradictions = contradictions;
+          if (!needsLlm && resolvedMode === 'summarize') metadata._llm_skipped = true;
+
+          // Determine dominant outcome_type from this inner batch's rows
+          const outcomeCounts = new Map<string, number>();
+          for (const r of hotRows.rows) {
+            const ot = (r.metadata as Record<string, unknown>)?.['_outcome_type'] as string | undefined ?? 'neutral';
+            outcomeCounts.set(ot, (outcomeCounts.get(ot) ?? 0) + 1);
+          }
+          let dominantOutcome = 'neutral';
+          let maxCount = 0;
+          for (const [ot, count] of outcomeCounts) {
+            if (count > maxCount || (count === maxCount && ['error', 'decision'].includes(ot))) {
+              dominantOutcome = ot;
+              maxCount = count;
+            }
+          }
+
+          const summaryText = summary ? summary.summary : null;
+
+          const warmRow = await client.query<{ id: bigint }>(
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
+             VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8)
+             RETURNING id`,
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText],
+          );
+          const warmRowId = warmRow.rows[0]!.id;
+
+          // Link to closest preceding warm-tier memory to build temporal event chains
+          void client.query(
+            `INSERT INTO memory_sequences (agent_id, predecessor_id, successor_id, gap_seconds)
+             SELECT $1, w.id, $2, EXTRACT(EPOCH FROM ($3::timestamptz - w.time_end))
+             FROM warm_tier w
+             WHERE w.agent_id = $1 AND w.id != $2
+               AND w.time_end IS NOT NULL AND w.time_end < $3::timestamptz
+               AND w.time_end > $3::timestamptz - interval '24 hours'
+             ORDER BY w.time_end DESC LIMIT 1
+             ON CONFLICT DO NOTHING`,
+            [agentId, warmRowId, oldest],
+          ).catch((err) => log.error({ err }, 'temporal sequence link failed'));
+
+          // Audit: record warm-tier creation
+          if (this.audit) {
+            const cHash = await this.audit.record(
+              agentId, 'warm_tier', warmRowId, 'create',
+              null, finalContent,
+              { source_hot_ids: batchIds.map(String), batch_size: batchSize, mode: summary ? 'summarize' : 'concat' },
+              'consolidation', summary ? this.llm?.model ?? null : null, client,
+            );
+            await client.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [warmRowId, cHash]);
+          }
+
+          // ── Populate knowledge graph from LLM extraction ───────────────
+          if (summary && (summary.entities.length > 0 || summary.relationships.length > 0)) {
+            const entityIdMap = new Map<string, bigint>();
+
+            if (summary.entities.length > 0) {
+              const names = summary.entities.map((e) => e.name);
+              const types = summary.entities.map((e) => e.type);
+              const entityRows = await client.query<{ id: bigint; name: string; entity_type: string }>(
+                `INSERT INTO entities (agent_id, name, entity_type)
+                 SELECT $1, unnest($2::text[]), unnest($3::text[])
+                 ON CONFLICT (agent_id, name) DO UPDATE
+                   SET mention_count = entities.mention_count + 1,
+                       last_seen = now(),
+                       entity_type = CASE
+                         WHEN entities.entity_type = 'other' THEN EXCLUDED.entity_type
+                         ELSE entities.entity_type
+                       END
+                 RETURNING id, name, entity_type`,
+                [agentId, names, types],
+              );
               for (const row of entityRows.rows) {
-                void this.audit.record(
-                  agentId, 'entities', row.id, 'create',
-                  null, row.name, { entity_type: row.entity_type },
-                  'consolidation', this.llm?.model ?? null, client
-                ).catch((err: unknown) => log.error({ err }, 'audit entity error'));
+                entityIdMap.set(row.name, row.id);
               }
+
+              if (this.audit) {
+                for (const row of entityRows.rows) {
+                  void this.audit.record(
+                    agentId, 'entities', row.id, 'create',
+                    null, row.name, { entity_type: row.entity_type },
+                    'consolidation', this.llm?.model ?? null, client,
+                  ).catch((err: unknown) => log.error({ err }, 'audit entity error'));
+                }
+              }
+
+              const entityIds = entityRows.rows.map((r) => r.id);
+              await client.query(
+                `INSERT INTO warm_tier_entities (warm_tier_id, entity_id)
+                 SELECT $1, unnest($2::bigint[])
+                 ON CONFLICT DO NOTHING`,
+                [warmRowId, entityIds],
+              );
             }
 
-            // Batch link entities to this warm row
-            const entityIds = entityRows.rows.map((r) => r.id);
-            await client.query(
-              `INSERT INTO warm_tier_entities (warm_tier_id, entity_id)
-               SELECT $1, unnest($2::bigint[])
-               ON CONFLICT DO NOTHING`,
-              [warmRowId, entityIds],
+            const validRels = summary.relationships.filter(
+              (r) => entityIdMap.has(r.source) && entityIdMap.has(r.target),
             );
+            if (validRels.length > 0) {
+              const srcIds = validRels.map((r) => entityIdMap.get(r.source)!);
+              const tgtIds = validRels.map((r) => entityIdMap.get(r.target)!);
+              const relTypes = validRels.map((r) => r.relation);
+              const relResult = await client.query<{ id: bigint; source_entity_id: bigint; target_entity_id: bigint; relation_type: string }>(
+                `INSERT INTO relationships (agent_id, source_entity_id, target_entity_id, relation_type)
+                 SELECT $1, unnest($2::bigint[]), unnest($3::bigint[]), unnest($4::text[])
+                 ON CONFLICT (agent_id, source_entity_id, target_entity_id, relation_type)
+                 DO UPDATE SET weight = relationships.weight + 1, last_seen = now()
+                 RETURNING id, source_entity_id, target_entity_id, relation_type`,
+                [agentId, srcIds, tgtIds, relTypes],
+              );
+              if (this.audit) {
+                for (const row of relResult.rows) {
+                  void this.audit.record(
+                    agentId, 'relationships', row.id, 'create',
+                    null, `${row.source_entity_id} → ${row.target_entity_id}`,
+                    { relation_type: row.relation_type },
+                    'consolidation', this.llm?.model ?? null, client,
+                  ).catch((err: unknown) => log.error({ err }, 'audit relationship error'));
+                }
+              }
+            }
           }
 
-          // Batch upsert relationships (only if both endpoints exist as entities)
-          const validRels = summary.relationships.filter(
-            (r) => entityIdMap.has(r.source) && entityIdMap.has(r.target),
+          // Delete this inner batch's hot-tier rows by explicit ID — safe even
+          // if the outer-cap count snapshot was stale; we only delete what we read.
+          await client.query(
+            `DELETE FROM hot_tier WHERE agent_id = $1 AND id = ANY($2)`,
+            [agentId, batchIds],
           );
-          if (validRels.length > 0) {
-            const srcIds = validRels.map((r) => entityIdMap.get(r.source)!);
-            const tgtIds = validRels.map((r) => entityIdMap.get(r.target)!);
-            const relTypes = validRels.map((r) => r.relation);
-            const relResult = await client.query<{ id: bigint; source_entity_id: bigint; target_entity_id: bigint; relation_type: string }>(
-              `INSERT INTO relationships (agent_id, source_entity_id, target_entity_id, relation_type)
-               SELECT $1, unnest($2::bigint[]), unnest($3::bigint[]), unnest($4::text[])
-               ON CONFLICT (agent_id, source_entity_id, target_entity_id, relation_type)
-               DO UPDATE SET weight = relationships.weight + 1, last_seen = now()
-               RETURNING id, source_entity_id, target_entity_id, relation_type`,
-              [agentId, srcIds, tgtIds, relTypes],
-            );
-            if (this.audit) {
-              for (const row of relResult.rows) {
-                void this.audit.record(
-                  agentId, 'relationships', row.id, 'create',
-                  null, `${row.source_entity_id} → ${row.target_entity_id}`,
-                  { relation_type: row.relation_type },
-                  'consolidation', this.llm?.model ?? null, client
-                ).catch((err: unknown) => log.error({ err }, 'audit relationship error'));
-              }
-            }
-          }
+
+          await client.query('COMMIT');
+
+          totalHotProcessed += batchSize;
+          totalWarmCreated++;
+          batchIndex++;
+
+          log.info(
+            { agentId, batch: batchIndex, totalBatches, rowsProcessed: totalHotProcessed },
+            'consolidation batch complete',
+          );
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => {/* ignore rollback errors */});
+          // Update consolidation_log to record the partial failure before re-throwing.
+          // Rows from the failed batch remain in hot_tier and will be retried.
+          await lockClient.query(
+            `UPDATE consolidation_log
+             SET status = 'failed', completed_at = now(), error = $2,
+                 hot_rows_processed = $3, warm_rows_created = $4
+             WHERE id = $1`,
+            [runId, (err as Error).message, totalHotProcessed, totalWarmCreated],
+          ).catch((logErr) => log.error({ err: logErr }, 'failed to update consolidation log on batch failure'));
+          throw err;
+        } finally {
+          client.release();
         }
       }
 
-      // Delete consolidated hot-tier rows
-      const hotIds = hotRows.rows.map((r) => r.id);
-      await client.query(`DELETE FROM hot_tier WHERE agent_id = $1 AND id = ANY($2)`, [
-        agentId,
-        hotIds,
-      ]);
-
-      // Finalise audit log
-      await client.query(
+      // Finalise consolidation_log with totals across all committed batches
+      await lockClient.query(
         `UPDATE consolidation_log
          SET status = 'complete',
              completed_at = now(),
              hot_rows_processed = $2,
              warm_rows_created = $3
          WHERE id = $1`,
-        [runId, hotRows.rows.length, warmCreated],
+        [runId, totalHotProcessed, totalWarmCreated],
       );
 
-      await client.query('COMMIT');
-
       // Emit webhook event for consolidation
-      if (warmCreated > 0) {
-        emitWebhookEvent('consolidated', agentId, { warm_rows_created: warmCreated, mode: resolvedMode });
+      if (totalWarmCreated > 0) {
+        emitWebhookEvent('consolidated', agentId, { warm_rows_created: totalWarmCreated, mode: resolvedMode });
       }
 
       return {
         run_id: runId,
         agent_id: agentId,
-        hot_rows_processed: hotRows.rows.length,
-        warm_rows_created: warmCreated,
+        hot_rows_processed: totalHotProcessed,
+        warm_rows_created: totalWarmCreated,
         consolidation_mode: resolvedMode,
         status: 'complete',
+        batchesProcessed: batchIndex,
       };
     } catch (err) {
-      await client.query('ROLLBACK');
-
-      if (runId) {
-        try {
-          await this.pool.query(
-            `UPDATE consolidation_log
-             SET status = 'failed', completed_at = now(), error = $2
-             WHERE id = $1`,
-            [runId, (err as Error).message],
-          );
-        } catch (logErr) {
-          log.error({ err: logErr }, 'failed to update consolidation log status');
-        }
+      if (runId && batchIndex === 0) {
+        // No batch started — mark log as failed (if a batch failed mid-run,
+        // the inner catch above already updated the log).
+        await lockClient.query(
+          `UPDATE consolidation_log
+           SET status = 'failed', completed_at = now(), error = $2
+           WHERE id = $1`,
+          [runId, (err as Error).message],
+        ).catch((logErr) => log.error({ err: logErr }, 'failed to update consolidation log status'));
       }
-
       throw err;
     } finally {
-      client.release();
+      await lockClient.query(`SELECT pg_advisory_unlock($1::bigint)`, [lockId]).catch(() => {/* ignore */});
+      lockClient.release();
     }
   }
 
