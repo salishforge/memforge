@@ -14,7 +14,7 @@ The goal is a constant set of evolving agents developed and refined over years, 
 
 ---
 
-## Where We Are Today (v3.0.0-beta.3)
+## Where We Are Today (v3.0.0-beta.4)
 
 MemForge has a production-grade foundation with CI fully green:
 
@@ -36,35 +36,31 @@ MemForge has a production-grade foundation with CI fully green:
 *Make MemForge reliable enough to trust with long-lived agents.*
 
 All Phase 1 items are implemented:
-- CI/CD pipeline with 6 jobs (Node 20+22) — all green
+- CI/CD pipeline with 8 jobs (Node 20+22) — typecheck / lint / build / security / integration / cache / load / RLS enforcement. Release workflow via npm Trusted Publishing (OIDC).
 - Mocked LLM test suite, HTTP API tests, load tests, security tests
 - Structured JSON logging with request correlation IDs (pino)
 - Connection pool hardening with health checks, timeouts, auto-scaling
-- npm package configured as `@salishforge/memforge` ([#10](https://github.com/salishforge/memforge/issues/10) — publish pending)
-
-### Remaining
-
-- **Streaming consolidation** — cursor-based processing for 10K+ event backlogs ([#11](https://github.com/salishforge/memforge/issues/11))
-- **Cold tier retention policies** — configurable cleanup ([#20](https://github.com/salishforge/memforge/issues/20))
-- **npm publish** — publish to npm registry ([#10](https://github.com/salishforge/memforge/issues/10))
+- **Streaming consolidation** — cursor-based per-transaction batches, idempotent re-run ([#11](https://github.com/salishforge/memforge/issues/11)) — ✅ DONE
+- **Cold tier retention** — opt-in `COLD_TIER_RETENTION_DAYS` with audit trail ([#20](https://github.com/salishforge/memforge/issues/20)) — ✅ DONE
+- **npm publish** — live at `@salishforge/memforge` ([#10](https://github.com/salishforge/memforge/issues/10)) — ✅ DONE
 
 ---
 
-## Phase 2: Long-Term Memory at Scale (Q3-Q4 2026)
+## Phase 2: Long-Term Memory at Scale — COMPLETE
 
 *Enable agents to accumulate months of experience without degradation.*
 
 ### Memory Lifecycle Management
 
-- **Memory namespaces** — Partition memories by domain, project, or context so agents with broad responsibilities maintain focused retrieval ([#16](https://github.com/salishforge/memforge/issues/16)) — ✅ DONE: backend in PR #100; HTTP/MCP/TypeScript SDK/OpenAPI/Python SDK surface in this PR (C.2)
+- **Memory namespaces** — Partition memories by domain, project, or context so agents with broad responsibilities maintain focused retrieval ([#16](https://github.com/salishforge/memforge/issues/16)) — ✅ DONE (PRs #100, #101)
 - **Per-agent importance tuning** — Different agents need different memory profiles. A support agent should weight recency; a research agent should weight graph centrality ([#17](https://github.com/salishforge/memforge/issues/17)) — ✅ DONE: shipped in v2.4 migration (#57) — `agents.scoring_weights` JSONB column wired into sleep cycle phase 1
-- **Cold tier search and restoration** — Query archived memories and selectively restore them when context shifts back to old topics ([#14](https://github.com/salishforge/memforge/issues/14))
+- **Cold tier search and restoration** — Query archived memories and selectively restore them when context shifts back to old topics ([#14](https://github.com/salishforge/memforge/issues/14)) — ✅ DONE (PR #102)
 
 ### Intelligent Resource Management
 
-- **Multi-model revision strategy** — Cheap local models for routine sleep cycle maintenance, capable cloud models for high-stakes revisions. Reduce costs 60-80% while maintaining quality where it matters ([#13](https://github.com/salishforge/memforge/issues/13))
-- **Adaptive sleep scheduling** — Automatically trigger sleep cycles based on memory health metrics rather than fixed schedules. If contradiction rate is rising, sleep more. If knowledge is stable, sleep less.
-- **Memory budgeting** — Hard limits on warm-tier size per agent with intelligent eviction. When an agent reaches capacity, the lowest-value memories are archived, not the oldest.
+- **Multi-model revision strategy** — Cheap local models for routine sleep cycle maintenance, capable cloud models for high-stakes revisions ([#13](https://github.com/salishforge/memforge/issues/13)) — ⚠️ PARTIAL: `REVISION_LLM_PROVIDER` env var already routes revision calls to a separate provider instance (cheap/capable split works today). The "two-pass triage" variant (cheap classifier → capable executor) remains future work on this issue.
+- **Adaptive sleep scheduling** — `sleepAdvisory(agentId)` returns a structured recommendation based on hot backlog, contradiction rate, revision debt, time since last sleep, and stability ceiling. External orchestrators (cron, control plane) consume it; MemForge stays scheduler-free by design. — ✅ DONE (PR #104)
+- **Memory budgeting** — `WARM_TIER_MAX_PER_AGENT` hard cap with lowest-importance eviction. Runs as Phase 2b of the sleep cycle after threshold eviction. — ✅ DONE (PR #103)
 
 ### Quality Metrics Dashboard
 
@@ -73,7 +69,7 @@ All Phase 1 items are implemented:
 
 ### Milestone
 
-An agent with 6+ months of accumulated memory, warm tier at 50K+ entries, demonstrably better retrieval quality than month 1.
+An agent with 6+ months of accumulated memory, warm tier at 50K+ entries, demonstrably better retrieval quality than month 1. The sleep advisory (PR #104) gives operators the scheduling signal needed to sustain this at scale; the warm-tier cap + intelligent eviction keeps retrieval focused even as raw ingest volume grows.
 
 ---
 

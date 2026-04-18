@@ -2,6 +2,103 @@
 
 All notable changes to MemForge are documented here.
 
+## [3.0.0-beta.4] - 2026-04-18 — Phase 2: Long-Term Memory at Scale
+
+Completes Phase 2 of the ROADMAP. Adds domain partitioning, cold-tier
+recovery, hard memory budgets, and adaptive scheduling hints — plus the
+first release publishing via npm **Trusted Publishing (OIDC)** instead
+of a long-lived token.
+
+### Added
+
+- **Memory namespaces (#16)** — optional `namespace` argument on
+  `add` / `query` / `consolidate` / `timeline` / `stats` / `resume` /
+  `export` / `import` / `pruneColdTier`. Default namespace is
+  `'default'`, so existing callers are unaffected. Entities and
+  relationships remain agent-scoped (knowledge graph shared across
+  namespaces by design). Migration `schema/migration-v3.1.sql`
+  adds a `namespace TEXT NOT NULL DEFAULT 'default'` column to
+  eight memory tables with composite `(agent_id, namespace)` indexes.
+  Public surface covers HTTP, MCP, TypeScript SDK, Python SDK, and
+  OpenAPI. Sleep cycles are intentionally agent-wide (not
+  namespace-scoped) — the 10-phase cycle doesn't yet filter by
+  namespace, and `SleepSchema` explicitly does not accept a
+  namespace argument so the API doesn't claim behavior it can't
+  deliver.
+- **Cold tier search + restoration (#14)** —
+  `MemoryManager.searchColdTier(agentId, opts)` filters archived
+  rows by content substring, namespace, archive-timestamp range,
+  and source table with limit/offset paging.
+  `restoreColdTier(agentId, coldTierId, opts?)` copies a cold row
+  back into warm tier non-destructively (cold row preserved, warm
+  row stamped with `metadata._restored_from_cold_id` for audit).
+  New routes `GET /memory/:id/cold` and `POST /memory/:id/restore`,
+  plus MCP tools and SDK methods. No schema migration needed.
+- **Memory budgeting** — new opt-in `WARM_TIER_MAX_PER_AGENT` env
+  var enforces a per-agent hard cap on warm_tier rows. Capacity
+  eviction runs as Phase 2b of the sleep cycle (after threshold
+  eviction) and archives lowest-importance rows — not oldest —
+  until the cap is met. Uses the existing `warm_tier_importance_idx`
+  for efficient scans. Graduated memories are NOT exempt: cap is a
+  hard limit; graduation affects retrieval scoring only.
+  `SleepCycleResult.capacity_evicted` is set when a cap is
+  configured.
+- **Adaptive sleep advisory (Phase 2 adaptive scheduling)** —
+  `MemoryManager.sleepAdvisory(agentId)` returns a
+  health-metric-based scheduling recommendation over five signals:
+  hot backlog, contradiction rate, revision debt, time since last
+  sleep, and an inverse stability signal that clamps urgency
+  downward when the knowledge base is highly graduated.
+  `recommended` flips to `true` at urgency `'medium'` or `'high'`.
+  External orchestrators (cron, dashboards, control planes) call
+  this instead of scheduling blindly — MemForge stays
+  scheduler-free by design. New HTTP route
+  `GET /memory/:id/sleep/advisory`, MCP tool `memforge_sleep_advisory`,
+  and SDK methods on both TS and Python clients. Thresholds
+  configurable via `SLEEP_ADVISORY_*` env vars.
+- **Optional HNSW index template** (#95) — new
+  `schema/hnsw-indexes.example.sql` documents how operators who use
+  embeddings should pin the `warm_tier.embedding` and
+  `shared_memories.embedding` halfvec columns to their provider's
+  dimension and build HNSW indexes for fast cosine similarity.
+  Common dimensions (384, 768, 1536, 3072) listed inline.
+
+### Changed
+
+- **npm publish switched to Trusted Publishing (OIDC)** — release
+  workflow no longer requires `NODE_AUTH_TOKEN`; the
+  `id-token: write` permission is enough, and npm validates the
+  publish came from this specific repo + workflow via OIDC. No
+  long-lived token to rotate or leak. The `NPM_TOKEN` secret can
+  now be deleted from the repo (kept as fallback for beta.4 out
+  of caution).
+- **`schema/schema.sql`** no longer tries to build HNSW indexes on
+  bare-dimension halfvec columns (#95). The two failing
+  `CREATE INDEX ... USING hnsw` statements have been replaced with
+  comments pointing to `hnsw-indexes.example.sql`. Fresh installs
+  without embeddings are now silent (no `psql` ERROR lines); installs
+  with embeddings apply the example after choosing a dimension.
+  Semantic search falls back to sequential scan on unindexed halfvec
+  columns — correct but slower.
+- **Bumped `package.json` to `3.0.0-beta.4`**.
+- **Closed GitHub issues** — #10 (npm publish), #14 (cold tier
+  search + restoration), #16 (namespaces), #17 (per-agent weights
+  — previously shipped in v2.4), #18 (CORS), #35 (audit
+  immutability), #43 (global rate limiting), #46 (deployment
+  security guide), #50 (knowledge graduation). All were already
+  shipped but not yet closed on the tracker.
+
+### Known gaps documented
+
+- **#13 Multi-model revision — two-pass triage variant** — still
+  future work. The basic cheap/capable split via
+  `REVISION_LLM_PROVIDER` already works today.
+- **#41 Redis cache poisoning** — confirmed `src/cache.ts` does not
+  Zod-validate deserialised cache entries. Future security sprint.
+- **#21 Integration guides** — LangChain and CrewAI are covered;
+  AutoGen remains gap in `INTEGRATION.md`.
+- **#22 Architecture Decision Records** — still future docs work.
+
 ## [3.0.0-beta.3] - 2026-04-17 — Documentation & Schema Consolidation
 
 This release regularizes the `v3.0.0-beta.x` series. `v3.0.0-beta.1` and
