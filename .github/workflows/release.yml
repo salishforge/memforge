@@ -40,13 +40,30 @@ jobs:
           echo "/tmp/fresh-npm/node_modules/.bin" >> $GITHUB_PATH
       - run: npm ci
       - run: npm run build
+      # Derive the npm dist-tag from the package.json version. npm >= 11
+      # refuses to publish a prerelease version (e.g. 3.0.0-beta.4) without
+      # an explicit --tag, otherwise the prerelease would hijack `latest`.
+      # Stable versions (no hyphen suffix) publish to `latest`; prereleases
+      # publish to the channel named in the suffix (beta, alpha, rc, next).
+      - name: Determine dist-tag from version
+        id: dist_tag
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *"-"* ]]; then
+            TAG=$(echo "$VERSION" | sed -E 's/^[^-]+-([a-z]+).*/\1/')
+            [ -z "$TAG" ] && TAG="next"
+          else
+            TAG="latest"
+          fi
+          echo "Publishing ${VERSION} with dist-tag ${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
       # Auth strategy:
-      # - Trusted Publishing (OIDC) is the primary path now that npm is
-      #   current via corepack. npm CLI requests an OIDC token from the
-      #   GitHub Actions runner (id-token: write) and uses it to authenticate
-      #   against npm's registry, which validates against the trusted
-      #   publisher configured at Packages → @salishforge/memforge →
-      #   Settings → Trusted publishing.
+      # - Trusted Publishing (OIDC) is the primary path now that npm 11+ is
+      #   available via prefix-install. npm CLI requests an OIDC token from
+      #   the GitHub Actions runner (id-token: write) and uses it to auth
+      #   against npm, which validates against the trusted publisher
+      #   configured at Packages → @salishforge/memforge → Settings →
+      #   Trusted publishing.
       # - NODE_AUTH_TOKEN remains as a belt-and-suspenders fallback: if OIDC
       #   fails for any reason (registry outage, config drift), the token
       #   keeps us shipping. Once OIDC has validated across a few releases,
@@ -54,7 +71,7 @@ jobs:
       # - `--provenance` creates OIDC-signed attestations in sigstore
       #   regardless of auth path — the attestation only needs id-token: write.
       - name: Publish package
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "${{ steps.dist_tag.outputs.tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -58,6 +58,11 @@ jobs:
           npm run build
 
       - name: Dry-run publish (OIDC only, no NODE_AUTH_TOKEN)
-        run: npm publish --dry-run --access public --provenance
+        # `--tag beta` satisfies npm 11's requirement that prerelease versions
+        # (like 3.0.0-beta.4) specify an explicit dist-tag instead of hijacking
+        # `latest`. The real release workflow derives the tag dynamically from
+        # the version; this test hardcodes `beta` since the current version is
+        # a beta and we're only validating the auth handshake.
+        run: npm publish --dry-run --access public --provenance --tag beta
         # Intentionally no `env: NODE_AUTH_TOKEN: ...` — this is the whole point:
         # validate that trusted publishing alone can authenticate the publish.
