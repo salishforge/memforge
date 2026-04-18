@@ -28,12 +28,16 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - run: npm run build
-      # Auth via npm Trusted Publishing (OIDC). Requires:
-      # - id-token: write permission on this workflow (set above)
-      # - A trusted publisher configured on npmjs.com for this repo + workflow
-      # No NODE_AUTH_TOKEN is needed — npm CLI uses the Actions OIDC token.
+      # Bootstrap publish auth: NODE_AUTH_TOKEN (Classic Automation token).
+      # @salishforge/memforge does not exist on npm yet, so Trusted Publishing
+      # cannot be configured for it — trusted publishers are attached to an
+      # existing package on npmjs.com. After the first publish succeeds, swap
+      # this step to OIDC by removing NODE_AUTH_TOKEN (id-token: write is
+      # already granted for provenance attestations).
       - name: Publish package
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     name: Create GitHub Release
