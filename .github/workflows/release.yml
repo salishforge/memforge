@@ -26,16 +26,24 @@ jobs:
           node-version: "22"
           cache: npm
           registry-url: "https://registry.npmjs.org"
+      # Upgrade npm to the latest. Trusted Publishing requires npm >= 11.5.1;
+      # the npm bundled with Node 22 on GitHub runners is 10.x, which does NOT
+      # speak the OIDC publish flow — it would silently fall through to token
+      # auth and 404 against npm. Explicitly upgrading guarantees TP works.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run build
-      # Auth via npm Trusted Publishing (OIDC). The package exists on npm
-      # as of v3.0.0-beta.3, so a trusted publisher can be configured for
-      # it on npmjs.com (Packages → @salishforge/memforge → Settings →
-      # Trusted publishing). Once configured, no NODE_AUTH_TOKEN is needed:
-      # npm CLI uses the GitHub Actions OIDC token (id-token: write, above)
-      # to authenticate directly.
+      # Auth via npm Trusted Publishing (OIDC). Configured on npmjs.com at
+      # Packages → @salishforge/memforge → Settings → Trusted publishing.
+      # NODE_AUTH_TOKEN is kept as a belt-and-suspenders fallback: if OIDC
+      # ever fails (registry outage, config drift, token request timeout),
+      # the token path takes over so releases aren't blocked on a single
+      # auth mechanism. Delete the NPM_TOKEN secret once OIDC has shipped
+      # a few releases successfully.
       - name: Publish package
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     name: Create GitHub Release
