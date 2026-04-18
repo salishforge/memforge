@@ -180,6 +180,13 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
+    async def sleep_advisory(self, agent_id: str) -> dict[str, Any] | None:
+        try:
+            return await self._client.sleep_advisory(agent_id)
+        except Exception as e:
+            self._handle(e)
+            return None
+
     async def health(self) -> dict[str, Any] | None:
         try:
             return await self._client.health()

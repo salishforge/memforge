@@ -353,6 +353,12 @@ class MemForgeClient:
         """Run shared pool maintenance cycle."""
         return await self._post(f"/pool/{pool_id}/sleep")
 
+    # ── Sleep Advisory ────────────────────────────────────────────────────
+
+    async def sleep_advisory(self, agent_id: str) -> dict[str, Any]:
+        """Get adaptive sleep-cycle recommendation. Advisory only — callers decide whether to act."""
+        return await self._get(f"/memory/{agent_id}/sleep/advisory")
+
     # ── System ───────────────────────────────────────────────────────────
 
     async def health(self) -> dict[str, Any]:

@@ -494,6 +494,59 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/sleep/advisory': {
+        get: {
+          summary: 'Get adaptive sleep advisory — advisory only, MemForge has no built-in scheduler',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Sleep advisory with urgency, reason, and individual signals. Callers decide whether to act.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          agent_id: { type: 'string' },
+                          recommended: { type: 'boolean', description: 'true when urgency is medium or high' },
+                          urgency: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+                          reason: { type: 'string', description: 'One-line summary ≤120 chars' },
+                          signals: {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                name: { type: 'string' },
+                                value: { type: 'number' },
+                                threshold: { type: 'number' },
+                                urgency: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+                                description: { type: 'string' },
+                              },
+                            },
+                          },
+                          last_sleep_at: { type: 'string', format: 'date-time', nullable: true },
+                          hot_tier_count: { type: 'integer' },
+                          warm_tier_count: { type: 'integer' },
+                          time_since_last_sleep_ms: { type: 'integer', nullable: true },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/admin/cache/stats': {
         get: {
           summary: 'Cache statistics (admin)',

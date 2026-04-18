@@ -455,6 +455,8 @@ export interface MemForgeConfig {
   sleepCycle: SleepCycleConfig;
   /** Audit chain instance for recording mutations (optional) */
   auditChain?: AuditChain | null;
+  /** Thresholds for the sleepAdvisory() recommendation engine (optional — defaults apply) */
+  sleepAdvisoryThresholds?: Partial<SleepAdvisoryThresholds>;
 }
 
 /** Agent-provided memory hints for active ingest participation */
@@ -473,6 +475,43 @@ export interface MemoryHints {
   type?: 'fact' | 'event' | 'decision' | 'preference' | 'correction' | 'error';
 }
 
+
+// ─── Sleep Advisory (Adaptive Scheduling) ────────────────────────────────────
+
+export type SleepUrgency = 'none' | 'low' | 'medium' | 'high';
+
+export interface SleepAdvisorySignal {
+  name: string;
+  value: number;
+  threshold: number;
+  urgency: SleepUrgency;
+  description: string;
+}
+
+export interface SleepAdvisory {
+  agent_id: string;
+  recommended: boolean;
+  urgency: SleepUrgency;
+  reason: string;
+  signals: SleepAdvisorySignal[];
+  last_sleep_at: Date | null;
+  hot_tier_count: number;
+  warm_tier_count: number;
+  time_since_last_sleep_ms: number | null;
+}
+
+/** Thresholds for the sleep advisory signals. Overridable via config or env vars. */
+export interface SleepAdvisoryThresholds {
+  hotBacklogLow: number;
+  hotBacklogMedium: number;
+  hotBacklogHigh: number;
+  contradictionHigh: number;
+  revisionDebtMedium: number;
+  maxAgeHours: number;
+  stabilityCeiling: number;
+}
+
+// ─── (continued) ─────────────────────────────────────────────────────────────
 
 /** PostgreSQL query parameter — union of types accepted by the `pg` driver's parameterized queries. */
 export type SqlParam = string | number | bigint | boolean | Date | null | string[] | number[] | bigint[];

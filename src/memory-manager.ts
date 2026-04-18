@@ -53,6 +53,10 @@ import type {
   ColdTierSearchOptions,
   ColdTierSearchResult,
   RestoreColdTierResult,
+  SleepAdvisory,
+  SleepAdvisorySignal,
+  SleepAdvisoryThresholds,
+  SleepUrgency,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 
@@ -64,6 +68,24 @@ function resolveNamespace(ns: string | undefined): string {
     throw new TypeError(`Invalid namespace '${ns}': ${result.error.issues[0]?.message ?? 'validation failed'}`);
   }
   return result.data;
+}
+
+const SLEEP_ADVISORY_DEFAULTS: SleepAdvisoryThresholds = {
+  hotBacklogLow: 25,
+  hotBacklogMedium: 100,
+  hotBacklogHigh: 500,
+  contradictionHigh: 0.20,
+  revisionDebtMedium: 50,
+  maxAgeHours: 24,
+  stabilityCeiling: 0.80,
+};
+
+/** Map a numeric value against a set of thresholds to an urgency level. */
+function toUrgency(value: number, low: number, medium: number, high: number): SleepUrgency {
+  if (value > high) return 'high';
+  if (value > medium) return 'medium';
+  if (value > low) return 'low';
+  return 'none';
 }
 
 const DEFAULTS: MemForgeConfig = {
@@ -2879,6 +2901,206 @@ Guidelines:
     return {
       rows: dataResult.rows,
       total: parseInt(countResult.rows[0]!.total, 10),
+    };
+  }
+
+  // ─── Sleep Advisory (Adaptive Scheduling) ────────────────────────────────
+
+  /**
+   * Returns a structured sleep-cycle recommendation for external orchestrators.
+   *
+   * MemForge has no built-in scheduler — this is purely advisory. Callers (cron
+   * jobs, control planes, dashboards) read the result and decide whether to call
+   * POST /memory/:id/sleep.
+   */
+  async sleepAdvisory(agentId: string): Promise<SleepAdvisory> {
+    this.assertAgentId(agentId);
+
+    const t: SleepAdvisoryThresholds = { ...SLEEP_ADVISORY_DEFAULTS, ...this.config.sleepAdvisoryThresholds };
+
+    // ── Gather raw data in parallel ──────────────────────────────────────
+    const [hotRow, warmRow, agentRow, revisionDebtRow, reflectionRow, activityRow] = await Promise.all([
+      this.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM hot_tier WHERE agent_id = $1`,
+        [agentId],
+      ),
+      this.pool.query<{ count: string; graduated_count: string }>(
+        `SELECT count(*)::text AS count,
+                count(*) FILTER (WHERE graduated)::text AS graduated_count
+         FROM warm_tier WHERE agent_id = $1`,
+        [agentId],
+      ),
+      this.pool.query<{ last_sleep_cycle: Date | null }>(
+        `SELECT last_sleep_cycle FROM agents WHERE id = $1`,
+        [agentId],
+      ),
+      this.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM warm_tier WHERE agent_id = $1 AND confidence < 0.4`,
+        [agentId],
+      ),
+      // Contradiction rate: reflections in the last 30 days or since last sleep
+      // (window is used for both numerator and denominator).
+      this.pool.query<{ total: string; with_contradictions: string }>(
+        `SELECT count(*)::text AS total,
+                count(*) FILTER (WHERE array_length(contradictions, 1) > 0)::text AS with_contradictions
+         FROM reflections
+         WHERE agent_id = $1
+           AND created_at > now() - interval '30 days'`,
+        [agentId],
+      ),
+      // Check whether any hot or warm activity has occurred since last sleep
+      // (used by the time_since_last_sleep signal to avoid pinging on empty agents).
+      this.pool.query<{ has_activity: boolean }>(
+        `SELECT (
+           EXISTS (SELECT 1 FROM hot_tier  WHERE agent_id = $1) OR
+           EXISTS (SELECT 1 FROM warm_tier WHERE agent_id = $1)
+         ) AS has_activity`,
+        [agentId],
+      ),
+    ]);
+
+    const hotCount   = parseInt(hotRow.rows[0]?.count ?? '0', 10);
+    const warmCount  = parseInt(warmRow.rows[0]?.count ?? '0', 10);
+    const gradCount  = parseInt(warmRow.rows[0]?.graduated_count ?? '0', 10);
+    const lastSleep  = agentRow.rows[0]?.last_sleep_cycle ?? null;
+    const debtCount  = parseInt(revisionDebtRow.rows[0]?.count ?? '0', 10);
+    const reflTotal  = parseInt(reflectionRow.rows[0]?.total ?? '0', 10);
+    const reflWithContradictions = parseInt(reflectionRow.rows[0]?.with_contradictions ?? '0', 10);
+    const hasActivity = activityRow.rows[0]?.has_activity ?? false;
+
+    const nowMs = Date.now();
+    const timeSinceLastSleepMs = lastSleep ? nowMs - lastSleep.getTime() : null;
+
+    const signals: SleepAdvisorySignal[] = [];
+
+    // ── Signal 1: hot_backlog ────────────────────────────────────────────
+    // Unconsolidated hot rows are raw, un-embedded, non-searchable.
+    // Draining them is the primary purpose of a sleep cycle.
+    const hotUrgency = toUrgency(hotCount, t.hotBacklogLow, t.hotBacklogMedium, t.hotBacklogHigh);
+    signals.push({
+      name: 'hot_backlog',
+      value: hotCount,
+      threshold: hotUrgency === 'high' ? t.hotBacklogHigh
+               : hotUrgency === 'medium' ? t.hotBacklogMedium
+               : hotUrgency === 'low' ? t.hotBacklogLow
+               : t.hotBacklogLow,
+      urgency: hotUrgency,
+      description: `${hotCount} hot-tier rows awaiting consolidation`,
+    });
+
+    // ── Signal 2: contradiction_rate ─────────────────────────────────────
+    // Rising contradictions signal knowledge drift — the sleep cycle's Phase 2.5
+    // conflict resolution handles this.
+    const contradictionRate = reflTotal > 0 ? reflWithContradictions / reflTotal : 0;
+    const contradictionUrgency: SleepUrgency =
+      contradictionRate > t.contradictionHigh ? 'high'
+      : contradictionRate > 0.10 ? 'medium'
+      : contradictionRate > 0.05 ? 'low'
+      : 'none';
+    signals.push({
+      name: 'contradiction_rate',
+      value: contradictionRate,
+      threshold: contradictionUrgency === 'high' ? t.contradictionHigh
+               : contradictionUrgency === 'medium' ? 0.10
+               : contradictionUrgency === 'low' ? 0.05
+               : t.contradictionHigh,
+      urgency: contradictionUrgency,
+      description: reflTotal === 0
+        ? 'no reflections in the past 30 days'
+        : `${(contradictionRate * 100).toFixed(0)}% of recent reflections contain contradictions`,
+    });
+
+    // ── Signal 3: revision_debt ──────────────────────────────────────────
+    // Low-confidence rows need LLM-driven revision in Phase 3 of the sleep cycle.
+    const debtUrgency: SleepUrgency =
+      debtCount > t.revisionDebtMedium ? 'medium'
+      : debtCount > 20 ? 'low'
+      : 'none';
+    signals.push({
+      name: 'revision_debt',
+      value: debtCount,
+      threshold: debtUrgency === 'medium' ? t.revisionDebtMedium : 20,
+      urgency: debtUrgency,
+      description: `${debtCount} warm-tier rows with confidence < 0.4`,
+    });
+
+    // ── Signal 4: time_since_last_sleep ──────────────────────────────────
+    // Even a stable knowledge base benefits from periodic maintenance when
+    // new data has arrived since the last cycle.
+    const maxAgeMs = t.maxAgeHours * 3_600_000;
+    let timeUrgency: SleepUrgency = 'none';
+    if (timeSinceLastSleepMs !== null && hasActivity) {
+      if (timeSinceLastSleepMs > maxAgeMs) {
+        timeUrgency = 'medium';
+      } else if (timeSinceLastSleepMs > maxAgeMs / 2) {
+        timeUrgency = 'low';
+      }
+    } else if (timeSinceLastSleepMs === null && hasActivity) {
+      // Agent has never slept but has data — treat as overdue.
+      timeUrgency = 'low';
+    }
+    signals.push({
+      name: 'time_since_last_sleep',
+      value: timeSinceLastSleepMs !== null ? timeSinceLastSleepMs / 3_600_000 : 0,
+      threshold: t.maxAgeHours,
+      urgency: timeUrgency,
+      description: lastSleep
+        ? `last sleep was ${(timeSinceLastSleepMs! / 3_600_000).toFixed(1)} h ago`
+        : 'agent has never completed a sleep cycle',
+    });
+
+    // ── Signal 5: stability (inverse — clamps overall urgency down) ──────
+    // A highly-graduated agent has a well-consolidated knowledge base;
+    // running frequent sleep cycles is wasted LLM spend.
+    const stabilityRatio = warmCount > 0 ? gradCount / warmCount : 0;
+    const stabilityHit = stabilityRatio > t.stabilityCeiling;
+    signals.push({
+      name: 'stability',
+      value: stabilityRatio,
+      threshold: t.stabilityCeiling,
+      // The stability signal itself carries no positive urgency — it only caps others.
+      urgency: 'none',
+      description: `${(stabilityRatio * 100).toFixed(0)}% of warm-tier rows graduated${stabilityHit ? ' — stability ceiling active' : ''}`,
+    });
+
+    // ── Compute overall urgency ──────────────────────────────────────────
+    const URGENCY_ORDER: SleepUrgency[] = ['none', 'low', 'medium', 'high'];
+    const maxIndex = signals
+      .filter((s) => s.name !== 'stability')
+      .reduce((best, s) => Math.max(best, URGENCY_ORDER.indexOf(s.urgency)), 0);
+
+    let overallUrgency = URGENCY_ORDER[maxIndex]!;
+
+    // If stability ceiling is hit, clamp urgency to 'low' at most.
+    if (stabilityHit && URGENCY_ORDER.indexOf(overallUrgency) > URGENCY_ORDER.indexOf('low')) {
+      overallUrgency = 'low';
+    }
+
+    // ── Build reason string ──────────────────────────────────────────────
+    const contributing = signals
+      .filter((s) => s.name !== 'stability' && s.urgency !== 'none')
+      .sort((a, b) => URGENCY_ORDER.indexOf(b.urgency) - URGENCY_ORDER.indexOf(a.urgency))
+      .slice(0, 2);
+
+    let reason: string;
+    if (overallUrgency === 'none') {
+      reason = 'no sleep signals active';
+    } else {
+      const parts = contributing.map((s) => s.description);
+      const suffix = ` — sleep ${overallUrgency === 'high' || overallUrgency === 'medium' ? 'recommended' : 'optional'}`;
+      reason = (parts.join('; ') + suffix).slice(0, 120);
+    }
+
+    return {
+      agent_id: agentId,
+      recommended: overallUrgency === 'medium' || overallUrgency === 'high',
+      urgency: overallUrgency,
+      reason,
+      signals,
+      last_sleep_at: lastSleep,
+      hot_tier_count: hotCount,
+      warm_tier_count: warmCount,
+      time_since_last_sleep_ms: timeSinceLastSleepMs,
     };
   }
 

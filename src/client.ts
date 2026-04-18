@@ -34,6 +34,7 @@ import type {
   HealthStatus,
   ColdTierSearchResult,
   RestoreColdTierResult,
+  SleepAdvisory,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -258,6 +259,13 @@ export class MemForgeClient {
     return this.post<RestoreColdTierResult>(`/memory/${enc(agentId)}/restore`, body);
   }
 
+  // ─── Sleep Advisory ──────────────────────────────────────────────────
+
+  /** Get adaptive sleep-cycle recommendation. Advisory only — callers decide whether to act. */
+  async sleepAdvisory(agentId: string): Promise<SleepAdvisory> {
+    return this.get<SleepAdvisory>(`/memory/${enc(agentId)}/sleep/advisory`);
+  }
+
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
@@ -419,6 +427,10 @@ export class ResilientMemForgeClient {
 
   async restoreColdTier(agentId: string, coldId: number | bigint | string, opts: Parameters<MemForgeClient['restoreColdTier']>[2] = {}): Promise<RestoreColdTierResult | null> {
     return this.safe('restoreColdTier', () => this.client.restoreColdTier(agentId, coldId, opts), null);
+  }
+
+  async sleepAdvisory(agentId: string): Promise<SleepAdvisory | null> {
+    return this.safe('sleepAdvisory', () => this.client.sleepAdvisory(agentId), null);
   }
 
   async health(): Promise<HealthStatus | null> {
