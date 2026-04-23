@@ -14,6 +14,15 @@ export interface EmbeddingProvider {
 
   /** The dimensionality of vectors this provider produces. */
   readonly dimensions: number;
+
+  /**
+   * Stable identifier of the embedding model producing these vectors,
+   * written to warm_tier.embedding_model alongside each row. The format is
+   * `<provider>/<model>` (e.g. 'openai/text-embedding-3-small',
+   * 'ollama/nomic-embed-text', 'huggingface/Xenova/bge-small-en-v1.5').
+   * Empty string signals "not applicable" (NoOp).
+   */
+  readonly modelId: string;
 }
 
 // ─── OpenAI-compatible provider ──────────────────────────────────────────────
@@ -34,12 +43,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private readonly apiKey: string;
   private readonly model: string;
   readonly dimensions: number;
+  readonly modelId: string;
 
   constructor(config: OpenAIEmbeddingConfig = {}) {
     this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OPENAI_API_BASE_URL'] ?? 'https://api.openai.com/v1', 'OpenAI Embedding');
     this.apiKey = config.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '1536', 10);
+    this.modelId = `openai/${this.model}`;
 
     if (!this.apiKey) {
       throw new Error('OpenAI API key required — set OPENAI_API_KEY or pass apiKey in config');
@@ -98,11 +109,13 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private readonly baseUrl: string;
   private readonly model: string;
   readonly dimensions: number;
+  readonly modelId: string;
 
   constructor(config: OllamaEmbeddingConfig = {}) {
     this.baseUrl = validateProviderUrl(config.baseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434', 'Ollama Embedding', true);
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'nomic-embed-text';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '768', 10);
+    this.modelId = `ollama/${this.model}`;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -170,6 +183,7 @@ type FeatureExtractionPipeline = (text: string, options: { pooling: string; norm
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
+  readonly modelId: string;
   private readonly model: string;
   private readonly dtype: 'q8' | 'fp16' | 'fp32' | 'q4';
   private pipeline: FeatureExtractionPipeline | null = null;
@@ -181,6 +195,9 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'Xenova/bge-small-en-v1.5';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '384', 10);
     this.dtype = config.dtype ?? 'q8';
+    // dtype is part of identity: re-quantizing the same base model produces
+    // different vectors, so a dtype change must trigger re-embedding.
+    this.modelId = `huggingface/${this.model}@${this.dtype}`;
   }
 
   private async getPipeline(): Promise<FeatureExtractionPipeline> {
@@ -225,11 +242,13 @@ export class ConcurrencyLimitedEmbeddingProvider implements EmbeddingProvider {
   private running = 0;
   private readonly queue: Array<() => void> = [];
   readonly dimensions: number;
+  readonly modelId: string;
 
   constructor(inner: EmbeddingProvider, maxConcurrent = 3) {
     this.inner = inner;
     this.maxConcurrent = maxConcurrent;
     this.dimensions = inner.dimensions;
+    this.modelId = inner.modelId;
   }
 
   private async withLimit<T>(fn: () => Promise<T>): Promise<T> {
@@ -258,6 +277,7 @@ export class ConcurrencyLimitedEmbeddingProvider implements EmbeddingProvider {
 
 export class NoOpEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions = 0;
+  readonly modelId = '';
 
   async embed(_text: string): Promise<number[]> {
     return [];

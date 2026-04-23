@@ -1108,6 +1108,7 @@ Ranking (numbers only):`;
             }
           }
           const vectorLiteral = embedding ? `[${embedding.join(',')}]` : null;
+          const embeddingModel = embedding ? this.embedder.modelId || null : null;
 
           // Build metadata
           const metadata: Record<string, unknown> = {
@@ -1144,10 +1145,10 @@ Ranking (numbers only):`;
 
           // Warm rows inherit the namespace of the hot rows they were consolidated from.
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace)
-             VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8, $10)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model)
+             VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8, $10, $11)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, ns],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, ns, embeddingModel],
           );
           const warmRowId = warmRow.rows[0]!.id;
 
