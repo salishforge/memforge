@@ -294,6 +294,56 @@ describe('Performance benchmarks', () => {
   });
 });
 
+// ─── HMAC envelope (#41) ─────────────────────────────────────────────────────
+
+describe('Cache HMAC envelope (#41)', () => {
+  beforeEach(async () => {
+    await clearTestKeys();
+  });
+
+  it('rejects unsigned cache entries (legacy / externally-written)', async () => {
+    const redis = await getRedis();
+    if (!redis) return;
+
+    const key = statsKey(AGENT_A);
+    await redis.setEx(key, 60, JSON.stringify({ hot_count: 99 }));
+
+    const result = await cacheGet(key);
+    assert.equal(result, null, 'unsigned entry must be treated as miss');
+
+    // Poisoned entry should be dropped from Redis on read.
+    const stillThere = await redis.get(key);
+    assert.equal(stillThere, null, 'unsigned entry must be deleted');
+  });
+
+  it('rejects entries with a tampered payload', async () => {
+    const redis = await getRedis();
+    if (!redis) return;
+
+    const key = statsKey(AGENT_A);
+    // Write through the real API so we have a valid signature.
+    await cacheSet(key, { hot_count: 7 }, 'hot');
+
+    // Rewrite the payload while keeping the original signature.
+    const raw = await redis.get(key);
+    assert.ok(raw !== null, 'entry should exist after cacheSet');
+    const envelope = JSON.parse(raw) as { p: string; s: string };
+    const tampered = JSON.stringify({ p: '{"hot_count":999}', s: envelope.s });
+    await redis.setEx(key, 60, tampered);
+
+    const result = await cacheGet(key);
+    assert.equal(result, null, 'tampered entry must be rejected');
+  });
+
+  it('accepts round-tripped entries', async () => {
+    const key = statsKey(AGENT_A);
+    const payload = { hot_count: 42, warm_count: 7 };
+    await cacheSet(key, payload, 'hot');
+    const result = await cacheGet(key) as typeof payload;
+    assert.deepEqual(result, payload);
+  });
+});
+
 // ─── Final cleanup ───────────────────────────────────────────────────────────
 
 after(async () => {

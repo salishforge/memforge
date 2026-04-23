@@ -146,15 +146,15 @@ interface PIIPatternDef {
 const PII_PATTERNS: PIIPatternDef[] = [
   {
     id: 'ssn', pattern: /\b\d{3}-\d{2}-\d{4}\b/g, type: 'ssn',
-    sensitivity: 'restricted', baseConfidence: 0.7,
+    sensitivity: 'restricted', baseConfidence: 0.9,
     contextWords: ['ssn', 'social security', 'social sec'],
-    contextBoost: 0.3,
+    contextBoost: 0.1,
   },
   {
     id: 'ssn-dotted', pattern: /\b\d{3}\.\d{2}\.\d{4}\b/g, type: 'ssn',
-    sensitivity: 'restricted', baseConfidence: 0.4,
+    sensitivity: 'restricted', baseConfidence: 0.6,
     contextWords: ['ssn', 'social security'],
-    contextBoost: 0.5,
+    contextBoost: 0.4,
   },
   {
     id: 'email', pattern: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, type: 'email',
@@ -164,15 +164,15 @@ const PII_PATTERNS: PIIPatternDef[] = [
   },
   {
     id: 'credit-card-visa', pattern: /\b4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, type: 'credit_card',
-    sensitivity: 'restricted', baseConfidence: 0.75,
+    sensitivity: 'restricted', baseConfidence: 0.85,
     contextWords: ['card', 'visa', 'credit', 'payment', 'cc'],
-    contextBoost: 0.25,
+    contextBoost: 0.15,
   },
   {
     id: 'credit-card-mc', pattern: /\b5[1-5]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, type: 'credit_card',
-    sensitivity: 'restricted', baseConfidence: 0.75,
+    sensitivity: 'restricted', baseConfidence: 0.85,
     contextWords: ['card', 'mastercard', 'credit', 'payment', 'cc'],
-    contextBoost: 0.25,
+    contextBoost: 0.15,
   },
   {
     id: 'phone-us', pattern: /\b(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, type: 'phone',

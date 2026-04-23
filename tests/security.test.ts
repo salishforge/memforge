@@ -18,6 +18,7 @@ const {
   OAuthIntrospectSchema,
   validateProviderUrl,
 } = await import('../src/schemas.js');
+const { createDefaultRegistry } = await import('../src/classifier.js');
 
 // ─── #30: Prompt Injection Boundaries ───────────────────────────────────────
 
@@ -280,3 +281,41 @@ describe('SSRF prevention (#40)', () => {
     }
   });
 });
+
+// ─── #45: Classifier bypass via context word evasion ────────────────────────
+
+describe('Classifier standalone detection (#45)', () => {
+  it('detects SSN (hyphenated) without any context word', () => {
+    const registry = createDefaultRegistry();
+    const result = registry.classify('Employee record: 123-45-6789 on file.');
+    assert.equal(result.sensitivity, 'restricted', 'SSN must be classified restricted');
+    assert.ok(result.wasRedacted, 'restricted SSN must be redacted standalone');
+    assert.ok(result.findings.some((f) => f.type === 'ssn' && f.confidence >= 0.5));
+  });
+
+  it('detects SSN (dotted) without any context word', () => {
+    const registry = createDefaultRegistry();
+    const result = registry.classify('Record 123.45.6789 archived.');
+    assert.ok(
+      result.findings.some((f) => f.type === 'ssn' && f.confidence >= 0.5),
+      'dotted SSN must clear the 0.5 threshold without context boost',
+    );
+  });
+
+  it('detects Visa credit card without any context word', () => {
+    const registry = createDefaultRegistry();
+    const result = registry.classify('Transaction logged: 4532015112830366.');
+    assert.equal(result.sensitivity, 'restricted');
+    assert.ok(result.wasRedacted);
+    assert.ok(result.findings.some((f) => f.type === 'credit_card' && f.confidence >= 0.5));
+  });
+
+  it('detects Mastercard without any context word', () => {
+    const registry = createDefaultRegistry();
+    const result = registry.classify('Transaction logged: 5425-2334-3010-9903.');
+    assert.equal(result.sensitivity, 'restricted');
+    assert.ok(result.wasRedacted);
+    assert.ok(result.findings.some((f) => f.type === 'credit_card' && f.confidence >= 0.5));
+  });
+});
+

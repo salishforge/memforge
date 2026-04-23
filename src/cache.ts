@@ -11,9 +11,31 @@
 
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
-import { createHash } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { getLogger } from './logger.js';
 const log = getLogger('cache');
+
+// Cached copy of the HMAC key so we read the env var once. An absent key
+// degrades to a fixed fallback so dev environments still get tamper
+// detection (without production-grade targeted-tamper resistance).
+const CACHE_HMAC_KEY =
+  process.env['CACHE_HMAC_KEY'] ??
+  process.env['AUDIT_HMAC_KEY'] ??
+  'memforge-cache-default-key';
+
+function sign(payload: string): string {
+  return createHmac('sha256', CACHE_HMAC_KEY).update(payload).digest('hex');
+}
+
+function verify(payload: string, sig: unknown): boolean {
+  if (typeof sig !== 'string' || sig.length !== 64) return false;
+  const expected = sign(payload);
+  try {
+    return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+  } catch {
+    return false;
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,12 +151,28 @@ export async function cacheGet(key: string): Promise<unknown> {
 
   try {
     const raw = await redis.get(key);
-    if (raw !== null) {
-      counters.hits++;
-      return JSON.parse(raw) as unknown;
+    if (raw === null) {
+      counters.misses++;
+      return null;
     }
-    counters.misses++;
-    return null;
+
+    // Envelope is { p: <payload JSON string>, s: <hex sig> }. Unsigned
+    // or tampered entries are treated as misses and dropped from Redis —
+    // avoids serving corrupted data to the rest of the app.
+    const envelope = JSON.parse(raw) as { p?: unknown; s?: unknown };
+    if (
+      typeof envelope !== 'object' || envelope === null ||
+      typeof envelope.p !== 'string' || !verify(envelope.p, envelope.s)
+    ) {
+      log.warn({ key }, 'cache entry rejected: missing or invalid HMAC');
+      counters.errors++;
+      counters.misses++;
+      void redis.del(key).catch(() => undefined);
+      return null;
+    }
+
+    counters.hits++;
+    return JSON.parse(envelope.p) as unknown;
   } catch (err) {
     log.error({ err }, 'cache GET failed');
     counters.errors++;
@@ -148,7 +186,9 @@ export async function cacheSet(key: string, value: unknown, tier: CacheTier): Pr
   if (!redis) return;
 
   try {
-    await redis.setEx(key, TTL_SECONDS[tier], JSON.stringify(value));
+    const payload = JSON.stringify(value);
+    const envelope = JSON.stringify({ p: payload, s: sign(payload) });
+    await redis.setEx(key, TTL_SECONDS[tier], envelope);
     counters.sets++;
   } catch (err) {
     log.error({ err }, 'cache SET failed');
