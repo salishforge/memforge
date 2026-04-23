@@ -432,6 +432,12 @@ export interface AgentStats {
   reflection_count: number;
   last_consolidation: Date | null;
   last_seen: Date;
+  /**
+   * Warm-tier rows whose embedding_model differs from the current provider
+   * (or is NULL). The next sleep cycle's Phase 5.9 will re-embed up to
+   * EMBEDDING_MIGRATION_BATCH of these. Absent when embeddings are disabled.
+   */
+  stale_embedding_count?: number;
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────────

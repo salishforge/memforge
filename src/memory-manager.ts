@@ -1443,7 +1443,7 @@ Ranking (numbers only):`;
     }
 
     const row = statsRows[0]!;
-    return {
+    const base: AgentStats = {
       agent_id: agentId,
       hot_count: parseInt(row.hot_count, 10),
       warm_count: parseInt(row.warm_count, 10),
@@ -1454,6 +1454,22 @@ Ranking (numbers only):`;
       last_consolidation: row.last_consolidation,
       last_seen: row.last_seen,
     };
+
+    // Stale embedding count — only meaningful when a real provider is active.
+    // The count is agent-wide (not namespace-scoped) because embedding
+    // migration is a per-agent concern, not a per-namespace one.
+    if (this.embeddingsEnabled && this.embedder.modelId) {
+      const { rows: staleRows } = await this.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM warm_tier
+          WHERE agent_id = $1
+            AND (embedding_model IS NULL OR embedding_model <> $2)`,
+        [agentId, this.embedder.modelId],
+      );
+      base.stale_embedding_count = parseInt(staleRows[0]?.count ?? '0', 10);
+    }
+
+    return base;
   }
 
   // ─── Knowledge Graph: Entity Search ───────────────────────────────────────

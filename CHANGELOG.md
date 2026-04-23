@@ -16,6 +16,10 @@ All notable changes to MemForge are documented here.
   refused — that case requires an explicit column rebuild. The
   `SleepCycleResult` now includes `embeddings_migrated` and
   `embeddings_migration_backlog` when non-zero.
+- **Stats endpoint** (`GET /memory/:id/stats`) now reports
+  `stale_embedding_count` — the number of warm_tier rows scheduled for
+  re-embedding by the next sleep cycle. Omitted when embeddings are
+  disabled.
 
 ### Security
 

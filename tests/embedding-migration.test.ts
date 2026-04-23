@@ -15,6 +15,7 @@ import { Pool } from 'pg';
 
 const { SleepCycleEngine } = await import('../src/sleep-cycle.js');
 const { NoOpEmbeddingProvider } = await import('../src/embedding.js');
+const { MemoryManager } = await import('../src/memory-manager.js');
 const { closePool } = await import('../src/db.js');
 
 const DATABASE_URL = process.env['DATABASE_URL'];
@@ -163,6 +164,60 @@ describe('Phase 5.9 embedding migration', () => {
 
     const result = await engine.run(TEST_AGENT);
     assert.equal(result.embeddings_migrated ?? 0, 0);
+  });
+
+  it('exposes stale_embedding_count in agent stats', async () => {
+    await seedWarmRow('a', null);
+    await seedWarmRow('b', 'openai/old');
+    await seedWarmRow('c', 'openai/current'); // up-to-date
+
+    const manager = new MemoryManager({
+      databaseUrl: DATABASE_URL!,
+      consolidationBatchSize: 500,
+      consolidationThreshold: 1,
+      autoRegisterAgents: true,
+      consolidationMode: 'concat',
+      temporalDecayRate: 0,
+      embeddingProvider: new StubEmbeddingProvider('openai/current') as never,
+      llmProvider: null,
+      sleepCycle: {
+        tokenBudget: 100_000,
+        evictionThreshold: 0.1,
+        revisionThreshold: 0.4,
+        includeReflection: true,
+        weights: { recency: 0.25, frequency: 0.20, centrality: 0.20, reflection: 0.15, stability: 0.20 },
+      },
+    });
+
+    const stats = await manager.stats(TEST_AGENT);
+    assert.equal(stats.stale_embedding_count, 2, 'only the NULL and openai/old rows should be stale');
+
+  });
+
+  it('omits stale_embedding_count when embeddings are disabled', async () => {
+    await seedWarmRow('a', null);
+
+    const manager = new MemoryManager({
+      databaseUrl: DATABASE_URL!,
+      consolidationBatchSize: 500,
+      consolidationThreshold: 1,
+      autoRegisterAgents: true,
+      consolidationMode: 'concat',
+      temporalDecayRate: 0,
+      embeddingProvider: new NoOpEmbeddingProvider(),
+      llmProvider: null,
+      sleepCycle: {
+        tokenBudget: 100_000,
+        evictionThreshold: 0.1,
+        revisionThreshold: 0.4,
+        includeReflection: true,
+        weights: { recency: 0.25, frequency: 0.20, centrality: 0.20, reflection: 0.15, stability: 0.20 },
+      },
+    });
+
+    const stats = await manager.stats(TEST_AGENT);
+    assert.equal(stats.stale_embedding_count, undefined);
+
   });
 });
 
