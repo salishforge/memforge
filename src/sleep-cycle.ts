@@ -447,13 +447,19 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag memories for revision. Two entry paths:
+    // Flag memories for revision. Three entry paths:
     //   1) confidence has already dropped below the revision threshold
     //      (the "gap" channel — we suspect this memory might be wrong)
     //   2) repeated observed failures regardless of current confidence
     //      (the "outcome" channel — the memory is actively hurting us)
-    // Priority order: most negative-dense first (outcomes we observed),
-    // then surprise score (prediction gap), then importance.
+    //   3) cited by a recent reflection whose contradictions are non-empty
+    //      (the "reflection" channel — a higher-order pass flagged this
+    //       memory as part of a contradiction cluster). Meta-reflections
+    //       (reflection_level > 1) rank above first-order reflections since
+    //       they represent deeper pattern-matching across prior reflections.
+    //
+    // Priority order: reflection-cited (meta-level first) → outcome-dense
+    // → surprise → importance.
     const flagged = await this.pool.query<{ id: bigint }>(
       `SELECT wt.id
        FROM warm_tier wt
@@ -467,6 +473,15 @@ export class SleepCycleEngine {
            AND created_at > now() - interval '7 days'
          GROUP BY warm_tier_id
        ) outc ON outc.warm_tier_id = wt.id
+       LEFT JOIN (
+         SELECT unnest(source_warm_ids) AS warm_id,
+                max(reflection_level) AS max_level
+         FROM reflections
+         WHERE agent_id = $1
+           AND array_length(contradictions, 1) > 0
+           AND created_at > now() - interval '14 days'
+         GROUP BY warm_id
+       ) refl ON refl.warm_id = wt.id
        WHERE wt.agent_id = $1
          AND (
            wt.confidence < $2
@@ -475,8 +490,13 @@ export class SleepCycleEngine {
              AND COALESCE(outc.neg_count, 0)::real
                  / NULLIF(COALESCE(outc.neg_count, 0) + COALESCE(outc.pos_count, 0), 0) > 0.5
            )
+           OR refl.warm_id IS NOT NULL
          )
-       ORDER BY COALESCE(outc.neg_count, 0) DESC, wt.surprise_score DESC, wt.importance DESC
+       ORDER BY
+         CASE WHEN refl.warm_id IS NOT NULL THEN COALESCE(refl.max_level, 1) ELSE 0 END DESC,
+         COALESCE(outc.neg_count, 0) DESC,
+         wt.surprise_score DESC,
+         wt.importance DESC
        LIMIT 50`,
       [agentId, this.config.revisionThreshold],
     );

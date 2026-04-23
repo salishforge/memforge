@@ -6,6 +6,20 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Reflection-driven revision priorities** — warm_tier rows cited
+  by a recent (≤14 days) reflection whose `contradictions` array is
+  non-empty are now flagged for revision regardless of confidence
+  or retrieval outcomes. This is the third entry channel into the
+  Phase 2 revision queue, alongside the existing "gap" (low
+  confidence) and "outcome" (negative-dense) channels.
+  Meta-reflections (`reflection_level > 1`) rank above first-order
+  reflections in the priority order — they capture deeper pattern
+  matching across prior reflections, so memories they cite get
+  attention first. The `meta_contradiction_debt` signal in
+  `sleepAdvisory()` continues to escalate overall urgency; this
+  change wires the same signal into the queue itself so the next
+  cycle actually focuses on what the reflections flagged.
+
 - **Outcome-driven revision priorities** — memories that cause
   observed failures now enter the revision queue regardless of
   current confidence. Phase 2 triage widens its entry gate: a
