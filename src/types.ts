@@ -314,6 +314,10 @@ export interface SleepCycleResult {
   temporal_expired?: number;
   /** Procedures whose confidence was adjusted based on outcome history */
   procedures_evolved?: number;
+  /** Warm-tier rows re-embedded under the current provider.modelId this cycle */
+  embeddings_migrated?: number;
+  /** Remaining rows with stale embedding_model after this cycle's batch */
+  embeddings_migration_backlog?: number;
 }
 
 export interface SleepCycleConfig {

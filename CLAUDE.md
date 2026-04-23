@@ -184,6 +184,7 @@ Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW
 | `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
 | `EMBEDDING_DIMENSIONS` | provider default | Override output embedding dimensions (required if model differs from default). |
 | `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Fixes request pileup under load. |
+| `EMBEDDING_MIGRATION_BATCH` | `100` | Max warm_tier rows re-embedded per sleep cycle when the provider's `modelId` changes. Sleep Phase 5.9. |
 | `CONSOLIDATION_MODE` | `concat` | `concat` (fast) or `summarize` (LLM) |
 
 ### Retrieval Tuning

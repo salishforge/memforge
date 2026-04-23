@@ -146,6 +146,21 @@ export class SleepCycleEngine {
     // Phase 5.7: Procedure Evolution — adjust confidence based on outcome history
     const proceduresEvolved = await this.phaseProcedureEvolution(agentId);
 
+    // Phase 5.9: Embedding Migration — re-embed rows whose embedding_model
+    // differs from the current provider. Positioned before drift snapshot so
+    // the post-migration state is what's recorded. No-op when embeddings are
+    // disabled or dimensions would change (dimension changes require a
+    // deliberate column rebuild, not an incremental pass).
+    let embeddingsMigrated = 0;
+    let embeddingsBacklog = 0;
+    try {
+      const result = await this.phaseEmbeddingMigration(agentId);
+      embeddingsMigrated = result.migrated;
+      embeddingsBacklog = result.backlog;
+    } catch (err) {
+      log.error({ err, agentId }, 'embedding migration failed');
+    }
+
     // Phase 5.8: Drift Snapshot — record drift signals for trend detection
     try {
       await this.phaseDriftSnapshot(agentId, temporalExpired);
@@ -190,6 +205,12 @@ export class SleepCycleEngine {
     }
     if (proceduresEvolved > 0) {
       result.procedures_evolved = proceduresEvolved;
+    }
+    if (embeddingsMigrated > 0) {
+      result.embeddings_migrated = embeddingsMigrated;
+    }
+    if (embeddingsBacklog > 0) {
+      result.embeddings_migration_backlog = embeddingsBacklog;
     }
 
     return result;
@@ -981,6 +1002,114 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
       log.info({ agentId, evolved }, 'procedure evolution: confidence adjusted');
     }
     return evolved;
+  }
+
+  // ─── Phase 5.9: Embedding Migration ───────────────────────────────────────
+  // Re-embeds warm_tier rows whose embedding_model is NULL (pre-provenance
+  // legacy) or different from the current provider. Budget is
+  // EMBEDDING_MIGRATION_BATCH rows per cycle (default 100) to keep individual
+  // cycles bounded.
+  //
+  // Dimension guard: if the current provider's dimensions differ from the
+  // stored vectors' dimensions, we no-op and warn — an in-place re-embed
+  // can't widen or narrow the halfvec column, so that case must be handled
+  // by an explicit rebuild tool (not this phase).
+
+  private async phaseEmbeddingMigration(
+    agentId: string,
+  ): Promise<{ migrated: number; backlog: number }> {
+    const currentModelId = this.embedder.modelId;
+    if (!currentModelId || this.embedder.dimensions === 0) {
+      // Embeddings disabled (NoOp provider). Nothing to migrate.
+      return { migrated: 0, backlog: 0 };
+    }
+
+    const batchSize = Math.max(
+      1,
+      parseInt(process.env['EMBEDDING_MIGRATION_BATCH'] ?? '100', 10),
+    );
+
+    // Dimension guard: sample one existing row with an embedding and compare
+    // its vector length to the provider's dimensions. Vector storage is
+    // halfvec, so dimension mismatches are a column-shape problem, not a
+    // per-row problem — we skip the whole phase for the agent.
+    const sample = await this.pool.query<{ dim: number }>(
+      `SELECT array_length(embedding::real[], 1) AS dim
+         FROM warm_tier
+        WHERE agent_id = $1 AND embedding IS NOT NULL
+        LIMIT 1`,
+      [agentId],
+    );
+    const storedDim = sample.rows[0]?.dim ?? null;
+    if (storedDim !== null && storedDim !== this.embedder.dimensions) {
+      log.warn(
+        {
+          agentId,
+          stored_dimensions: storedDim,
+          provider_dimensions: this.embedder.dimensions,
+          provider_model: currentModelId,
+        },
+        'embedding migration skipped: dimension mismatch — requires column rebuild',
+      );
+      return { migrated: 0, backlog: 0 };
+    }
+
+    // Fetch the next batch of rows whose model tag doesn't match the current
+    // provider. NULL is treated as "legacy — backfill provenance".
+    const { rows: targets } = await this.pool.query<{ id: bigint; content: string }>(
+      `SELECT id, content
+         FROM warm_tier
+        WHERE agent_id = $1
+          AND (embedding_model IS NULL OR embedding_model <> $2)
+        ORDER BY id ASC
+        LIMIT $3`,
+      [agentId, currentModelId, batchSize],
+    );
+
+    let migrated = 0;
+    for (const row of targets) {
+      try {
+        const vec = await this.embedder.embed(row.content);
+        if (vec.length !== this.embedder.dimensions) {
+          // Provider returned an unexpected length — skip without touching the row.
+          log.warn(
+            { agentId, warmId: String(row.id), expected: this.embedder.dimensions, got: vec.length },
+            'embedding migration: provider returned unexpected vector length',
+          );
+          continue;
+        }
+        const literal = `[${vec.join(',')}]`;
+        await this.pool.query(
+          `UPDATE warm_tier
+              SET embedding = $1::halfvec,
+                  embedding_model = $2
+            WHERE id = $3 AND agent_id = $4`,
+          [literal, currentModelId, row.id, agentId],
+        );
+        migrated++;
+      } catch (err) {
+        log.error({ err, agentId, warmId: String(row.id) }, 'embedding migration: row failed');
+      }
+    }
+
+    // Backlog = remaining rows still out-of-date after this cycle's batch.
+    const { rows: backlogRows } = await this.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM warm_tier
+        WHERE agent_id = $1
+          AND (embedding_model IS NULL OR embedding_model <> $2)`,
+      [agentId, currentModelId],
+    );
+    const backlog = parseInt(backlogRows[0]?.count ?? '0', 10);
+
+    if (migrated > 0 || backlog > 0) {
+      log.info(
+        { agentId, migrated, backlog, model: currentModelId },
+        'embedding migration cycle complete',
+      );
+    }
+
+    return { migrated, backlog };
   }
 
   // ─── Phase 5.8: Drift Snapshot ───────────────────────────────────────────

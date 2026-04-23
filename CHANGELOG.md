@@ -4,6 +4,19 @@ All notable changes to MemForge are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Incremental embedding migration** — warm_tier rows now carry their
+  embedding provider identity (`embedding_model`, e.g.
+  `openai/text-embedding-3-small`, `huggingface/Xenova/bge-small-en-v1.5@q8`).
+  Sleep cycle Phase 5.9 re-embeds rows whose `embedding_model` differs
+  from the current provider at up to `EMBEDDING_MIGRATION_BATCH` rows
+  per cycle (default 100). Legacy rows with NULL `embedding_model` are
+  backfilled under the current provider. Dimension mismatches are
+  refused — that case requires an explicit column rebuild. The
+  `SleepCycleResult` now includes `embeddings_migrated` and
+  `embeddings_migration_backlog` when non-zero.
+
 ### Security
 
 - **Local embedding provider migrated to `@huggingface/transformers`**
