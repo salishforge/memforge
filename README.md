@@ -37,7 +37,7 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 
 - **Tiered Memory** — Hot (raw events) → Warm (consolidated, searchable, scored) → Cold (archived audit trail)
 - **Hybrid Search** — Dual-tokenizer keyword (PostgreSQL FTS + trigram), semantic (pgvector HNSW with halfvec float16 — 2x compression), and asymmetric reciprocal rank fusion (semantic 1.5×) with keyword overlap boost, temporal proximity scoring, result deduplication, quality threshold, and entity detection
-- **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@xenova/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. No Ollama or OpenAI required. `@xenova/transformers` is an optional peer dependency — install it separately with `npm install @xenova/transformers` when using `EMBEDDING_PROVIDER=local`.
+- **Local In-Process Embeddings** — `EMBEDDING_PROVIDER=local` uses `@huggingface/transformers` (bge-small-en-v1.5 default) to generate embeddings in-process at ~137/sec on CPU. No Ollama or OpenAI required. `@huggingface/transformers` is an optional peer dependency — install it separately with `npm install @huggingface/transformers` when using `EMBEDDING_PROVIDER=local`.
 - **Query Understanding** — Strips question scaffolding, auto-extracts time references as date filters, splits compound queries into independent sub-queries for multi-query retrieval
 - **Knowledge Graph** — Entities and relationships extracted during consolidation, traversable via recursive CTEs
 - **Sleep Cycles** — 10-phase background processor: scoring → triage → conflict resolution → revision → graph maintenance → temporal chains → reflection → schema detection → meta-reflection → gap analysis. Includes autonomous weight adaptation.
@@ -191,7 +191,7 @@ psql "$DATABASE_URL" -f schema/schema.sql
 # psql "$DATABASE_URL" -f schema/migration-v2.7.sql  # halfvec float16 (requires pgvector 0.5+)
 
 # Optional: local in-process embeddings (no external service needed)
-# npm install @xenova/transformers
+# npm install @huggingface/transformers
 # Then set EMBEDDING_PROVIDER=local in .env
 
 npm run build

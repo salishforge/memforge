@@ -180,7 +180,7 @@ Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LLM_MODEL` | provider default | Model name override |
 | `REVISION_LLM_PROVIDER` | (uses `LLM_PROVIDER`) | Separate provider for sleep cycle revisions |
-| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` uses in-process `@xenova/transformers` (optional peer dependency — install separately: `npm install @xenova/transformers`). |
+| `EMBEDDING_PROVIDER` | `none` | `local`, `openai`, `ollama`, or `none`. `local` uses in-process `@huggingface/transformers` (optional peer dependency — install separately: `npm install @huggingface/transformers`). |
 | `EMBEDDING_MODEL` | provider default | Embedding model name override. Default for `local`: `Xenova/bge-small-en-v1.5`. |
 | `EMBEDDING_DIMENSIONS` | provider default | Override output embedding dimensions (required if model differs from default). |
 | `EMBEDDING_CONCURRENCY_LIMIT` | `3` | Max parallel in-flight requests for external embedding providers (Ollama, OpenAI). Fixes request pileup under load. |

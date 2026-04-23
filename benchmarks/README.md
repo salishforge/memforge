@@ -59,7 +59,7 @@ For best results, run with local in-process embeddings and hybrid mode:
 EMBEDDING_PROVIDER=local BENCHMARK_MODES=keyword,hybrid npm run benchmark:longmemeval
 ```
 
-This requires no external embedding service. `@xenova/transformers` will download the bge-small-en-v1.5 model on first run (~120 MB, cached locally).
+This requires no external embedding service. `@huggingface/transformers` will download the bge-small-en-v1.5 model on first run (~120 MB, cached locally).
 
 ### Configuration
 

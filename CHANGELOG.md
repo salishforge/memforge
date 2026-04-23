@@ -2,6 +2,28 @@
 
 All notable changes to MemForge are documented here.
 
+## [Unreleased]
+
+### Security
+
+- **Local embedding provider migrated to `@huggingface/transformers`**
+  (replaces the unmaintained `@xenova/transformers`). Closes a
+  critical-severity transitive CVE chain
+  (`@xenova/transformers` → `onnxruntime-web` → `onnx-proto` →
+  `protobufjs <7.5.5`, [GHSA-xq3m-2v4x-88gg](https://github.com/advisories/GHSA-xq3m-2v4x-88gg),
+  arbitrary code execution). `npm audit` is now clean.
+
+### Changed
+
+- **Optional peer dependency renamed**: install
+  `@huggingface/transformers` (≥4.2.0) instead of
+  `@xenova/transformers` when using `EMBEDDING_PROVIDER=local`.
+- **`LocalEmbeddingProvider` options**: the `quantized: boolean`
+  option is replaced by `dtype: 'q8' | 'fp16' | 'fp32' | 'q4'`
+  (default `'q8'` matches the prior quantized default).
+- Model names (`Xenova/bge-small-en-v1.5`, etc.) are unchanged —
+  Hugging Face kept the legacy paths.
+
 ## [3.2.0] - 2026-04-18 — Phase 4 (Sprint B): Continuous Adaptation
 
 Opens Phase 4 of the ROADMAP with temporal knowledge management,

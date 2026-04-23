@@ -142,35 +142,36 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 }
 
 // ─── Local in-process provider (no external service) ────────────────────────
-// Uses @xenova/transformers (ONNX Runtime) for in-process embeddings.
+// Uses @huggingface/transformers (ONNX Runtime) for in-process embeddings.
+// The package is the maintained successor of @xenova/transformers.
 //
-// Default: Xenova/all-MiniLM-L6-v2 (~22MB, 384 dimensions, ~50-100 embeds/sec)
+// Default: Xenova/bge-small-en-v1.5 (384 dim, 33MB, ~137 embeds/sec on CPU)
 // Configurable via EMBEDDING_MODEL and EMBEDDING_DIMENSIONS env vars.
 //
 // Compatible models (any ONNX model on Hugging Face that supports feature-extraction):
-//   Xenova/all-MiniLM-L6-v2       — 384 dim, 22MB, general-purpose (default)
+//   Xenova/all-MiniLM-L6-v2       — 384 dim, 22MB, general-purpose
 //   Xenova/all-MiniLM-L12-v2      — 384 dim, 33MB, higher quality
-//   Xenova/bge-small-en-v1.5      — 384 dim, 33MB, strong retrieval
+//   Xenova/bge-small-en-v1.5      — 384 dim, 33MB, strong retrieval (default)
 //   Xenova/bge-base-en-v1.5       — 768 dim, 110MB, best quality
 //   Xenova/nomic-embed-text-v1    — 768 dim, 135MB, matches Ollama nomic-embed-text
 //   Xenova/gte-small              — 384 dim, 30MB, multilingual
 
 interface LocalEmbeddingConfig {
-  /** Model identifier — any Xenova/* ONNX model on Hugging Face (default: Xenova/all-MiniLM-L6-v2) */
+  /** Model identifier — any Xenova/* ONNX model on Hugging Face (default: Xenova/bge-small-en-v1.5) */
   model?: string;
   /** Vector dimensions — must match the model's output (default: 384) */
   dimensions?: number;
-  /** Use quantized model weights for smaller download + faster inference (default: true) */
-  quantized?: boolean;
+  /** Weight quantization dtype ('q8' default, 'fp16', 'fp32', 'q4'). 'q8' matches prior @xenova quantized=true. */
+  dtype?: 'q8' | 'fp16' | 'fp32' | 'q4';
 }
 
-/** Function signature for a @xenova/transformers feature-extraction pipeline. */
+/** Function signature for a @huggingface/transformers feature-extraction pipeline. */
 type FeatureExtractionPipeline = (text: string, options: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array }>;
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
   private readonly model: string;
-  private readonly quantized: boolean;
+  private readonly dtype: 'q8' | 'fp16' | 'fp32' | 'q4';
   private pipeline: FeatureExtractionPipeline | null = null;
   private loading: Promise<FeatureExtractionPipeline> | null = null;
 
@@ -179,7 +180,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     // Benchmarked against MiniLM-L6 (slower, weaker separation), MiniLM-L12, gte-small (poor separation)
     this.model = config.model ?? process.env['EMBEDDING_MODEL'] ?? 'Xenova/bge-small-en-v1.5';
     this.dimensions = config.dimensions ?? parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '384', 10);
-    this.quantized = config.quantized ?? true;
+    this.dtype = config.dtype ?? 'q8';
   }
 
   private async getPipeline(): Promise<FeatureExtractionPipeline> {
@@ -187,9 +188,9 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     if (this.loading) return this.loading;
 
     this.loading = (async () => {
-      const { pipeline } = await import('@xenova/transformers');
+      const { pipeline } = await import('@huggingface/transformers');
       this.pipeline = await pipeline('feature-extraction', this.model, {
-        quantized: this.quantized,
+        dtype: this.dtype,
       }) as FeatureExtractionPipeline;
       return this.pipeline;
     })();
