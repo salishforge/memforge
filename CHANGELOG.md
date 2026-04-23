@@ -6,6 +6,17 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Outcome-driven revision priorities** — memories that cause
+  observed failures now enter the revision queue regardless of
+  current confidence. Phase 2 triage widens its entry gate: a
+  warm_tier row with ≥2 negative retrievals in the last 7 days and
+  a >50% negative ratio is flagged for revision even if its
+  confidence is still high. Phase 1 scoring also drifts confidence
+  downward (−0.1/cycle, or −0.05 for graduated rows) when a row has
+  ≥3 negatives and >50% negative ratio — the "learn from mistakes"
+  channel that keeps chronic failures visible across cycles until
+  they either get revised or drop into eviction.
+
 - **Incremental embedding migration** — warm_tier rows now carry their
   embedding provider identity (`embedding_model`, e.g.
   `openai/text-embedding-3-small`, `huggingface/Xenova/bge-small-en-v1.5@q8`).

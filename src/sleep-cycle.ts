@@ -374,6 +374,31 @@ export class SleepCycleEngine {
       [agentId],
     );
 
+    // Outcome-driven confidence drift: memories with a high negative-outcome
+    // ratio over the last 7 days lose confidence gradually, even if they
+    // haven't yet crossed the revision threshold. This is the "learn from
+    // mistakes" channel — failures bleed confidence over cycles until the
+    // memory either gets queued for explicit revision or drops into
+    // eviction territory. Graduated memories still drift, but more slowly.
+    await this.pool.query(
+      `UPDATE warm_tier w SET confidence = GREATEST(0.1, confidence - CASE WHEN w.graduated THEN 0.05 ELSE 0.1 END)
+         FROM (
+           SELECT warm_tier_id,
+                  SUM(CASE WHEN outcome = 'negative' THEN 1 ELSE 0 END) AS neg,
+                  SUM(CASE WHEN outcome = 'positive' THEN 1 ELSE 0 END) AS pos
+             FROM retrieval_log
+            WHERE agent_id = $1
+              AND outcome IS NOT NULL
+              AND created_at > now() - interval '7 days'
+            GROUP BY warm_tier_id
+         ) o
+        WHERE w.id = o.warm_tier_id
+          AND w.agent_id = $1
+          AND o.neg >= 3
+          AND o.neg::real / NULLIF(o.neg + o.pos, 0) > 0.5`,
+      [agentId],
+    );
+
     return rowCount ?? 0;
   }
 
@@ -422,21 +447,36 @@ export class SleepCycleEngine {
       ).catch((err) => log.error({ err }, 'triage audit failed'));
     }
 
-    // Flag low-confidence memories for revision.
-    // Priority order: memories with recent negative retrieval outcomes first (they caused
-    // observed failures), then by surprise score (prediction gap), then importance.
+    // Flag memories for revision. Two entry paths:
+    //   1) confidence has already dropped below the revision threshold
+    //      (the "gap" channel — we suspect this memory might be wrong)
+    //   2) repeated observed failures regardless of current confidence
+    //      (the "outcome" channel — the memory is actively hurting us)
+    // Priority order: most negative-dense first (outcomes we observed),
+    // then surprise score (prediction gap), then importance.
     const flagged = await this.pool.query<{ id: bigint }>(
       `SELECT wt.id
        FROM warm_tier wt
        LEFT JOIN (
-         SELECT warm_tier_id, count(*) AS neg_count
+         SELECT warm_tier_id,
+                count(*) FILTER (WHERE outcome = 'negative') AS neg_count,
+                count(*) FILTER (WHERE outcome = 'positive') AS pos_count
          FROM retrieval_log
-         WHERE outcome = 'negative'
+         WHERE agent_id = $1
+           AND outcome IS NOT NULL
            AND created_at > now() - interval '7 days'
          GROUP BY warm_tier_id
-       ) neg ON neg.warm_tier_id = wt.id
-       WHERE wt.agent_id = $1 AND wt.confidence < $2
-       ORDER BY COALESCE(neg.neg_count, 0) DESC, wt.surprise_score DESC, wt.importance DESC
+       ) outc ON outc.warm_tier_id = wt.id
+       WHERE wt.agent_id = $1
+         AND (
+           wt.confidence < $2
+           OR (
+             COALESCE(outc.neg_count, 0) >= 2
+             AND COALESCE(outc.neg_count, 0)::real
+                 / NULLIF(COALESCE(outc.neg_count, 0) + COALESCE(outc.pos_count, 0), 0) > 0.5
+           )
+         )
+       ORDER BY COALESCE(outc.neg_count, 0) DESC, wt.surprise_score DESC, wt.importance DESC
        LIMIT 50`,
       [agentId, this.config.revisionThreshold],
     );
