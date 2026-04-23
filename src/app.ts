@@ -33,6 +33,24 @@ import {
 import { buildOpenApiSpec } from './openapi.js';
 import { cacheDashboardHtml } from './dashboard.js';
 
+// ─── Query param helpers ────────────────────────────────────────────────────
+//
+// Express 5 types req.query values as string | ParsedQs | (string | ParsedQs)[] |
+// undefined. These helpers narrow to the scalar shape each route expects and
+// return undefined for anything else, so routes never silently act on arrays
+// or nested objects.
+
+function qstr(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+function qnum(v: unknown): number | undefined {
+  const s = qstr(v);
+  if (s === undefined) return undefined;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // ─── Public interface ───────────────────────────────────────────────────────
 
 export interface AppDependencies {
@@ -295,33 +313,33 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/query?q=<text>[&limit=<n>][&mode=keyword|semantic|hybrid][&after=<iso>][&before=<iso>][&decay=<rate>]
    */
   app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const q = req.query['q'];
-    const limit = req.query['limit'];
-    const mode = req.query['mode'];
-    const after = req.query['after'];
-    const before = req.query['before'];
-    const decay = req.query['decay'];
-    const maxTokens = req.query['max_tokens'];
-    const rawNamespace = req.query['namespace'];
+    const q = qstr(req.query['q']);
+    const limit = qstr(req.query['limit']);
+    const mode = qstr(req.query['mode']);
+    const after = qstr(req.query['after']);
+    const before = qstr(req.query['before']);
+    const decay = qstr(req.query['decay']);
+    const maxTokens = qstr(req.query['max_tokens']);
+    const rawNamespace = qstr(req.query['namespace']);
 
-    if (!q || typeof q !== 'string') {
+    if (!q) {
       fail(res, 400, '"q" query param (string) is required');
       return;
     }
 
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 10;
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 10;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 200) {
       fail(res, 400, '"limit" must be an integer between 1 and 200');
       return;
     }
 
-    if (mode && !['keyword', 'semantic', 'hybrid', 'code'].includes(mode as string)) {
+    if (mode && !['keyword', 'semantic', 'hybrid', 'code'].includes(mode)) {
       fail(res, 400, '"mode" must be one of: keyword, semantic, hybrid, code');
       return;
     }
 
-    const afterDate = after ? new Date(after as string) : undefined;
-    const beforeDate = before ? new Date(before as string) : undefined;
+    const afterDate = after ? new Date(after) : undefined;
+    const beforeDate = before ? new Date(before) : undefined;
     if (afterDate && isNaN(afterDate.getTime())) {
       fail(res, 400, '"after" must be a valid ISO 8601 timestamp');
       return;
@@ -331,13 +349,13 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    const decayRate = decay !== undefined ? parseFloat(decay as string) : undefined;
+    const decayRate = decay !== undefined ? parseFloat(decay) : undefined;
     if (decayRate !== undefined && (isNaN(decayRate) || decayRate < 0)) {
       fail(res, 400, '"decay" must be a non-negative number');
       return;
     }
 
-    const maxTokensNum = maxTokens !== undefined ? parseInt(maxTokens as string, 10) : undefined;
+    const maxTokensNum = maxTokens !== undefined ? parseInt(maxTokens, 10) : undefined;
     if (maxTokensNum !== undefined && (isNaN(maxTokensNum) || maxTokensNum < 1)) {
       fail(res, 400, '"max_tokens" must be a positive integer');
       return;
@@ -395,13 +413,13 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/timeline?[from=<iso>][&to=<iso>][&limit=<n>]
    */
   app.get('/memory/:agentId/timeline', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const from = req.query['from'];
-    const to = req.query['to'];
-    const limit = req.query['limit'];
-    const rawNamespace = req.query['namespace'];
+    const from = qstr(req.query['from']);
+    const to = qstr(req.query['to']);
+    const limit = qstr(req.query['limit']);
+    const rawNamespace = qstr(req.query['namespace']);
 
-    const fromDate = from ? new Date(from as string) : undefined;
-    const toDate = to ? new Date(to as string) : undefined;
+    const fromDate = from ? new Date(from) : undefined;
+    const toDate = to ? new Date(to) : undefined;
 
     if (fromDate && isNaN(fromDate.getTime())) {
       fail(res, 400, '"from" must be a valid ISO 8601 timestamp');
@@ -412,7 +430,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 50;
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 50;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 500) {
       fail(res, 400, '"limit" must be an integer between 1 and 500');
       return;
@@ -437,7 +455,7 @@ export function createApp(deps: AppDependencies): express.Express {
     }
 
     // Check cache
-    const key = timelineKey(agentId, from as string | undefined, to as string | undefined, limitNum) + (namespace ? `:${namespace}` : '');
+    const key = timelineKey(agentId, from, to, limitNum) + (namespace ? `:${namespace}` : '');
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -460,11 +478,11 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/entities?[q=<text>][&type=<entityType>][&limit=<n>]
    */
   app.get('/memory/:agentId/entities', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const q = req.query['q'] as string | undefined;
-    const type = req.query['type'] as string | undefined;
-    const limit = req.query['limit'];
+    const q = qstr(req.query['q']);
+    const type = qstr(req.query['type']);
+    const limit = qstr(req.query['limit']);
 
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 20;
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 20;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 200) {
       fail(res, 400, '"limit" must be an integer between 1 and 200');
       return;
@@ -482,15 +500,15 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/graph?entity=<name>[&depth=<n>]
    */
   app.get('/memory/:agentId/graph', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const entity = req.query['entity'];
-    const depth = req.query['depth'];
+    const entity = qstr(req.query['entity']);
+    const depth = qstr(req.query['depth']);
 
-    if (!entity || typeof entity !== 'string') {
+    if (!entity) {
       fail(res, 400, '"entity" query param (string) is required');
       return;
     }
 
-    const depthNum = depth !== undefined ? parseInt(depth as string, 10) : 2;
+    const depthNum = depth !== undefined ? parseInt(depth, 10) : 2;
     if (isNaN(depthNum) || depthNum < 1 || depthNum > 5) {
       fail(res, 400, '"depth" must be an integer between 1 and 5');
       return;
@@ -540,8 +558,8 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/reflections?[limit=<n>]
    */
   app.get('/memory/:agentId/reflections', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const limit = req.query['limit'];
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 10;
+    const limit = qstr(req.query['limit']);
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 10;
 
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
       fail(res, 400, '"limit" must be an integer between 1 and 100');
@@ -608,7 +626,7 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/stats
    */
   app.get('/memory/:agentId/stats', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const rawNamespace = req.query['namespace'];
+    const rawNamespace = qstr(req.query['namespace']);
     let namespace: string | undefined;
     if (rawNamespace !== undefined) {
       const nsResult = NamespaceSchema.safeParse(rawNamespace);
@@ -655,10 +673,10 @@ export function createApp(deps: AppDependencies): express.Express {
    * GET /memory/:agentId/procedures?[q=<text>][&limit=<n>]
    */
   app.get('/memory/:agentId/procedures', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const q = req.query['q'] as string | undefined;
-    const limit = req.query['limit'];
+    const q = qstr(req.query['q']);
+    const limit = qstr(req.query['limit']);
 
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 20;
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 20;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
       fail(res, 400, '"limit" must be an integer between 1 and 100');
       return;
@@ -741,9 +759,9 @@ export function createApp(deps: AppDependencies): express.Express {
    * Generate context-injection prompt for agent session resumption.
    */
   app.get('/memory/:agentId/resume', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const limit = req.query['limit'];
-    const rawNamespace = req.query['namespace'];
-    const limitNum = limit !== undefined ? parseInt(limit as string, 10) : 5;
+    const limit = qstr(req.query['limit']);
+    const rawNamespace = qstr(req.query['namespace']);
+    const limitNum = limit !== undefined ? parseInt(limit, 10) : 5;
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 20) {
       fail(res, 400, '"limit" must be an integer between 1 and 20');
       return;
@@ -885,7 +903,7 @@ export function createApp(deps: AppDependencies): express.Express {
    * Export agent's full memory as JSONL.
    */
   app.get('/memory/:agentId/export', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const rawNamespace = req.query['namespace'];
+    const rawNamespace = qstr(req.query['namespace']);
     let namespace: string | undefined;
     if (rawNamespace !== undefined) {
       const nsResult = NamespaceSchema.safeParse(rawNamespace);
@@ -1012,7 +1030,7 @@ export function createApp(deps: AppDependencies): express.Express {
     }
     const targetTable = req.params['targetTable'] ?? '';
     const targetId = req.params['targetId'] ?? '';
-    const t = req.query['t'] as string | undefined;
+    const t = qstr(req.query['t']);
 
     if (!/^\d+$/.test(targetId)) {
       fail(res, 400, '"targetId" must be a numeric ID');
@@ -1228,7 +1246,7 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   app.get('/pool/:poolId/reputation/:agentId', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const domain = req.query['domain'] as string | undefined;
+    const domain = qstr(req.query['domain']);
     try {
       const rep = await manager.getReputation(req.params['agentId'] ?? '', domain);
       ok(res, rep);
@@ -1256,9 +1274,9 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   app.get('/pool/:poolId/procedures', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const q = typeof req.query['q'] === 'string' ? req.query['q'] : undefined;
-    const limit = req.query['limit'] !== undefined ? parseInt(req.query['limit'] as string, 10) : undefined;
-    const offset = req.query['offset'] !== undefined ? parseInt(req.query['offset'] as string, 10) : undefined;
+    const q = qstr(req.query['q']);
+    const limit = qnum(req.query['limit']);
+    const offset = qnum(req.query['offset']);
     try {
       const procs = await manager.getSharedProcedures(req.params['poolId'] ?? '', { q, limit, offset });
       ok(res, procs);
@@ -1268,8 +1286,8 @@ export function createApp(deps: AppDependencies): express.Express {
   // ─── Expertise Discovery Route ────────────────────────────────────────
 
   app.get('/pool/:poolId/expertise', requireScope('memforge:read'), async (req: Request, res: Response) => {
-    const q = typeof req.query['q'] === 'string' ? req.query['q'] : undefined;
-    const limit = req.query['limit'] !== undefined ? parseInt(req.query['limit'] as string, 10) : undefined;
+    const q = qstr(req.query['q']);
+    const limit = qnum(req.query['limit']);
     if (!q) { fail(res, 400, '"q" query parameter is required'); return; }
     try {
       const results = await manager.expertiseDiscovery(req.params['poolId'] ?? '', q, { limit });
