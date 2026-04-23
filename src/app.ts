@@ -33,12 +33,12 @@ import {
 import { buildOpenApiSpec } from './openapi.js';
 import { cacheDashboardHtml } from './dashboard.js';
 
-// ─── Query param helpers ────────────────────────────────────────────────────
+// ─── Request input helpers ──────────────────────────────────────────────────
 //
 // Express 5 types req.query values as string | ParsedQs | (string | ParsedQs)[] |
-// undefined. These helpers narrow to the scalar shape each route expects and
-// return undefined for anything else, so routes never silently act on arrays
-// or nested objects.
+// undefined, and req.params values as string | string[]. These helpers narrow
+// to the scalar shape each route expects and return undefined for anything
+// else, so routes never silently act on arrays or nested objects.
 
 function qstr(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
@@ -49,6 +49,10 @@ function qnum(v: unknown): number | undefined {
   if (s === undefined) return undefined;
   const n = parseInt(s, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function pstr(v: unknown): string {
+  return typeof v === 'string' ? v : '';
 }
 
 // ─── Public interface ───────────────────────────────────────────────────────
@@ -999,8 +1003,8 @@ export function createApp(deps: AppDependencies): express.Express {
       fail(res, 400, 'Audit chain not configured');
       return;
     }
-    const targetTable = req.params['targetTable'] ?? '';
-    const targetId = req.params['targetId'] ?? '';
+    const targetTable = pstr(req.params['targetTable']);
+    const targetId = pstr(req.params['targetId']);
 
     if (!['warm_tier', 'entities', 'relationships', 'reflections', 'procedures'].includes(targetTable)) {
       fail(res, 400, '"targetTable" must be one of: warm_tier, entities, relationships, reflections, procedures');
@@ -1028,8 +1032,8 @@ export function createApp(deps: AppDependencies): express.Express {
       fail(res, 400, 'Audit chain not configured');
       return;
     }
-    const targetTable = req.params['targetTable'] ?? '';
-    const targetId = req.params['targetId'] ?? '';
+    const targetTable = pstr(req.params['targetTable']);
+    const targetId = pstr(req.params['targetId']);
     const t = qstr(req.query['t']);
 
     if (!/^\d+$/.test(targetId)) {
@@ -1143,7 +1147,7 @@ export function createApp(deps: AppDependencies): express.Express {
   const AGENT_ID_PATTERN = /^[\w.@:=-]{1,256}$/;
 
   function getAgentId(req: Request): string {
-    const id = req.params['agentId'] ?? '';
+    const id = pstr(req.params['agentId']);
     if (!AGENT_ID_PATTERN.test(id)) {
       throw new TypeError('agentId must be 1-256 characters of [a-zA-Z0-9_.@:=-]');
     }
@@ -1184,22 +1188,22 @@ export function createApp(deps: AppDependencies): express.Express {
   app.post('/pool/:poolId/join/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     try {
       const agentId = getAgentId(req);
-      await manager.joinPool(agentId, req.params['poolId'] ?? '');
-      ok(res, { agent_id: agentId, pool_id: req.params['poolId'] });
+      await manager.joinPool(agentId, pstr(req.params['poolId']));
+      ok(res, { agent_id: agentId, pool_id: pstr(req.params['poolId']) });
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
   app.delete('/pool/:poolId/leave/:agentId', requireScope('memforge:write'), async (req: Request, res: Response) => {
     try {
       const agentId = getAgentId(req);
-      await manager.leavePool(agentId, req.params['poolId'] ?? '');
+      await manager.leavePool(agentId, pstr(req.params['poolId']));
       ok(res, { removed: true });
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
   app.get('/pool/:poolId/members', requireScope('memforge:read'), async (req: Request, res: Response) => {
     try {
-      const members = await manager.getPoolMembers(req.params['poolId'] ?? '');
+      const members = await manager.getPoolMembers(pstr(req.params['poolId']));
       ok(res, members);
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
@@ -1217,7 +1221,7 @@ export function createApp(deps: AppDependencies): express.Express {
     }
     try {
       const agentId = getAgentId(req);
-      const result = await manager.publish(agentId, req.params['poolId'] ?? '', memory_ids as unknown as bigint[]);
+      const result = await manager.publish(agentId, pstr(req.params['poolId']), memory_ids as unknown as bigint[]);
       ok(res, result);
     } catch (err) {
       const e = err as Error;
@@ -1228,7 +1232,7 @@ export function createApp(deps: AppDependencies): express.Express {
 
   app.delete('/pool/:poolId', adminAuth, async (req: Request, res: Response) => {
     try {
-      const result = await manager.deletePool(req.params['poolId'] ?? '');
+      const result = await manager.deletePool(pstr(req.params['poolId']));
       ok(res, result);
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
@@ -1238,7 +1242,7 @@ export function createApp(deps: AppDependencies): express.Express {
       const { SharedPoolSleepCycle } = await import('./sleep-cycle.js');
       const { getPool } = await import('./db.js');
       const cycle = new SharedPoolSleepCycle(getPool());
-      const result = await cycle.run(req.params['poolId'] ?? '');
+      const result = await cycle.run(pstr(req.params['poolId']));
       ok(res, result);
     } catch (err) {
       fail(res, 500, (err as Error).message);
@@ -1248,7 +1252,7 @@ export function createApp(deps: AppDependencies): express.Express {
   app.get('/pool/:poolId/reputation/:agentId', requireScope('memforge:read'), async (req: Request, res: Response) => {
     const domain = qstr(req.query['domain']);
     try {
-      const rep = await manager.getReputation(req.params['agentId'] ?? '', domain);
+      const rep = await manager.getReputation(pstr(req.params['agentId']), domain);
       ok(res, rep);
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
@@ -1261,7 +1265,7 @@ export function createApp(deps: AppDependencies): express.Express {
     if (!parse.success) { fail(res, 400, parse.error.issues[0]?.message ?? 'invalid request'); return; }
     try {
       const agentId = getAgentId(req);
-      const result = await manager.publishProcedures(agentId, req.params['poolId'] ?? '', {
+      const result = await manager.publishProcedures(agentId, pstr(req.params['poolId']), {
         minConfidence: parse.data.min_confidence,
         namespace: parse.data.namespace,
       });
@@ -1278,7 +1282,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const limit = qnum(req.query['limit']);
     const offset = qnum(req.query['offset']);
     try {
-      const procs = await manager.getSharedProcedures(req.params['poolId'] ?? '', { q, limit, offset });
+      const procs = await manager.getSharedProcedures(pstr(req.params['poolId']), { q, limit, offset });
       ok(res, procs);
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
@@ -1290,7 +1294,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const limit = qnum(req.query['limit']);
     if (!q) { fail(res, 400, '"q" query parameter is required'); return; }
     try {
-      const results = await manager.expertiseDiscovery(req.params['poolId'] ?? '', q, { limit });
+      const results = await manager.expertiseDiscovery(pstr(req.params['poolId']), q, { limit });
       ok(res, results);
     } catch (err) {
       const e = err as Error;
@@ -1328,7 +1332,7 @@ export function createApp(deps: AppDependencies): express.Express {
   app.delete('/memory/:agentId/roles/:domain', requireScope('memforge:write'), async (req: Request, res: Response) => {
     let agentId: string;
     try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
-    const domain = req.params['domain'] ?? '';
+    const domain = pstr(req.params['domain']);
     if (!domain) { fail(res, 400, 'domain is required'); return; }
     try {
       const result = await manager.deleteRole(agentId, domain);
@@ -1351,7 +1355,7 @@ export function createApp(deps: AppDependencies): express.Express {
   app.post('/memory/:agentId/:warmId/validity', requireScope('memforge:write'), async (req: Request, res: Response) => {
     let agentId: string;
     try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
-    const warmIdStr = req.params['warmId'] ?? '';
+    const warmIdStr = pstr(req.params['warmId']);
     let warmId: bigint;
     try { warmId = BigInt(warmIdStr); } catch { fail(res, 400, 'invalid warm_tier id'); return; }
     const body = (req.body ?? {}) as { valid_until?: string | null };
@@ -1371,7 +1375,7 @@ export function createApp(deps: AppDependencies): express.Express {
   app.post('/memory/:agentId/procedures/:procId/outcome', requireScope('memforge:write'), async (req: Request, res: Response) => {
     let agentId: string;
     try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
-    const procIdStr = req.params['procId'] ?? '';
+    const procIdStr = pstr(req.params['procId']);
     let procId: bigint;
     try { procId = BigInt(procIdStr); } catch { fail(res, 400, 'invalid procedure id'); return; }
     const body = (req.body ?? {}) as { outcome?: string };
