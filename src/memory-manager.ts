@@ -3054,6 +3054,82 @@ Guidelines:
     };
   }
 
+  // ─── Selective Forgetting (deprecated namespaces) ────────────────────────
+
+  /**
+   * Mark a namespace as deprecated for an agent. Sleep cycle Phase 5.10 will
+   * decay importance and confidence of warm_tier rows in this namespace each
+   * cycle, eventually triggering eviction via the existing Phase 2 logic.
+   *
+   * Deprecation is reversible — call undeprecateNamespace() to restore
+   * normal scoring. No memories are deleted by this call itself.
+   */
+  async deprecateNamespace(
+    agentId: string,
+    namespace: string,
+    reason?: string,
+  ): Promise<{ deprecated: boolean; namespace: string }> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+
+    await this.pool.query(
+      `INSERT INTO deprecated_namespaces (agent_id, namespace, reason)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (agent_id, namespace)
+         DO UPDATE SET deprecated_at = now(), reason = EXCLUDED.reason`,
+      [agentId, ns, reason ?? null],
+    );
+
+    if (this.audit) {
+      void this.audit.recordBatch(
+        agentId, 'deprecated_namespaces', 'create',
+        { namespace: ns, reason: reason ?? null },
+        'api',
+      ).catch((err) => log.error({ err }, 'deprecate audit failed'));
+    }
+
+    return { deprecated: true, namespace: ns };
+  }
+
+  /** Reverse a namespace deprecation. Future sleep cycles stop decaying its rows. */
+  async undeprecateNamespace(
+    agentId: string,
+    namespace: string,
+  ): Promise<{ restored: boolean; namespace: string }> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM deprecated_namespaces WHERE agent_id = $1 AND namespace = $2`,
+      [agentId, ns],
+    );
+
+    if (this.audit && (rowCount ?? 0) > 0) {
+      void this.audit.recordBatch(
+        agentId, 'deprecated_namespaces', 'delete',
+        { namespace: ns },
+        'api',
+      ).catch((err) => log.error({ err }, 'undeprecate audit failed'));
+    }
+
+    return { restored: (rowCount ?? 0) > 0, namespace: ns };
+  }
+
+  /** List the agent's deprecated namespaces, newest first. */
+  async listDeprecatedNamespaces(
+    agentId: string,
+  ): Promise<Array<{ namespace: string; deprecated_at: Date; reason: string | null }>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{ namespace: string; deprecated_at: Date; reason: string | null }>(
+      `SELECT namespace, deprecated_at, reason
+         FROM deprecated_namespaces
+        WHERE agent_id = $1
+        ORDER BY deprecated_at DESC`,
+      [agentId],
+    );
+    return rows;
+  }
+
   // ─── Export/Import ──────────────────────────────────────────────────────
 
   /**

@@ -339,6 +339,32 @@ export class MemForgeClient {
     return this.get<DriftReport>(`/memory/${enc(agentId)}/drift`);
   }
 
+  /**
+   * Mark a namespace as deprecated. Sleep cycles will decay importance and
+   * confidence of memories in this namespace each cycle. Reversible via
+   * undeprecateNamespace().
+   */
+  async deprecateNamespace(agentId: string, namespace: string, reason?: string): Promise<{ deprecated: boolean; namespace: string }> {
+    return this.post<{ deprecated: boolean; namespace: string }>(
+      `/memory/${enc(agentId)}/namespaces/${enc(namespace)}/deprecate`,
+      reason ? { reason } : {},
+    );
+  }
+
+  /** Reverse a namespace deprecation; future sleep cycles stop decaying its rows. */
+  async undeprecateNamespace(agentId: string, namespace: string): Promise<{ restored: boolean; namespace: string }> {
+    return this.delete<{ restored: boolean; namespace: string }>(
+      `/memory/${enc(agentId)}/namespaces/${enc(namespace)}/deprecate`,
+    );
+  }
+
+  /** List the agent's deprecated namespaces, newest first. */
+  async listDeprecatedNamespaces(agentId: string): Promise<Array<{ namespace: string; deprecated_at: string; reason: string | null }>> {
+    return this.get<Array<{ namespace: string; deprecated_at: string; reason: string | null }>>(
+      `/memory/${enc(agentId)}/namespaces/deprecated`,
+    );
+  }
+
   // ─── System ─────────────────────────────────────────────────────────────
 
   /** Health check. */
@@ -552,6 +578,18 @@ export class ResilientMemForgeClient {
 
   async detectDrift(agentId: string): Promise<DriftReport | null> {
     return this.safe('detectDrift', () => this.client.detectDrift(agentId), null);
+  }
+
+  async deprecateNamespace(agentId: string, namespace: string, reason?: string): Promise<{ deprecated: boolean; namespace: string } | null> {
+    return this.safe('deprecateNamespace', () => this.client.deprecateNamespace(agentId, namespace, reason), null);
+  }
+
+  async undeprecateNamespace(agentId: string, namespace: string): Promise<{ restored: boolean; namespace: string } | null> {
+    return this.safe('undeprecateNamespace', () => this.client.undeprecateNamespace(agentId, namespace), null);
+  }
+
+  async listDeprecatedNamespaces(agentId: string): Promise<Array<{ namespace: string; deprecated_at: string; reason: string | null }>> {
+    return this.safe('listDeprecatedNamespaces', () => this.client.listDeprecatedNamespaces(agentId), []);
   }
 
   async health(): Promise<HealthStatus | null> {

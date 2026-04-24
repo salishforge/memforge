@@ -1399,6 +1399,41 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) { fail(res, 500, (err as Error).message); }
   });
 
+  // ─── Selective Forgetting — deprecated namespaces ─────────────────────
+
+  app.post('/memory/:agentId/namespaces/:namespace/deprecate', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    const namespace = pstr(req.params['namespace']);
+    if (!namespace) { fail(res, 400, '"namespace" path param is required'); return; }
+    const body = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    try {
+      const result = await manager.deprecateNamespace(agentId, namespace, reason);
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.delete('/memory/:agentId/namespaces/:namespace/deprecate', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    const namespace = pstr(req.params['namespace']);
+    if (!namespace) { fail(res, 400, '"namespace" path param is required'); return; }
+    try {
+      const result = await manager.undeprecateNamespace(agentId, namespace);
+      ok(res, result);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  app.get('/memory/:agentId/namespaces/deprecated', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    let agentId: string;
+    try { agentId = getAgentId(req); } catch (err) { fail(res, 400, (err as Error).message); return; }
+    try {
+      const list = await manager.listDeprecatedNamespaces(agentId);
+      ok(res, list);
+    } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
   // ─── Global error handler ─────────────────────────────────────────────
 
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

@@ -554,6 +554,21 @@ CREATE TABLE IF NOT EXISTS drift_signals (
 CREATE INDEX IF NOT EXISTS drift_signals_agent_idx ON drift_signals (agent_id, measured_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- deprecated_namespaces — operator-driven domain deprecation (v3.4)
+-- Sleep cycle Phase 5.10 decays importance/confidence of warm_tier rows
+-- whose namespace is in this table. Combined with Phase 2 eviction at
+-- importance < threshold, deprecated knowledge fades within a few cycles.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS deprecated_namespaces (
+  agent_id      TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  namespace     TEXT        NOT NULL,
+  deprecated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reason        TEXT,
+  PRIMARY KEY (agent_id, namespace)
+);
+CREATE INDEX IF NOT EXISTS deprecated_namespaces_agent_idx ON deprecated_namespaces (agent_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).

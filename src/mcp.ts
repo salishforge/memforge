@@ -406,6 +406,42 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_deprecate_namespace',
+    description: 'Mark a namespace as deprecated. Sleep cycles will actively decay importance and confidence of memories in this namespace each cycle, eventually evicting them. Reversible.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Namespace to deprecate' },
+        reason: { type: 'string', description: 'Optional human-readable reason' },
+      },
+      required: ['agent_id', 'namespace'],
+    },
+  },
+  {
+    name: 'memforge_undeprecate_namespace',
+    description: 'Reverse a namespace deprecation. Future sleep cycles stop decaying its rows.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Namespace to restore' },
+      },
+      required: ['agent_id', 'namespace'],
+    },
+  },
+  {
+    name: 'memforge_list_deprecated_namespaces',
+    description: "List the agent's deprecated namespaces, newest first.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -597,6 +633,19 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_drift':
       return client.detectDrift(agentId);
+
+    case 'memforge_deprecate_namespace':
+      return client.deprecateNamespace(
+        agentId,
+        args['namespace'] as string,
+        typeof args['reason'] === 'string' ? (args['reason'] as string) : undefined,
+      );
+
+    case 'memforge_undeprecate_namespace':
+      return client.undeprecateNamespace(agentId, args['namespace'] as string);
+
+    case 'memforge_list_deprecated_namespaces':
+      return client.listDeprecatedNamespaces(agentId);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

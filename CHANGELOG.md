@@ -6,6 +6,25 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Selective forgetting (deprecated namespaces)** — closes the
+  fourth and final residual Phase 4 item from the ROADMAP. Operators
+  can now mark a namespace as deprecated via
+  `POST /memory/:id/namespaces/:ns/deprecate`; sleep cycle Phase 5.10
+  decays importance (−0.1/cycle) and confidence (−0.05/cycle) on
+  warm_tier rows in that namespace each subsequent cycle. Eviction
+  is handled by the existing Phase 2 path once importance falls
+  below `evictionThreshold` — no new eviction logic. Graduated rows
+  decay at half rate (importance −0.05, confidence −0.025) to
+  reflect their earned stability. Reversible via
+  `DELETE /memory/:id/namespaces/:ns/deprecate`. New
+  `deprecated_namespaces` table (migration `v3.4.sql`).
+  TypeScript SDK methods: `deprecateNamespace`,
+  `undeprecateNamespace`, `listDeprecatedNamespaces` (also on the
+  resilient client). MCP tools: `memforge_deprecate_namespace`,
+  `memforge_undeprecate_namespace`,
+  `memforge_list_deprecated_namespaces`. `SleepCycleResult` exposes
+  `deprecated_decayed` when non-zero.
+
 - **Reflection-driven revision priorities** — warm_tier rows cited
   by a recent (≤14 days) reflection whose `contradictions` array is
   non-empty are now flagged for revision regardless of confidence

@@ -318,6 +318,8 @@ export interface SleepCycleResult {
   embeddings_migrated?: number;
   /** Remaining rows with stale embedding_model after this cycle's batch */
   embeddings_migration_backlog?: number;
+  /** Warm-tier rows in deprecated namespaces decayed by Phase 5.10 */
+  deprecated_decayed?: number;
 }
 
 export interface SleepCycleConfig {

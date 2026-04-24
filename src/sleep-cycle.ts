@@ -161,6 +161,17 @@ export class SleepCycleEngine {
       log.error({ err, agentId }, 'embedding migration failed');
     }
 
+    // Phase 5.10: Selective Forgetting — decay importance/confidence on
+    // warm_tier rows whose namespace is in deprecated_namespaces. Eviction
+    // happens through the existing Phase 2 path on subsequent cycles once
+    // importance falls below evictionThreshold.
+    let deprecatedDecayed = 0;
+    try {
+      deprecatedDecayed = await this.phaseDeprecatedDecay(agentId);
+    } catch (err) {
+      log.error({ err, agentId }, 'deprecated namespace decay failed');
+    }
+
     // Phase 5.8: Drift Snapshot — record drift signals for trend detection
     try {
       await this.phaseDriftSnapshot(agentId, temporalExpired);
@@ -211,6 +222,9 @@ export class SleepCycleEngine {
     }
     if (embeddingsBacklog > 0) {
       result.embeddings_migration_backlog = embeddingsBacklog;
+    }
+    if (deprecatedDecayed > 0) {
+      result.deprecated_decayed = deprecatedDecayed;
     }
 
     return result;
@@ -1170,6 +1184,48 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     }
 
     return { migrated, backlog };
+  }
+
+  // ─── Phase 5.10: Selective Forgetting ─────────────────────────────────────
+  // Decays importance and confidence on warm_tier rows in deprecated
+  // namespaces. Eviction itself is handled by the existing Phase 2 path on
+  // subsequent cycles once importance < evictionThreshold. This phase is
+  // intentionally separate from Phase 2 so deprecation is reversible — if
+  // the operator un-deprecates the namespace before importance hits floor,
+  // the row recovers normal scoring on the next cycle (Phase 1 re-scores
+  // from signals, not from a one-shot penalty).
+  //
+  // Graduated rows are decayed at half rate — they earned stability through
+  // observed retrieval success and shouldn't be forgotten as quickly even
+  // when their domain is deprecated.
+
+  private async phaseDeprecatedDecay(agentId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE warm_tier w
+          SET importance = GREATEST(0.0, w.importance - CASE WHEN w.graduated THEN 0.05 ELSE 0.1 END),
+              confidence = GREATEST(0.1, w.confidence - CASE WHEN w.graduated THEN 0.025 ELSE 0.05 END)
+        WHERE w.agent_id = $1
+          AND w.namespace IN (
+            SELECT namespace FROM deprecated_namespaces WHERE agent_id = $1
+          )`,
+      [agentId],
+    );
+
+    const decayed = rowCount ?? 0;
+
+    if (this.audit && decayed > 0) {
+      void this.audit.recordBatch(
+        agentId, 'warm_tier', 'score',
+        { rows_decayed: decayed, reason: 'deprecated_namespace' },
+        'sleep_cycle',
+      ).catch((err) => log.error({ err }, 'deprecated decay audit failed'));
+    }
+
+    if (decayed > 0) {
+      log.info({ agentId, decayed }, 'deprecated namespace decay applied');
+    }
+
+    return decayed;
   }
 
   // ─── Phase 5.8: Drift Snapshot ───────────────────────────────────────────
