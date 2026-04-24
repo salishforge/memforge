@@ -123,6 +123,8 @@ An agent that has been running for 1+ year, has adapted through at least one maj
 
 *The system manages its own knowledge architecture — deciding what to remember, how to organize it, and when to restructure.*
 
+> **For grant evaluators and prospective sponsors:** see [PHASE_5_PLAN.md](PHASE_5_PLAN.md) — full effort estimates, destabilization risk by item, and a four-category funding plan (GPU rental, LLM tokens, evaluation infrastructure, benchmark expansion) totalling **$4K–$12K** over a 6-month research cycle. In-kind GPU credits accepted.
+
 ### Self-Organizing Memory
 
 - **Emergent namespaces** — Rather than pre-defined categories, the system discovers natural knowledge clusters during sleep cycles and organizes memory accordingly.
@@ -159,7 +161,7 @@ An agent that requires no operator intervention for memory management — it mon
 
 The roadmap is ambitious. We welcome contributions at every phase:
 
-- **Phase 2** (current focus) requires both engineering and design thinking — memory lifecycle at scale, search quality, operational tooling
-- **Phase 4+** is exploratory — research prototypes, design proposals, and experiments are as valuable as code
+- **Phases 1–4 are complete and shipped.** Production-grade features are stable; bug fixes, performance work, and eval-suite expansions are always welcome.
+- **Phase 5** (current focus) is research-shaped — metacognition, self-organizing memory, and graph-schema evolution. The 5.1 / 5.2 metacognition tranche is the most approachable starting point for new contributors. See [PHASE_5_PLAN.md](PHASE_5_PLAN.md) for the full implementation brief and funding plan.
 
 Start with issues labeled [`good first issue`](https://github.com/salishforge/memforge/issues?q=is%3Aopen+label%3A%22good+first+issue%22). See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
