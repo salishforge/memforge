@@ -91,27 +91,27 @@ All Phase 3 items are implemented:
 
 ---
 
-## Phase 4: Continuous Adaptation (2027-2028)
+## Phase 4: Continuous Adaptation — COMPLETE
 
 *Agents that adapt to changing technology, evolving requirements, and shifting contexts — without forgetting what still matters.*
 
 ### Technology Adaptation
 
-- **Model-agnostic revision** — As new LLMs emerge, MemForge should seamlessly adopt them for consolidation and revision. The memory layer outlives any specific model generation. — ✅ DONE: `REVISION_LLM_PROVIDER` already routes revision calls to a separate provider instance independent of the consolidation model.
-- **Embedding migration** — When switching embedding providers (e.g., upgrading from text-embedding-3-small to a future model), incrementally re-embed warm tier memories during sleep cycles rather than requiring a full rebuild. — ⚠️ PARTIAL (v3.2.0): `warm_tier.embedding_model` now tracks the provenance of each embedding. Incremental re-embed phase is future work.
-- **Schema evolution** — Database migrations that run during sleep cycles, not as manual operations. The system adapts its own storage as capabilities grow.
+- **Model-agnostic revision** — ✅ DONE: `REVISION_LLM_PROVIDER` routes revision calls to a separate provider instance independent of the consolidation model.
+- **Embedding migration** — ✅ DONE: `warm_tier.embedding_model` tracks provenance per row; sleep cycle Phase 5.9 re-embeds rows whose stored model differs from the current provider, bounded by `EMBEDDING_MIGRATION_BATCH` per cycle. Dimension-mismatch guard refuses cross-shape migrations. `GET /memory/:id/stats` exposes `stale_embedding_count` so operators can see the backlog.
+- **Schema evolution** — Database migrations that run during sleep cycles, not as manual operations. *(deferred — research-shaped, no concrete proposal yet.)*
 
 ### Contextual Adaptation
 
-- **Drift detection** — Detect when the agent's environment has changed (new APIs, reorganized teams, deprecated systems) from patterns in memory contradictions and revision types. Surface drift to operators before it causes failures. — ✅ DONE (v3.2.0): `drift_signals` snapshots recorded each sleep cycle; `GET /memory/:id/drift` returns trend classification; `sleepAdvisory()` gains a `knowledge_drift` signal.
-- **Selective forgetting** — Not all knowledge should persist forever. When an agent's domain shifts, actively deprecate knowledge from the old domain rather than letting it pollute retrieval. Controlled forgetting is as important as remembering.
-- **Temporal knowledge management** — Understand that "the API endpoint is /v2/users" was true in 2026 but may not be true in 2028. Temporal annotations on knowledge enable the system to flag potentially stale facts. — ✅ DONE (v3.2.0): `warm_tier.valid_until` sets an expiry; Phase 5.6 of the sleep cycle penalizes expired rows and flags them for revision.
+- **Drift detection** — ✅ DONE: `drift_signals` snapshots recorded each sleep cycle; `GET /memory/:id/drift` returns trend classification; `sleepAdvisory()` includes a `knowledge_drift` signal.
+- **Selective forgetting** — ✅ DONE: operators mark a namespace as deprecated (`POST /memory/:id/namespaces/:ns/deprecate`); sleep cycle Phase 5.10 actively decays importance and confidence on rows in deprecated namespaces (graduated rows decay at half rate). Eviction follows from the existing Phase 2 path. Reversible via `DELETE`.
+- **Temporal knowledge management** — ✅ DONE: `warm_tier.valid_until` sets an expiry; Phase 5.6 of the sleep cycle penalizes expired rows and flags them for revision.
 
 ### Self-Improvement Loops
 
-- **Outcome-driven revision priorities** — Memories linked to negative outcomes should be revised first. The system learns from its mistakes, not just from its gaps.
-- **Reflection-driven sleep scheduling** — When meta-reflections identify blind spots or recurring contradictions, automatically increase sleep cycle attention to those knowledge areas.
-- **Procedural evolution** — Condition→action rules should have their own lifecycle: strengthened when they lead to good outcomes, revised when contexts change, deprecated when they become irrelevant. — ✅ DONE (v3.2.0): `recordProcedureOutcome()` accumulates success/failure counts; Phase 5.7 of the sleep cycle boosts high-success procedures (+0.05) and deactivates chronically-failing ones.
+- **Outcome-driven revision priorities** — ✅ DONE: Phase 2 triage now flags warm rows with ≥2 negative retrievals and >50% negative ratio (last 7d) regardless of confidence. Phase 1 also drifts confidence downward for chronic negatives so they reach the revision threshold over time.
+- **Reflection-driven sleep scheduling** — ✅ DONE: Phase 2 entry gate adds a third channel — warm rows cited by recent (≤14d) reflections with non-empty contradictions are flagged for revision regardless of confidence or outcome. Meta-reflections (level > 1) rank above first-order in priority.
+- **Procedural evolution** — ✅ DONE: `recordProcedureOutcome()` accumulates success/failure counts; Phase 5.7 of the sleep cycle boosts high-success procedures and deactivates chronically-failing ones.
 
 ### Milestone
 
