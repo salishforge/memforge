@@ -6,7 +6,7 @@
 
 import { createHash } from 'crypto';
 import { Pool } from 'pg';
-import { getPool } from './db.js';
+import { getPool, getVectorCast } from './db.js';
 import { emitWebhookEvent } from './webhooks.js';
 import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
@@ -145,6 +145,7 @@ export class MemoryManager {
   private readonly llm: LLMProvider | null;
   private readonly audit: AuditChain | null;
   private readonly sleepLocks = new Map<string, Promise<SleepCycleResult>>();
+  private vectorCast: 'halfvec' | 'vector' | null = null;
 
   constructor(config: Partial<MemForgeConfig> = {}) {
     this.config = { ...DEFAULTS, ...config };
@@ -152,6 +153,11 @@ export class MemoryManager {
     this.embedder = this.config.embeddingProvider ?? new NoOpEmbeddingProvider();
     this.llm = this.config.llmProvider ?? null;
     this.audit = this.config.auditChain ?? null;
+  }
+
+  private async vcast(): Promise<string> {
+    if (!this.vectorCast) this.vectorCast = await getVectorCast(this.pool);
+    return this.vectorCast;
   }
 
   /** Whether vector search is available (embedding provider is configured). */
@@ -399,9 +405,9 @@ Ranking (numbers only):`;
                FROM shared_memories WHERE pool_id = $1 AND content_tsv @@ plainto_tsquery('english', $2)
                ORDER BY rank DESC LIMIT $3`
             : `SELECT id, content, summary, metadata, published_at as consolidated_at, source_agent_id, hop_count, base_confidence, importance,
-                      (1 - (embedding <=> $2::halfvec)) * importance AS rank
+                      (1 - (embedding <=> $2::${await this.vcast()})) * importance AS rank
                FROM shared_memories WHERE pool_id = $1 AND embedding IS NOT NULL
-               ORDER BY embedding <=> $2::halfvec LIMIT $3`,
+               ORDER BY embedding <=> $2::${await this.vcast()} LIMIT $3`,
           mode === 'keyword' || mode === 'code'
             ? [pool.pool_id, searchText, Math.min(resolvedLimit, 10)]
             : [pool.pool_id, `[${(await this.embedder.embed(searchText)).join(',')}]`, Math.min(resolvedLimit, 10)],
@@ -706,12 +712,12 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
-              (1 - (embedding <=> $2::halfvec)) * (0.5 + 0.5 * importance) AS rank
+              (1 - (embedding <=> $2::${await this.vcast()})) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
          AND embedding IS NOT NULL
          ${timeFilter}
-       ORDER BY embedding <=> $2::halfvec
+       ORDER BY embedding <=> $2::${await this.vcast()}
        LIMIT $${limitIdx}`,
       params,
     );
@@ -1085,7 +1091,7 @@ Ranking (numbers only):`;
 
         const warmRow = await client.query<{ id: bigint }>(
           `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type)
-           VALUES ($1, $2, $9, $3, $4, $5::halfvec, $6, $7, $8)
+           VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8)
            RETURNING id`,
           [
             agentId,

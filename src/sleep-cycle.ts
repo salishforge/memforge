@@ -4,6 +4,7 @@
 // during idle periods. See ARCHITECTURE.md for the full phase breakdown.
 
 import type { Pool } from 'pg';
+import { getVectorCast } from './db.js';
 import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
 import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
@@ -511,7 +512,7 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
          content = $2,
          confidence = $3,
          revision_count = revision_count + 1
-         ${newEmbedding ? ', embedding = $5::halfvec' : ''}
+         ${newEmbedding ? `, embedding = $5::${await getVectorCast(this.pool)}` : ''}
        WHERE id = $1 AND agent_id = $4`,
       newEmbedding
         ? [warmTierId, revisedContent, confidence, agentId, newEmbedding]

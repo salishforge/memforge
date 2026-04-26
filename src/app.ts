@@ -208,9 +208,10 @@ export function createApp(deps: AppDependencies): express.Express {
     res.type('html').send(cacheDashboardHtml());
   });
 
-  // ─── Auth — all /memory routes require a valid Bearer token ────────────
+  // ─── Auth — all /memory and /pool routes require a valid Bearer token ───
 
   app.use('/memory', bearerAuth);
+  app.use('/pool', bearerAuth);
 
   // ─── Routes ────────────────────────────────────────────────────────────
 
