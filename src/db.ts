@@ -47,6 +47,18 @@ export function getPool(databaseUrl?: string): Pool {
   return _pool;
 }
 
+let _vectorCast: 'halfvec' | 'vector' | null = null;
+
+/** Returns 'halfvec' if pgvector supports it (>=0.7), otherwise 'vector'. */
+export async function getVectorCast(pool: Pool): Promise<'halfvec' | 'vector'> {
+  if (_vectorCast) return _vectorCast;
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM pg_type WHERE typname = 'halfvec') AS exists`,
+  );
+  _vectorCast = result.rows[0]?.exists ? 'halfvec' : 'vector';
+  return _vectorCast;
+}
+
 /** Call once on shutdown to drain the pool cleanly. */
 export async function closePool(): Promise<void> {
   if (_healthCheckTimer) {

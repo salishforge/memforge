@@ -1,8 +1,10 @@
-// OAuth2 Bearer token + scope authorization middleware for MemForge
-// Calls the OAuth2 introspect endpoint, caches results 30s, enforces scopes.
+// Bearer token authentication middleware for MemForge
+// Supports two modes:
+//   1. Simple token: compare against MEMFORGE_TOKEN (default)
+//   2. OAuth2 introspect: validate against external OAuth2 server (OAUTH2_REQUIRED=true)
 
 import type { Request, Response, NextFunction } from 'express';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { getLogger } from './logger.js';
 import { OAuthIntrospectSchema } from './schemas.js';
 import type { ValidatedOAuthIntrospect } from './schemas.js';
@@ -18,20 +20,22 @@ declare global {
   }
 }
 
+const MEMFORGE_TOKEN = process.env['MEMFORGE_TOKEN'] ?? '';
+const OAUTH2_REQUIRED = process.env['OAUTH2_REQUIRED'] === 'true';
+
 const INTROSPECT_URL =
   process.env['OAUTH2_INTROSPECT_URL'] ?? 'http://localhost:3005/oauth2/introspect';
 
-// Validate introspect URL at startup
-try {
-  const parsed = new URL(INTROSPECT_URL);
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('must use http or https');
+if (OAUTH2_REQUIRED) {
+  try {
+    const parsed = new URL(INTROSPECT_URL);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error('must use http or https');
+    }
+  } catch (err) {
+    throw new Error(`Invalid OAUTH2_INTROSPECT_URL: ${(err as Error).message}`);
   }
-} catch (err) {
-  throw new Error(`Invalid OAUTH2_INTROSPECT_URL: ${(err as Error).message}`);
 }
-
-const REQUIRED = process.env['OAUTH2_REQUIRED'] !== 'false';
 
 interface TokenInfo {
   active: boolean;
@@ -53,9 +57,19 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
+function constantTimeEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
 /**
  * Express middleware: validate Bearer token and set req.oauth2.
- * If OAUTH2_REQUIRED=false, unauthenticated requests pass through.
+ *
+ * Auth modes (checked in order):
+ *   1. OAUTH2_REQUIRED=true → introspect against external server
+ *   2. MEMFORGE_TOKEN set → constant-time compare bearer token
+ *   3. Neither → unauthenticated pass-through (dev/test only)
  */
 export async function bearerAuth(
   req: Request,
@@ -63,8 +77,11 @@ export async function bearerAuth(
   next: NextFunction,
 ): Promise<void> {
   const authHeader = req.headers['authorization'];
-  if (!authHeader?.startsWith('Bearer ')) {
-    if (!REQUIRED) {
+  const hasBearer = authHeader?.startsWith('Bearer ');
+
+  // No bearer token provided
+  if (!hasBearer) {
+    if (!OAUTH2_REQUIRED && !MEMFORGE_TOKEN) {
       req.oauth2 = { client_id: 'anonymous', scope: 'memforge:read memforge:write' };
       next();
       return;
@@ -73,10 +90,22 @@ export async function bearerAuth(
     return;
   }
 
-  const token = authHeader.slice(7);
+  const token = authHeader!.slice(7);
+
+  // Mode 1: Simple token comparison (MEMFORGE_TOKEN)
+  if (MEMFORGE_TOKEN && !OAUTH2_REQUIRED) {
+    if (constantTimeEqual(token, MEMFORGE_TOKEN)) {
+      req.oauth2 = { client_id: 'token', scope: 'memforge:read memforge:write' };
+      next();
+      return;
+    }
+    res.status(401).json({ ok: false, error: 'Invalid token' });
+    return;
+  }
+
+  // Mode 2: OAuth2 introspect
   const tokenKey = createHash('sha256').update(token).digest('hex');
 
-  // Cache hit (keyed by hash to avoid storing cleartext tokens in memory)
   const cached = TOKEN_CACHE.get(tokenKey);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
     if (!cached.active) {
@@ -88,7 +117,6 @@ export async function bearerAuth(
     return;
   }
 
-  // Introspect
   let data: ValidatedOAuthIntrospect;
   try {
     const response = await fetch(INTROSPECT_URL, {
@@ -111,7 +139,6 @@ export async function bearerAuth(
     return;
   }
 
-  // Evict oldest entries if cache is full (prevents memory exhaustion from token spray)
   if (TOKEN_CACHE.size >= CACHE_MAX_SIZE) {
     const firstKey = TOKEN_CACHE.keys().next().value;
     if (firstKey !== undefined) TOKEN_CACHE.delete(firstKey);
