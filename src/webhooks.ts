@@ -8,6 +8,7 @@
 //   WEBHOOK_EVENTS — Comma-separated list of events to emit (default: all)
 
 import { getLogger } from './logger.js';
+import { validateProviderUrl } from './schemas.js';
 
 const log = getLogger('webhooks');
 
@@ -24,8 +25,9 @@ let webhookUrl: string | null = null;
 let enabledEvents: Set<WebhookEvent> | null = null;
 
 export function configureWebhooks(url?: string, events?: string): void {
-  webhookUrl = url ?? process.env['WEBHOOK_URL'] ?? null;
-  if (!webhookUrl) return;
+  const raw = url ?? process.env['WEBHOOK_URL'] ?? null;
+  if (!raw) return;
+  webhookUrl = validateProviderUrl(raw, 'Webhook');
 
   const eventList = events ?? process.env['WEBHOOK_EVENTS'] ?? 'consolidated,revised,reflected,evicted,graduated';
   enabledEvents = new Set(eventList.split(',').map((e) => e.trim()) as WebhookEvent[]);
