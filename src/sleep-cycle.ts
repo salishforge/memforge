@@ -791,11 +791,22 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
       scoreB += Math.round(2 * b.confidence);
 
       // Multi-device device-freshness signal (0-1 point): when the conflicting
-      // rows came from different devices, prefer the one whose session has more
-      // recent overall activity. Prevents a stale device from overwriting a
-      // fresh device's correction. No effect when both rows share a session_id
-      // or when neither has one (pre-v3.5 rows).
-      if (a.session_id && b.session_id && a.session_id !== b.session_id) {
+      // rows came from different devices under OAuth2 auth, prefer the one
+      // whose session has more recent overall activity. Prevents a stale
+      // device from overwriting a fresh device's correction.
+      //
+      // Restricted to rows whose metadata carries a server-injected `_client_id`
+      // (set only when OAuth2 introspection is active). Under shared-bearer
+      // auth, session_id is fully caller-controlled and any of the agent's
+      // tokens can spoof a "fresher" session — we'd be tie-breaking on
+      // attacker-influenced data. With OAuth2 each device is a distinct
+      // OAuth client, so the signal is trustworthy. No effect when either
+      // row lacks _client_id, when they share a session_id, or on pre-v3.5
+      // rows with NULL session_id.
+      const aClientId = (a.metadata as Record<string, unknown> | undefined)?.['_client_id'];
+      const bClientId = (b.metadata as Record<string, unknown> | undefined)?.['_client_id'];
+      const oauthAuthed = typeof aClientId === 'string' && typeof bClientId === 'string';
+      if (oauthAuthed && a.session_id && b.session_id && a.session_id !== b.session_id) {
         const freshness = await this.pool.query<{ session_id: string; max_at: Date }>(
           `SELECT session_id, MAX(consolidated_at) AS max_at
              FROM warm_tier

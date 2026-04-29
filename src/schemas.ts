@@ -75,13 +75,36 @@ export const RELOADABLE_CONFIG_KEYS = [
   'TEMPORAL_PROXIMITY_DAYS',
 ] as const;
 
+// Per-key value validators for the reload allowlist. Each shape constrains
+// the value at the boundary so a compromised admin token cannot push a
+// malformed value that would only be caught (or — worse — only crash) at
+// the downstream use-site. Defense in depth: every consumer also re-validates
+// at use-time.
+const BoolStringSchema = z.enum(['true', 'false']);
+const NonNegIntStringSchema = z.string().regex(/^\d+$/, 'must be a non-negative integer string');
+const NonNegFloatStringSchema = z.string().regex(/^(\d+(\.\d+)?|\.\d+)$/, 'must be a non-negative number string');
+
+const ConfigOverridesSchema = z.object({
+  WARM_CONSOLIDATION_TARGET: NamespaceSchema.optional(),
+  CONSOLIDATION_MODE: z.enum(['concat', 'summarize']).optional(),
+  ENABLE_LLM_RERANK: BoolStringSchema.optional(),
+  ENABLE_LLM_INGEST: BoolStringSchema.optional(),
+  CONSOLIDATION_THRESHOLD: NonNegIntStringSchema.optional(),
+  CONSOLIDATION_BATCH_SIZE: NonNegIntStringSchema.optional(),
+  CONSOLIDATION_INNER_BATCH_SIZE: NonNegIntStringSchema.optional(),
+  TEMPORAL_DECAY_RATE: NonNegFloatStringSchema.optional(),
+  KEYWORD_OVERLAP_BOOST: NonNegFloatStringSchema.optional(),
+  TEMPORAL_PROXIMITY_DAYS: NonNegFloatStringSchema.optional(),
+}).strict();
+
 export const ConfigReloadSchema = z.object({
   /**
    * Optional explicit overrides. When omitted, reload re-reads process.env
    * for every allowlisted key. When provided, only the listed keys are
-   * updated (the remainder keep their current value).
+   * updated (the remainder keep their current value). Values are validated
+   * per-key (e.g. WARM_CONSOLIDATION_TARGET must be a valid namespace token).
    */
-  overrides: z.record(z.enum(RELOADABLE_CONFIG_KEYS), z.string()).optional(),
+  overrides: ConfigOverridesSchema.optional(),
 });
 
 // Sleep is agent-wide — it runs the 10-phase cycle across all namespaces for

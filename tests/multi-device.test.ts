@@ -157,6 +157,59 @@ describe('multi-device hot-tier isolation', () => {
     assert.equal(md['_session_id'], undefined, '_session_id must not appear in metadata');
     assert.equal(md['user_field'], 'kept');
   });
+
+  it('strips reserved keys case-insensitively', async () => {
+    const manager = makeManager();
+    await manager.add(
+      AGENT,
+      'casing variant attempt',
+      { _Client_Id: 'forged-cap', _CLIENT_ID: 'forged-up', _SeSsIoN_iD: 'forged-mix', kept: 1 },
+      'neutral',
+      undefined,
+      'default',
+      'real-session',
+    );
+
+    const row = await pool.query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM hot_tier WHERE agent_id = $1`,
+      [AGENT],
+    );
+    const md = row.rows[0]!.metadata;
+    assert.equal(md['_Client_Id'], undefined);
+    assert.equal(md['_CLIENT_ID'], undefined);
+    assert.equal(md['_SeSsIoN_iD'], undefined);
+    assert.equal(md['kept'], 1);
+  });
+
+  it('strips reserved keys recursively from nested metadata', async () => {
+    const manager = makeManager();
+    await manager.add(
+      AGENT,
+      'nested forgery attempt',
+      {
+        nested: { _client_id: 'nested-forged', good: 'kept' },
+        deeper: { layer: { _superseded: true, value: 42 } },
+        list: [{ _trust_score: 999, ok: 'preserved' }],
+      },
+      'neutral',
+      undefined,
+      'default',
+      'sess-x',
+    );
+
+    const row = await pool.query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM hot_tier WHERE agent_id = $1`,
+      [AGENT],
+    );
+    const md = row.rows[0]!.metadata as Record<string, Record<string, unknown>>;
+    assert.equal((md['nested'] as Record<string, unknown>)['_client_id'], undefined);
+    assert.equal((md['nested'] as Record<string, unknown>)['good'], 'kept');
+    assert.equal(((md['deeper'] as Record<string, unknown>)['layer'] as Record<string, unknown>)['_superseded'], undefined);
+    assert.equal(((md['deeper'] as Record<string, unknown>)['layer'] as Record<string, unknown>)['value'], 42);
+    const list = md['list'] as unknown as Array<Record<string, unknown>>;
+    assert.equal(list[0]!['_trust_score'], undefined);
+    assert.equal(list[0]!['ok'], 'preserved');
+  });
 });
 
 // ─── Test 2: Cross-namespace consolidation ───────────────────────────────────
@@ -285,5 +338,47 @@ describe('config hot-reload', () => {
       delete process.env['WARM_CONSOLIDATION_TARGET'];
       __resetConfigForTests({});
     }
+  });
+
+  it('ConfigReloadSchema rejects malformed per-key values', async () => {
+    const { ConfigReloadSchema } = await import('../src/schemas.js');
+    // Bad: WARM_CONSOLIDATION_TARGET must be a valid namespace token
+    assert.equal(
+      ConfigReloadSchema.safeParse({ overrides: { WARM_CONSOLIDATION_TARGET: 'has spaces!' } }).success,
+      false,
+    );
+    // Bad: CONSOLIDATION_MODE must be 'concat' or 'summarize'
+    assert.equal(
+      ConfigReloadSchema.safeParse({ overrides: { CONSOLIDATION_MODE: 'invalid' } }).success,
+      false,
+    );
+    // Bad: ENABLE_LLM_RERANK must be the literal string 'true' or 'false'
+    assert.equal(
+      ConfigReloadSchema.safeParse({ overrides: { ENABLE_LLM_RERANK: 'yes' } }).success,
+      false,
+    );
+    // Bad: numeric thresholds must be parseable digits
+    assert.equal(
+      ConfigReloadSchema.safeParse({ overrides: { CONSOLIDATION_THRESHOLD: 'fifty' } }).success,
+      false,
+    );
+    // Bad: unknown key is rejected by the strict() schema
+    assert.equal(
+      ConfigReloadSchema.safeParse({ overrides: { DATABASE_URL: 'postgres://evil' } }).success,
+      false,
+    );
+    // Good: well-formed values pass
+    assert.equal(
+      ConfigReloadSchema.safeParse({
+        overrides: {
+          WARM_CONSOLIDATION_TARGET: 'shared',
+          CONSOLIDATION_MODE: 'summarize',
+          ENABLE_LLM_RERANK: 'true',
+          CONSOLIDATION_THRESHOLD: '100',
+          TEMPORAL_DECAY_RATE: '0.5',
+        },
+      }).success,
+      true,
+    );
   });
 });

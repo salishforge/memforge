@@ -88,6 +88,52 @@ function resolveSessionId(sid: string | undefined): string {
   return result.data;
 }
 
+/**
+ * Reserved metadata keys that callers must never be able to set. Server-side
+ * code injects these from trusted sources (OAuth2 introspection, sleep cycle
+ * conflict resolution, supersession logic). Caller-supplied values are
+ * stripped recursively and case-insensitively before any insert.
+ */
+const RESERVED_METADATA_KEYS = new Set([
+  '_source_agent',
+  '_from_pool',
+  '_source_chain',
+  '_trust_score',
+  '_conflict_loser',
+  '_superseded',
+  '_client_id',
+  '_session_id',
+]);
+
+/**
+ * Recursively remove reserved system keys from caller-supplied metadata.
+ * - Case-insensitive: `_Client_Id` is treated identically to `_client_id`.
+ * - Recursive: keys nested at any depth (`{outer: {_client_id: "x"}}`) are stripped.
+ * - Returns a new object (input not mutated).
+ * - Non-object values are passed through unchanged.
+ */
+function stripReservedSystemKeys(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return walkAndStrip(value as Record<string, unknown>) as Record<string, unknown>;
+}
+
+function walkAndStrip(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(walkAndStrip);
+  }
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (RESERVED_METADATA_KEYS.has(k.toLowerCase())) continue;
+      out[k] = walkAndStrip(v);
+    }
+    return out;
+  }
+  return node;
+}
+
 const SLEEP_ADVISORY_DEFAULTS: SleepAdvisoryThresholds = {
   hotBacklogLow: 25,
   hotBacklogMedium: 100,
@@ -291,15 +337,12 @@ export class MemoryManager {
     // _client_id is server-injected from the validated OAuth2 introspection result; callers
     // must not be able to forge it. _session_id is also stripped — session_id rides as a typed
     // column, not in metadata, and we don't want a stale duplicate copy.
-    const sanitizedMetadata = { ...metadata };
-    delete sanitizedMetadata['_source_agent'];
-    delete sanitizedMetadata['_from_pool'];
-    delete sanitizedMetadata['_source_chain'];
-    delete sanitizedMetadata['_trust_score'];
-    delete sanitizedMetadata['_conflict_loser'];
-    delete sanitizedMetadata['_superseded'];
-    delete sanitizedMetadata['_client_id'];
-    delete sanitizedMetadata['_session_id'];
+    //
+    // The strip is case-insensitive and recursive: a caller could otherwise smuggle a forged
+    // value as `_Client_Id` (case variant) or nested as `{outer: {_client_id: "x"}}`. Any
+    // future reader that walks the metadata tree or normalizes case would see the forgery.
+    // Defense in depth — the current Phase 2.5 reader uses the top-level lowercase key only.
+    const sanitizedMetadata = stripReservedSystemKeys(metadata);
     const enrichedMetadata: Record<string, unknown> = { ...sanitizedMetadata };
     if (outcomeType !== 'neutral') enrichedMetadata['_outcome_type'] = outcomeType;
     if (clientId) enrichedMetadata['_client_id'] = String(clientId).slice(0, 256);
