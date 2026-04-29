@@ -24,6 +24,16 @@ export const NamespaceSchema = z
   .max(128)
   .regex(/^[a-z0-9][a-z0-9_-]*$/i, 'namespace must start with a letter or digit and contain only letters, digits, underscores, or hyphens');
 
+// ─── Session ID Validator ───────────────────────────────────────────────────
+// Same character class as namespace, slightly longer max to accommodate UUIDs
+// or composite ids like 'claude-desktop-<uuid>'. Used for per-device hot-tier
+// isolation when the same agent writes from multiple devices simultaneously.
+export const SessionIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/i, 'session_id must start with a letter or digit and contain only letters, digits, underscores, or hyphens');
+
 // Request schema helpers for methods that accept an optional namespace
 export const NamespacedRequestSchema = z.object({
   namespace: NamespaceSchema.optional(),
@@ -37,11 +47,41 @@ export const AddMemorySchema = z.object({
   outcome_type: z.string().optional(),
   hints: z.record(z.string(), z.unknown()).optional(),
   namespace: NamespaceSchema.optional(),
+  session_id: SessionIdSchema.optional(),
 });
 
 export const ConsolidateSchema = z.object({
   mode: z.enum(['concat', 'summarize']).optional(),
   namespace: NamespaceSchema.optional(),
+  /** Override the warm-tier target namespace; defaults from config. */
+  target_namespace: NamespaceSchema.optional(),
+});
+
+// ─── Admin Config Reload ────────────────────────────────────────────────────
+// Reloadable keys are intentionally a small allowlist of operational knobs.
+// Static infrastructure (DATABASE_URL, port, ADMIN_TOKEN, RLS policies) is
+// NOT reloadable — changing those mid-flight is unsafe and tools that need
+// to do so should restart the process.
+export const RELOADABLE_CONFIG_KEYS = [
+  'WARM_CONSOLIDATION_TARGET',
+  'CONSOLIDATION_MODE',
+  'ENABLE_LLM_RERANK',
+  'ENABLE_LLM_INGEST',
+  'CONSOLIDATION_THRESHOLD',
+  'CONSOLIDATION_BATCH_SIZE',
+  'CONSOLIDATION_INNER_BATCH_SIZE',
+  'TEMPORAL_DECAY_RATE',
+  'KEYWORD_OVERLAP_BOOST',
+  'TEMPORAL_PROXIMITY_DAYS',
+] as const;
+
+export const ConfigReloadSchema = z.object({
+  /**
+   * Optional explicit overrides. When omitted, reload re-reads process.env
+   * for every allowlisted key. When provided, only the listed keys are
+   * updated (the remainder keep their current value).
+   */
+  overrides: z.record(z.enum(RELOADABLE_CONFIG_KEYS), z.string()).optional(),
 });
 
 // Sleep is agent-wide — it runs the 10-phase cycle across all namespaces for

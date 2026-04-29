@@ -20,6 +20,8 @@ export interface HotRow {
   metadata: Record<string, unknown>;
   created_at: Date;
   namespace: string;
+  /** Originating session — defaults to 'default' when no caller session is set. */
+  session_id: string;
 }
 
 export interface AddResult {
@@ -45,6 +47,12 @@ export interface WarmRow {
   access_count: number;
   last_accessed: Date | null;
   namespace: string;
+  /**
+   * Originating session of the latest hot row contributing to this warm row.
+   * NULL on rows consolidated before per-session tracking existed —
+   * distinct from the literal 'default' session.
+   */
+  session_id: string | null;
   /** Full-text search rank (present only in query results) */
   rank?: number;
 }
@@ -113,6 +121,12 @@ export interface ConsolidateResult {
 /** Options for consolidate() — namespace scopes which hot rows are processed. */
 export interface ConsolidateOptions {
   namespace?: string;
+  /**
+   * Override the warm-tier target namespace. Defaults from config
+   * (`WARM_CONSOLIDATION_TARGET`) — typically 'shared' so cross-project
+   * lessons propagate, or echo of `namespace` for per-project warm tiers.
+   */
+  targetNamespace?: string;
 }
 
 /** Options for add() */
@@ -121,6 +135,30 @@ export interface AddOptions {
   outcomeType?: OutcomeType;
   hints?: MemoryHints;
   namespace?: string;
+  /**
+   * Per-device session identifier. Same regex as namespace; defaults to
+   * 'default' when omitted. Two devices writing to the same (agent, namespace)
+   * use different session_ids so their in-flight events stay isolated until
+   * consolidation aggregates across all sessions of the namespace.
+   */
+  sessionId?: string;
+  /**
+   * OAuth2 client_id of the calling device, when introspection is in use.
+   * Stored on hot/warm rows under metadata._client_id for audit/forensics.
+   */
+  clientId?: string;
+}
+
+/**
+ * Three-tuple identity carried by every memory operation. The two latter
+ * fields are optional — clients that don't supply them get backward-
+ * compatible single-device behavior.
+ */
+export interface MultiDeviceContext {
+  agentId: string;
+  namespace?: string;
+  sessionId?: string;
+  clientId?: string;
 }
 
 // ─── Knowledge Graph ─────────────────────────────────────────────────────────
