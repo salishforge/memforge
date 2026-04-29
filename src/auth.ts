@@ -2,6 +2,14 @@
 // Supports two modes:
 //   1. Simple token: compare against MEMFORGE_TOKEN (default)
 //   2. OAuth2 introspect: validate against external OAuth2 server (OAUTH2_REQUIRED=true)
+//
+// Multi-device note: when OAuth2 is in use, each device is provisioned with a
+// distinct OAuth2 client. The introspection response's `client_id` becomes
+// the per-device identity that downstream code can attach to memory rows for
+// audit/forensics and for the Phase 2.5 conflict-resolution device-freshness
+// tie-breaker. Use getClientId(req) to read it. With the simple bearer token
+// path, all devices share one token and getClientId() returns undefined —
+// per-device identity then surfaces only via the X-Memforge-Session-Id header.
 
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, timingSafeEqual } from 'crypto';
@@ -159,6 +167,18 @@ export async function bearerAuth(
  * Express middleware: require a specific scope.
  * Must run after bearerAuth (depends on req.oauth2 being set).
  */
+/**
+ * Per-device identity (OAuth2 client_id) when introspection auth is active.
+ * Returns undefined under the simple-bearer path or when OAuth2 didn't
+ * provide a client_id. Anonymous fallback ('anonymous', 'unknown') is also
+ * mapped to undefined so downstream code never persists a placeholder.
+ */
+export function getClientId(req: Request): string | undefined {
+  const cid = req.oauth2?.client_id;
+  if (!cid || cid === 'anonymous' || cid === 'unknown') return undefined;
+  return cid;
+}
+
 export function requireScope(scope: string) {
   return function scopeGuard(req: Request, res: Response, next: NextFunction): void {
     const granted = req.oauth2?.scope?.split(/\s+/).filter(Boolean) ?? [];
