@@ -10,7 +10,16 @@
 //
 // Add to Claude Code settings (~/.claude/settings.json):
 //   { "mcpServers": { "memforge": { "command": "npx", "args": ["memforge-mcp"] } } }
+//
+// Multi-device note:
+//   Each MCP launch generates a fresh per-process session_id (or honors
+//   MEMFORGE_SESSION_ID from the environment for stable per-device identity
+//   across restarts). The session_id is sent on every request as
+//   X-Memforge-Session-Id and isolates this device's hot-tier writes from
+//   other concurrent devices sharing the same agent_id. Set MEMFORGE_NAMESPACE
+//   to scope this MCP launch to a specific project (e.g. project-memforge).
 
+import { randomUUID } from 'crypto';
 import { MemForgeClient } from './client.js';
 import { VERSION } from './version.js';
 import type { JsonSchemaProperty } from './types.js';
@@ -723,7 +732,11 @@ async function handleRequest(client: MemForgeClient, req: MCPRequest): Promise<v
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const client = new MemForgeClient();
+  // Derive per-launch session_id. Honor MEMFORGE_SESSION_ID when provided so
+  // operators can pin a stable identity per device (e.g. set to hostname);
+  // otherwise generate a fresh UUID so each launch is a distinct session.
+  const sessionId = process.env['MEMFORGE_SESSION_ID'] ?? `mcp-${randomUUID()}`;
+  const client = new MemForgeClient({ defaultSessionId: sessionId });
 
   let buffer = '';
 

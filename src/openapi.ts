@@ -62,6 +62,8 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           tags: ['Memory'],
           parameters: [
             { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'X-Memforge-Namespace', in: 'header', required: false, schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Fallback for body.namespace; body wins if both are present.' },
+            { name: 'X-Memforge-Session-Id', in: 'header', required: false, schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Per-device session identifier; isolates this device\'s in-flight events from other concurrent devices sharing the same agent_id.' },
           ],
           requestBody: {
             required: true,
@@ -74,6 +76,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
                     content: { type: 'string', description: 'Memory content to store' },
                     metadata: { type: 'object', additionalProperties: true },
                     namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
+                    session_id: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Per-device session identifier (default: "default")' },
                   },
                 },
               },
@@ -205,6 +208,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           tags: ['Memory'],
           parameters: [
             { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'X-Memforge-Namespace', in: 'header', required: false, schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Fallback for body.namespace.' },
           ],
           requestBody: {
             content: {
@@ -213,7 +217,8 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
                   type: 'object',
                   properties: {
                     mode: { type: 'string', enum: ['concat', 'summarize'], description: 'Consolidation mode (default: from server config)' },
-                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Source memory namespace to consolidate from (default: "default")' },
+                    target_namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Override the warm-tier target namespace. Defaults from WARM_CONSOLIDATION_TARGET env (or echoes namespace if unset). Set to "shared" for cross-project propagation.' },
                   },
                 },
               },
@@ -791,6 +796,30 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
           responses: { '200': { description: 'Flush result' } },
+        },
+      },
+      '/admin/config/reload': {
+        post: {
+          summary: 'Hot-reload operational config knobs without restart (admin)',
+          tags: ['Admin'],
+          description: 'Re-reads an allowlisted set of config keys (WARM_CONSOLIDATION_TARGET, CONSOLIDATION_MODE, ENABLE_LLM_RERANK, ENABLE_LLM_INGEST, and consolidation/retrieval tuning knobs). Without overrides, re-reads process.env. With overrides, only the listed keys are updated. Static infrastructure (DATABASE_URL, port, ADMIN_TOKEN, audit HMAC) is intentionally not in the allowlist.',
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    overrides: {
+                      type: 'object',
+                      additionalProperties: { type: 'string' },
+                      description: 'Optional explicit overrides keyed by allowlisted env var name.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Reload summary including changed keys' } },
         },
       },
     },
