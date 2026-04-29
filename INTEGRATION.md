@@ -654,6 +654,155 @@ Agent IDs can be 1-256 characters of `[a-zA-Z0-9_.@:=-]`.
 
 ---
 
+## Multi-Device Identity (one agent, many machines)
+
+When the same agent (e.g. "Claude") runs on multiple machines simultaneously
+— Claude Desktop on Windows, an SSH session, Claude Code on a laptop — the
+goal is usually:
+
+- **Same long-term memory**: warm-tier consolidations should be visible from
+  every device (one persona, one knowledge base).
+- **Project-scoped active memory**: hot-tier writes for project A should not
+  collide with project B's working set.
+- **Per-device hot-tier isolation**: two devices working on the same project
+  should not see each other's in-flight events until consolidation aggregates
+  them — otherwise active context gets clobbered.
+
+MemForge supports this via a **three-tuple identity contract**. Every memory
+operation is implicitly scoped by:
+
+| Dimension | How to set | Lifespan |
+|-----------|------------|----------|
+| `agent_id` | Path param on every `/memory/:agentId/*` route | Permanent — the "Claude identity" |
+| `namespace` | Body field, query param, or `X-Memforge-Namespace` header | Project-scoped (`project-foo`, `default`) |
+| `session_id` | Body field or `X-Memforge-Session-Id` header | Ephemeral — per-process / per-MCP-launch |
+
+Body values win when both body and header are present. `namespace` and
+`session_id` follow the same regex (`[a-z0-9][a-z0-9_-]*`) and default to
+`default`.
+
+### Recipe: shared agent across devices, project-scoped hot tier
+
+```bash
+# Server: enable cross-project warm propagation
+export WARM_CONSOLIDATION_TARGET=shared
+
+# Device A — Claude Desktop on Windows, working on memforge
+export MEMFORGE_NAMESPACE=project-memforge
+export MEMFORGE_SESSION_ID=desktop-windows-$(uuidgen)
+npx memforge-mcp
+
+# Device B — SSH session on a remote machine, also on memforge
+export MEMFORGE_NAMESPACE=project-memforge
+export MEMFORGE_SESSION_ID=ssh-$(hostname)-$(uuidgen)
+npx memforge-mcp
+
+# Device C — Claude Code on a laptop, working on a different project
+export MEMFORGE_NAMESPACE=project-callscreen
+export MEMFORGE_SESSION_ID=laptop-$(uuidgen)
+npx memforge-mcp
+```
+
+What this gives you:
+- **A and B share project-memforge hot tier** but their session_ids
+  differentiate writes; they don't see each other's mid-session events.
+- **C's project-callscreen hot tier is fully isolated** from A and B.
+- **All three consolidate into the `shared` warm namespace** — long-term
+  lessons propagate across projects and devices.
+- **Concurrent consolidation is safe** — `pg_advisory_lock` per
+  `(agent_id, namespace)` serializes writers; cross-namespace consolidations
+  also acquire a target-namespace lock so multiple projects writing into
+  `shared` queue cleanly.
+
+### Per-call override (without restart)
+
+Carry the headers on individual requests when you need to shift mid-session:
+
+```bash
+curl -X POST http://localhost:3333/memory/claude/add \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN" \
+  -H "X-Memforge-Namespace: project-callscreen" \
+  -H "X-Memforge-Session-Id: my-laptop-tab-1" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "switching to callscreen for a quick fix"}'
+```
+
+### TypeScript SDK
+
+```typescript
+import { MemForgeClient } from '@salishforge/memforge/client';
+import { randomUUID } from 'crypto';
+
+const client = new MemForgeClient({
+  baseUrl: 'http://localhost:3333',
+  token: process.env.MEMFORGE_TOKEN,
+  defaultNamespace: 'project-memforge',
+  defaultSessionId: `desktop-${randomUUID()}`,
+});
+// Defaults travel as headers; override per-call when needed.
+await client.add('claude', 'event A');
+await client.add('claude', 'event B', undefined, 'project-callscreen', 'override-session');
+```
+
+### Python SDK
+
+```python
+from memforge import MemForgeClient
+import os, uuid
+
+async with MemForgeClient(
+    base_url="http://localhost:3333",
+    token=os.environ["MEMFORGE_TOKEN"],
+    default_namespace="project-memforge",
+    default_session_id=f"laptop-{uuid.uuid4()}",
+) as client:
+    await client.add("claude", "event A")
+    # Override per-call:
+    await client.add("claude", "switch project",
+                     namespace="project-callscreen", session_id="override")
+```
+
+### Per-device authentication (optional)
+
+The default bearer-token deployment is fine for personal use — share one
+`MEMFORGE_TOKEN` across all your devices, and let `session_id` provide
+per-device identity for audit/forensics. When you need per-device
+**revocation** (e.g. you lose a device), enable OAuth2 introspection:
+
+```bash
+export OAUTH2_REQUIRED=true
+export OAUTH2_INTROSPECT_URL=https://auth.example.com/oauth2/introspect
+```
+
+Each device is now provisioned with its own OAuth2 client. The
+introspection response's `client_id` becomes per-device identity, recorded
+on every hot/warm row's metadata under `_client_id`. Revoking a device =
+revoking the OAuth client; no MemForge code change. The Phase 2.5
+conflict-resolution device-freshness tie-breaker uses this signal to
+prevent a stale device from overwriting a fresh device's correction.
+
+### Hot reconfiguration (no restart)
+
+Operational config (warm-tier target namespace, consolidation mode, LLM
+toggles, retrieval tuning) can be changed at runtime via
+`POST /admin/config/reload` — see the `RELOADABLE_CONFIG_KEYS` allowlist
+in `src/schemas.ts`. Static infrastructure (DATABASE_URL, port,
+ADMIN_TOKEN, audit HMAC) intentionally stays restart-only.
+
+```bash
+# Re-read process.env
+curl -X POST http://localhost:3333/admin/config/reload \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{}'
+
+# Or apply targeted overrides without touching the env
+curl -X POST http://localhost:3333/admin/config/reload \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"overrides": {"WARM_CONSOLIDATION_TARGET": "shared"}}'
+```
+
+---
+
 ## Memory Lifecycle: When to Call What
 
 | Event | MemForge Call | Frequency |

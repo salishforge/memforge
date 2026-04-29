@@ -44,12 +44,22 @@ class MemForgeClient:
         base_url: str | None = None,
         token: str | None = None,
         timeout: float = 60.0,
+        default_namespace: str | None = None,
+        default_session_id: str | None = None,
     ):
         self.base_url = (base_url or os.environ.get("MEMFORGE_URL", "http://localhost:3333")).rstrip("/")
         self.token = token or os.environ.get("MEMFORGE_TOKEN")
+        # Multi-device defaults: sent as headers on every request, override
+        # per-call by passing namespace=/session_id= to individual methods.
+        self.default_namespace = default_namespace or os.environ.get("MEMFORGE_NAMESPACE")
+        self.default_session_id = default_session_id or os.environ.get("MEMFORGE_SESSION_ID")
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if self.default_namespace:
+            headers["X-Memforge-Namespace"] = self.default_namespace
+        if self.default_session_id:
+            headers["X-Memforge-Session-Id"] = self.default_session_id
         self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=timeout)
 
     async def close(self) -> None:
@@ -87,6 +97,7 @@ class MemForgeClient:
         outcome_type: str = "neutral",
         hints: MemoryHints | None = None,
         namespace: str | None = None,
+        session_id: str | None = None,
     ) -> AddResult:
         """Store a memory event in the hot tier."""
         body: dict[str, Any] = {"content": content}
@@ -98,6 +109,8 @@ class MemForgeClient:
             body["hints"] = {k: v for k, v in hints.__dict__.items() if v is not None}
         if namespace:
             body["namespace"] = namespace
+        if session_id:
+            body["session_id"] = session_id
         raw = await self._post(f"/memory/{agent_id}/add", body)
         return AddResult(**{k: raw[k] for k in ("id", "agent_id", "created_at") if k in raw})
 
@@ -150,13 +163,25 @@ class MemForgeClient:
             params["namespace"] = namespace
         return await self._get(f"/memory/{agent_id}/timeline", params)
 
-    async def consolidate(self, agent_id: str, mode: str | None = None, namespace: str | None = None) -> ConsolidateResult:
-        """Trigger hot→warm consolidation."""
+    async def consolidate(
+        self,
+        agent_id: str,
+        mode: str | None = None,
+        namespace: str | None = None,
+        target_namespace: str | None = None,
+    ) -> ConsolidateResult:
+        """Trigger hot→warm consolidation.
+
+        target_namespace overrides where the warm rows are written. Defaults to
+        the source namespace; set to e.g. "shared" for cross-project propagation.
+        """
         body: dict[str, Any] = {}
         if mode:
             body["mode"] = mode
         if namespace:
             body["namespace"] = namespace
+        if target_namespace:
+            body["target_namespace"] = target_namespace
         raw = await self._post(f"/memory/{agent_id}/consolidate", body)
         return ConsolidateResult(**raw)
 

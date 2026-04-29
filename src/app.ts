@@ -17,8 +17,9 @@ import {
   httpRequestsTotal,
   httpRequestDurationSeconds,
 } from './metrics.js';
-import { bearerAuth, requireScope } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema } from './schemas.js';
+import { bearerAuth, requireScope, getClientId } from './auth.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema } from './schemas.js';
+import { reloadConfig } from './config.js';
 import {
   cacheGet,
   cacheSet,
@@ -53,6 +54,28 @@ function qnum(v: unknown): number | undefined {
 
 function pstr(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+// ─── Multi-device identity helpers ──────────────────────────────────────────
+//
+// The three-tuple identity contract — agent_id (path), namespace (body or
+// header), session_id (body or header) — accepts namespace and session_id from
+// either the request body OR a request header, with body taking precedence.
+// Headers are the cheap path for clients that can't always restructure the
+// body (e.g. SDK that wraps every call), and let mid-session reconfiguration
+// happen by changing a header on subsequent calls.
+
+function headerString(req: Request, name: string): string | undefined {
+  const v = req.headers[name.toLowerCase()];
+  return typeof v === 'string' ? v : undefined;
+}
+
+function resolveCallerNamespace(req: Request, bodyValue: string | undefined): string | undefined {
+  return bodyValue ?? headerString(req, 'x-memforge-namespace');
+}
+
+function resolveCallerSessionId(req: Request, bodyValue: string | undefined): string | undefined {
+  return bodyValue ?? headerString(req, 'x-memforge-session-id');
 }
 
 // ─── Public interface ───────────────────────────────────────────────────────
@@ -231,6 +254,30 @@ export function createApp(deps: AppDependencies): express.Express {
     res.type('html').send(cacheDashboardHtml());
   });
 
+  /**
+   * POST /admin/config/reload
+   * Body: { overrides?: Record<allowlistedKey, string> }
+   *
+   * Re-reads operational config knobs without restarting the process. Without
+   * `overrides`, re-reads process.env for every allowlisted key (the operator
+   * has updated the environment out-of-band — e.g. via a config-management
+   * tool — and wants the running process to pick it up). With `overrides`,
+   * only the listed keys are updated; the rest keep their current values.
+   *
+   * Static infrastructure (DATABASE_URL, port, ADMIN_TOKEN, audit HMAC,
+   * RLS policies) is NOT in the allowlist and stays restart-only.
+   */
+  app.post('/admin/config/reload', adminAuth, (req, res) => {
+    const parsed = ConfigReloadSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      res.status(400).json({ ok: false, error: issue?.message ?? 'invalid request' });
+      return;
+    }
+    const result = reloadConfig(parsed.data.overrides);
+    res.json({ ok: true, data: result });
+  });
+
   // ─── Auth — all /memory and /pool routes require a valid Bearer token ───
 
   app.use('/memory', bearerAuth);
@@ -265,7 +312,7 @@ export function createApp(deps: AppDependencies): express.Express {
       fail(res, 400, msg?.path[0] === 'namespace' ? `Invalid namespace: ${msg.message}` : `"content" (string) is required`);
       return;
     }
-    const { content, metadata, outcome_type, hints, namespace } = parsed.data;
+    const { content, metadata, outcome_type, hints, namespace, session_id } = parsed.data;
 
     if (!content || typeof content !== 'string') {
       fail(res, 400, '"content" (string) is required');
@@ -293,8 +340,21 @@ export function createApp(deps: AppDependencies): express.Express {
       } : {}),
     };
 
+    const callerNamespace = resolveCallerNamespace(req, namespace);
+    const callerSessionId = resolveCallerSessionId(req, session_id);
+    const callerClientId = getClientId(req);
+
     try {
-      const result = await manager.add(getAgentId(req), storeContent, enrichedMetadata, resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral', hints as import('./types.js').MemoryHints | undefined, namespace);
+      const result = await manager.add(
+        getAgentId(req),
+        storeContent,
+        enrichedMetadata,
+        resolvedOutcome as 'error' | 'success' | 'decision' | 'observation' | 'neutral',
+        hints as import('./types.js').MemoryHints | undefined,
+        callerNamespace,
+        callerSessionId,
+        callerClientId,
+      );
       void invalidateAgent(getAgentId(req));
       ok(res, {
         ...result,
@@ -611,10 +671,14 @@ export function createApp(deps: AppDependencies): express.Express {
         : '"mode" must be one of: concat, summarize');
       return;
     }
-    const { mode, namespace } = parsed.data;
+    const { mode, namespace, target_namespace } = parsed.data;
+    const callerNamespace = resolveCallerNamespace(req, namespace);
 
     try {
-      const result = await manager.consolidate(getAgentId(req), mode as ConsolidationMode | undefined, namespace ? { namespace } : undefined);
+      const opts = (callerNamespace || target_namespace)
+        ? { ...(callerNamespace ? { namespace: callerNamespace } : {}), ...(target_namespace ? { targetNamespace: target_namespace } : {}) }
+        : undefined;
+      const result = await manager.consolidate(getAgentId(req), mode as ConsolidationMode | undefined, opts);
       void invalidateAgent(getAgentId(req));
       ok(res, result);
     } catch (err) {

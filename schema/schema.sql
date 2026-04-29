@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS agents (
 -- hot_tier — recent raw events (write-heavy, fast ingestion)
 -- Added in v2.4: content_hash
 -- Added in v3.1: namespace
+-- Added in v3.5: session_id (per-device isolation; default 'default')
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS hot_tier (
   id           BIGSERIAL   PRIMARY KEY,
@@ -40,13 +41,15 @@ CREATE TABLE IF NOT EXISTS hot_tier (
   metadata     JSONB       NOT NULL DEFAULT '{}',
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   content_hash TEXT,
-  namespace    TEXT        NOT NULL DEFAULT 'default'
+  namespace    TEXT        NOT NULL DEFAULT 'default',
+  session_id   TEXT        NOT NULL DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
 CREATE INDEX IF NOT EXISTS hot_tier_created_at_idx   ON hot_tier (created_at DESC);
 CREATE INDEX IF NOT EXISTS hot_tier_content_hash_idx ON hot_tier (agent_id, content_hash);
 CREATE INDEX IF NOT EXISTS hot_tier_namespace_idx    ON hot_tier (agent_id, namespace);
+CREATE INDEX IF NOT EXISTS hot_tier_session_idx      ON hot_tier (agent_id, namespace, session_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- warm_tier — consolidated, full-text-searchable memory with embeddings
@@ -99,7 +102,10 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   -- Temporal validity window (v3.3) — NULL = no expiry
   valid_until                 TIMESTAMPTZ,
   -- Tracks which embedding model produced the embedding (v3.3) — NULL = unknown/pre-tracking
-  embedding_model             TEXT
+  embedding_model             TEXT,
+  -- Originating hot-tier session for provenance (v3.5) — NULL = consolidated before
+  -- per-session tracking, distinct from the literal 'default' session.
+  session_id                  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
@@ -118,6 +124,7 @@ CREATE INDEX IF NOT EXISTS warm_tier_hot_ids_idx    ON warm_tier USING GIN (sour
 CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time_start, time_end);
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
 CREATE INDEX IF NOT EXISTS warm_tier_namespace_idx  ON warm_tier (agent_id, namespace);
+CREATE INDEX IF NOT EXISTS warm_tier_session_idx    ON warm_tier (agent_id, namespace, session_id) WHERE session_id IS NOT NULL;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- cold_tier — archived / cleared memory (audit trail, never hard-deleted)

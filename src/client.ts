@@ -7,6 +7,17 @@
 //   import { MemForgeClient } from '@salishforge/memforge/client';
 //   const client = new MemForgeClient({ baseUrl: 'http://localhost:3333' });
 //   await client.add('agent-1', 'User logged in');
+//
+// Multi-device usage (one agent_id, many devices):
+//   Set defaults at construction so every call carries them; override
+//   per-call when needed.
+//     const client = new MemForgeClient({
+//       baseUrl, token,
+//       defaultNamespace: 'project-memforge',
+//       defaultSessionId: process.env.HOSTNAME ?? randomUUID(),
+//     });
+//   The defaults are sent as X-Memforge-Namespace and X-Memforge-Session-Id
+//   headers, which the server treats as fallbacks for body params.
 
 import type {
   AddResult,
@@ -51,6 +62,17 @@ export interface MemForgeClientConfig {
   token?: string;
   /** Custom fetch implementation (default: globalThis.fetch) */
   fetch?: typeof fetch;
+  /**
+   * Default namespace sent as X-Memforge-Namespace header on every call.
+   * Per-call values in body or method args override this.
+   */
+  defaultNamespace?: string;
+  /**
+   * Default session_id sent as X-Memforge-Session-Id header on every call.
+   * Typical value: a per-process UUID generated at startup so the same
+   * device's writes share a session across calls.
+   */
+  defaultSessionId?: string;
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -59,18 +81,27 @@ export class MemForgeClient {
   private readonly baseUrl: string;
   private readonly token: string | undefined;
   private readonly _fetch: typeof fetch;
+  private readonly defaultNamespace: string | undefined;
+  private readonly defaultSessionId: string | undefined;
 
   constructor(config: MemForgeClientConfig = {}) {
     this.baseUrl = (config.baseUrl ?? process.env['MEMFORGE_URL'] ?? 'http://localhost:3333').replace(/\/$/, '');
     this.token = config.token ?? process.env['MEMFORGE_TOKEN'];
     this._fetch = config.fetch ?? globalThis.fetch;
+    this.defaultNamespace = config.defaultNamespace ?? process.env['MEMFORGE_NAMESPACE'];
+    this.defaultSessionId = config.defaultSessionId ?? process.env['MEMFORGE_SESSION_ID'];
   }
 
   // ─── Memory Operations ──────────────────────────────────────────────────
 
   /** Add a memory event to the hot tier. */
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string): Promise<AddResult> {
-    return this.post<AddResult>(`/memory/${enc(agentId)}/add`, { content, metadata, ...(namespace ? { namespace } : {}) });
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string): Promise<AddResult> {
+    return this.post<AddResult>(`/memory/${enc(agentId)}/add`, {
+      content,
+      metadata,
+      ...(namespace ? { namespace } : {}),
+      ...(sessionId ? { session_id: sessionId } : {}),
+    });
   }
 
   /** Search warm tier memory. */
@@ -110,10 +141,11 @@ export class MemForgeClient {
   }
 
   /** Trigger hot→warm consolidation. */
-  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string): Promise<ConsolidateResult> {
+  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string, targetNamespace?: string): Promise<ConsolidateResult> {
     const body: Record<string, unknown> = {};
     if (mode) body['mode'] = mode;
     if (namespace) body['namespace'] = namespace;
+    if (targetNamespace) body['target_namespace'] = targetNamespace;
     return this.post<ConsolidateResult>(`/memory/${enc(agentId)}/consolidate`, body);
   }
 
@@ -379,6 +411,8 @@ export class MemForgeClient {
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.token) h['Authorization'] = `Bearer ${this.token}`;
+    if (this.defaultNamespace) h['X-Memforge-Namespace'] = this.defaultNamespace;
+    if (this.defaultSessionId) h['X-Memforge-Session-Id'] = this.defaultSessionId;
     return h;
   }
 
@@ -456,8 +490,8 @@ export class ResilientMemForgeClient {
   }
 
   // Memory operations — return empty results on failure
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string): Promise<AddResult | null> {
-    return this.safe('add', () => this.client.add(agentId, content, metadata, namespace), null);
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string): Promise<AddResult | null> {
+    return this.safe('add', () => this.client.add(agentId, content, metadata, namespace, sessionId), null);
   }
 
   async query(agentId: string, options: { q: string; limit?: number; mode?: QueryMode; after?: string; before?: string; decay?: number; namespace?: string }): Promise<QueryResult[]> {
@@ -468,8 +502,8 @@ export class ResilientMemForgeClient {
     return this.safe('timeline', () => this.client.timeline(agentId, options), []);
   }
 
-  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string): Promise<ConsolidateResult | null> {
-    return this.safe('consolidate', () => this.client.consolidate(agentId, mode, namespace), null);
+  async consolidate(agentId: string, mode?: ConsolidationMode, namespace?: string, targetNamespace?: string): Promise<ConsolidateResult | null> {
+    return this.safe('consolidate', () => this.client.consolidate(agentId, mode, namespace, targetNamespace), null);
   }
 
   async clear(agentId: string): Promise<ClearResult | null> {

@@ -12,7 +12,8 @@ import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
-import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema } from './schemas.js';
+import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema, SessionIdSchema } from './schemas.js';
+import { getConfig } from './config.js';
 import { SleepCycleEngine } from './sleep-cycle.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
@@ -65,6 +66,7 @@ import type {
   ProcedureOutcome,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
+const DEFAULT_SESSION_ID = 'default';
 
 /** Resolve and validate a caller-supplied namespace, defaulting to 'default'. */
 function resolveNamespace(ns: string | undefined): string {
@@ -74,6 +76,62 @@ function resolveNamespace(ns: string | undefined): string {
     throw new TypeError(`Invalid namespace '${ns}': ${result.error.issues[0]?.message ?? 'validation failed'}`);
   }
   return result.data;
+}
+
+/** Resolve and validate a caller-supplied session_id, defaulting to 'default'. */
+function resolveSessionId(sid: string | undefined): string {
+  if (!sid) return DEFAULT_SESSION_ID;
+  const result = SessionIdSchema.safeParse(sid);
+  if (!result.success) {
+    throw new TypeError(`Invalid session_id '${sid}': ${result.error.issues[0]?.message ?? 'validation failed'}`);
+  }
+  return result.data;
+}
+
+/**
+ * Reserved metadata keys that callers must never be able to set. Server-side
+ * code injects these from trusted sources (OAuth2 introspection, sleep cycle
+ * conflict resolution, supersession logic). Caller-supplied values are
+ * stripped recursively and case-insensitively before any insert.
+ */
+const RESERVED_METADATA_KEYS = new Set([
+  '_source_agent',
+  '_from_pool',
+  '_source_chain',
+  '_trust_score',
+  '_conflict_loser',
+  '_superseded',
+  '_client_id',
+  '_session_id',
+]);
+
+/**
+ * Recursively remove reserved system keys from caller-supplied metadata.
+ * - Case-insensitive: `_Client_Id` is treated identically to `_client_id`.
+ * - Recursive: keys nested at any depth (`{outer: {_client_id: "x"}}`) are stripped.
+ * - Returns a new object (input not mutated).
+ * - Non-object values are passed through unchanged.
+ */
+function stripReservedSystemKeys(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return walkAndStrip(value as Record<string, unknown>) as Record<string, unknown>;
+}
+
+function walkAndStrip(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(walkAndStrip);
+  }
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (RESERVED_METADATA_KEYS.has(k.toLowerCase())) continue;
+      out[k] = walkAndStrip(v);
+    }
+    return out;
+  }
+  return node;
 }
 
 const SLEEP_ADVISORY_DEFAULTS: SleepAdvisoryThresholds = {
@@ -241,6 +299,8 @@ export class MemoryManager {
     outcomeType: OutcomeType = 'neutral',
     hints?: MemoryHints,
     namespace?: string,
+    sessionId?: string,
+    clientId?: string,
   ): Promise<AddResult> {
     this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
@@ -248,6 +308,7 @@ export class MemoryManager {
     }
 
     const ns = resolveNamespace(namespace);
+    const sid = resolveSessionId(sessionId);
 
     if (this.config.autoRegisterAgents) {
       await this.registerAgent(agentId);
@@ -255,6 +316,8 @@ export class MemoryManager {
 
     // Deduplicate by content hash — skip storing if identical content was added recently.
     // Dedup is namespace-scoped: the same content in different namespaces is stored independently.
+    // session_id is intentionally NOT part of the dedup key — two devices logging the same
+    // observation should still deduplicate; the most recent session_id wins on the UPDATE.
     const contentHash = createHash('sha256').update(content).digest('hex');
     const dup = await this.pool.query<{ id: bigint; created_at: Date }>(
       `SELECT id, created_at FROM hot_tier
@@ -263,20 +326,26 @@ export class MemoryManager {
       [agentId, contentHash, ns],
     );
     if (dup.rows[0]) {
-      await this.pool.query(`UPDATE hot_tier SET created_at = now() WHERE id = $1`, [dup.rows[0].id]);
+      await this.pool.query(
+        `UPDATE hot_tier SET created_at = now(), session_id = $2 WHERE id = $1`,
+        [dup.rows[0].id, sid],
+      );
       return { id: dup.rows[0].id, agent_id: agentId, created_at: new Date(), deduplicated: true };
     }
 
-    // Strip reserved system keys to prevent provenance/reputation forgery via caller metadata
-    const sanitizedMetadata = { ...metadata };
-    delete sanitizedMetadata['_source_agent'];
-    delete sanitizedMetadata['_from_pool'];
-    delete sanitizedMetadata['_source_chain'];
-    delete sanitizedMetadata['_trust_score'];
-    delete sanitizedMetadata['_conflict_loser'];
-    delete sanitizedMetadata['_superseded'];
+    // Strip reserved system keys to prevent provenance/reputation forgery via caller metadata.
+    // _client_id is server-injected from the validated OAuth2 introspection result; callers
+    // must not be able to forge it. _session_id is also stripped — session_id rides as a typed
+    // column, not in metadata, and we don't want a stale duplicate copy.
+    //
+    // The strip is case-insensitive and recursive: a caller could otherwise smuggle a forged
+    // value as `_Client_Id` (case variant) or nested as `{outer: {_client_id: "x"}}`. Any
+    // future reader that walks the metadata tree or normalizes case would see the forgery.
+    // Defense in depth — the current Phase 2.5 reader uses the top-level lowercase key only.
+    const sanitizedMetadata = stripReservedSystemKeys(metadata);
     const enrichedMetadata: Record<string, unknown> = { ...sanitizedMetadata };
     if (outcomeType !== 'neutral') enrichedMetadata['_outcome_type'] = outcomeType;
+    if (clientId) enrichedMetadata['_client_id'] = String(clientId).slice(0, 256);
     if (hints) {
       if (hints.importance !== undefined) enrichedMetadata['_hint_importance'] = Math.min(1, Math.max(0, hints.importance));
       if (hints.topic) enrichedMetadata['_hint_topic'] = String(hints.topic).slice(0, 200);
@@ -287,10 +356,10 @@ export class MemoryManager {
     }
 
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid],
     );
 
     const result = rows[0]!;
@@ -953,6 +1022,13 @@ Ranking (numbers only):`;
     this.assertAgentId(agentId);
 
     const ns = resolveNamespace(opts?.namespace);
+    // Resolve warm-tier target namespace. Default = source namespace (backward
+    // compatible: warm rows stay in the project they were consolidated from).
+    // Multi-device deployments override with WARM_CONSOLIDATION_TARGET=shared
+    // (or per-call opts.targetNamespace) so cross-project lessons propagate.
+    const configTarget = getConfig('WARM_CONSOLIDATION_TARGET');
+    const targetNs = resolveNamespace(opts?.targetNamespace ?? configTarget ?? ns);
+    const crossNamespace = targetNs !== ns;
     const resolvedMode = mode ?? this.config.consolidationMode;
     const INNER_BATCH_SIZE = Math.max(1, this.config.consolidationInnerBatchSize ?? 50);
     const outerCap = this.config.consolidationBatchSize;
@@ -962,13 +1038,22 @@ Ranking (numbers only):`;
     // its own transaction — a transaction-level lock would be released on each
     // COMMIT, allowing interleaving between concurrent callers.
     // The lock key includes namespace so concurrent consolidations in different
-    // namespaces can proceed in parallel.
-    const lockKey = `memforge:consolidate:${agentId}:${ns}`;
+    // namespaces can proceed in parallel. When cross-namespace consolidation is
+    // active (targetNs ≠ ns), we also acquire a second lock on the *target* so
+    // simultaneous consolidations from project_a and project_b into 'shared'
+    // serialize their warm-tier writes. Locks are acquired in a deterministic
+    // order (source key < target key by string comparison) to avoid deadlock.
+    const sourceLockKey = `memforge:consolidate:${agentId}:${ns}`;
+    const targetLockKey = `memforge:consolidate:${agentId}:${targetNs}`;
     const lockClient = await this.pool.connect();
     // Retrieve the numeric lock ID from Postgres so we use the same hashtext()
     // result for both the lock and unlock calls.
-    const lockIdRow = await lockClient.query<{ id: string }>(`SELECT hashtext($1) AS id`, [lockKey]);
-    const lockId = lockIdRow.rows[0]!.id;
+    const sourceLockIdRow = await lockClient.query<{ id: string }>(`SELECT hashtext($1) AS id`, [sourceLockKey]);
+    const sourceLockId = sourceLockIdRow.rows[0]!.id;
+    const targetLockIdRow = crossNamespace
+      ? await lockClient.query<{ id: string }>(`SELECT hashtext($1) AS id`, [targetLockKey])
+      : null;
+    const targetLockId = targetLockIdRow?.rows[0]?.id ?? null;
 
     let runId: bigint = BigInt(0);
     let totalHotProcessed = 0;
@@ -976,7 +1061,16 @@ Ranking (numbers only):`;
     let batchIndex = 0;
 
     try {
-      await lockClient.query(`SELECT pg_advisory_lock($1::bigint)`, [lockId]);
+      // Acquire source lock first (always needed). When cross-namespace, also
+      // acquire target lock — order is fixed (source then target) to prevent
+      // deadlocks: a single consolidation operates on one (source, target)
+      // pair, so there is no opposing locker that holds target and waits for
+      // source. The acquisition order is therefore safe even when multiple
+      // sources point to the same target.
+      await lockClient.query(`SELECT pg_advisory_lock($1::bigint)`, [sourceLockId]);
+      if (targetLockId !== null) {
+        await lockClient.query(`SELECT pg_advisory_lock($1::bigint)`, [targetLockId]);
+      }
 
       // Create the consolidation_log row once per consolidate() call.
       // Inner-batch progress is not individually logged — only the final
@@ -1033,8 +1127,9 @@ Ranking (numbers only):`;
             content: string;
             metadata: Record<string, unknown>;
             created_at: Date;
+            session_id: string;
           }>(
-            `SELECT id, content, metadata, created_at
+            `SELECT id, content, metadata, created_at, session_id
              FROM hot_tier
              WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
@@ -1131,6 +1226,18 @@ Ranking (numbers only):`;
           }
           if (contradictions.length > 0) metadata._contradictions = contradictions;
           if (!needsLlm && resolvedMode === 'summarize') metadata._llm_skipped = true;
+          // When consolidating across namespaces (project hot → shared warm), record
+          // the originating project so retrieval can filter or label by source.
+          if (crossNamespace) metadata._origin_namespace = ns;
+          // Carry the latest contributing client_id forward for audit/forensics.
+          // Multiple devices can contribute to one batch — we record the latest one
+          // by created_at, which Phase 2.5 conflict resolution uses as a tie-breaker.
+          const latestClientId = (() => {
+            const last = hotRows.rows[hotRows.rows.length - 1];
+            const cid = (last?.metadata as Record<string, unknown> | undefined)?.['_client_id'];
+            return typeof cid === 'string' ? cid : null;
+          })();
+          if (latestClientId) metadata._client_id = latestClientId;
 
           // Determine dominant outcome_type from this inner batch's rows
           const outcomeCounts = new Map<string, number>();
@@ -1149,12 +1256,18 @@ Ranking (numbers only):`;
 
           const summaryText = summary ? summary.summary : null;
 
-          // Warm rows inherit the namespace of the hot rows they were consolidated from.
+          // Determine the originating session: latest contributing hot row by created_at.
+          // The hot rows are already SELECT-ordered ASC, so the last entry is newest.
+          const latestSessionId = hotRows.rows[hotRows.rows.length - 1]?.session_id ?? null;
+
+          // Warm rows are written into targetNs (defaults to source namespace; set to
+          // 'shared' or another value when WARM_CONSOLIDATION_TARGET is configured for
+          // cross-project propagation).
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model)
-             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id)
+             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, ns, embeddingModel],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId],
           );
           const warmRowId = warmRow.rows[0]!.id;
 
@@ -1325,7 +1438,11 @@ Ranking (numbers only):`;
       }
       throw err;
     } finally {
-      await lockClient.query(`SELECT pg_advisory_unlock($1::bigint)`, [lockId]).catch(() => {/* ignore */});
+      // Release in reverse acquisition order (target before source) for symmetry.
+      if (targetLockId !== null) {
+        await lockClient.query(`SELECT pg_advisory_unlock($1::bigint)`, [targetLockId]).catch(() => {/* ignore */});
+      }
+      await lockClient.query(`SELECT pg_advisory_unlock($1::bigint)`, [sourceLockId]).catch(() => {/* ignore */});
       lockClient.release();
     }
   }
