@@ -22,6 +22,7 @@
 import { randomUUID } from 'crypto';
 import { MemForgeClient } from './client.js';
 import { VERSION } from './version.js';
+import { deriveLaunchNamespace } from './launch-context.js';
 import type { JsonSchemaProperty } from './types.js';
 
 // ─── MCP Protocol Types ──────────────────────────────────────────────────────
@@ -736,7 +737,20 @@ async function main(): Promise<void> {
   // operators can pin a stable identity per device (e.g. set to hostname);
   // otherwise generate a fresh UUID so each launch is a distinct session.
   const sessionId = process.env['MEMFORGE_SESSION_ID'] ?? `mcp-${randomUUID()}`;
-  const client = new MemForgeClient({ defaultSessionId: sessionId });
+
+  // Derive launch namespace. Honor MEMFORGE_NAMESPACE if set; otherwise
+  // try git repo / cwd basename. Falls through to undefined (=> server
+  // default 'default') when no clean project signal is available.
+  const namespace = process.env['MEMFORGE_NAMESPACE'] ?? deriveLaunchNamespace() ?? undefined;
+
+  const client = new MemForgeClient({
+    defaultSessionId: sessionId,
+    ...(namespace ? { defaultNamespace: namespace } : {}),
+  });
+
+  process.stderr.write(
+    `memforge-mcp ${VERSION} · namespace=${namespace ?? 'default'} · session=${sessionId}\n`,
+  );
 
   let buffer = '';
 

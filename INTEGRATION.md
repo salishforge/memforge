@@ -681,25 +681,48 @@ Body values win when both body and header are present. `namespace` and
 `session_id` follow the same regex (`[a-z0-9][a-z0-9_-]*`) and default to
 `default`.
 
-### Recipe: shared agent across devices, project-scoped hot tier
+### Auto-detected launch context (the easy path)
+
+The MCP server auto-derives both `namespace` and `session_id` at launch
+when the corresponding env vars are unset, so the typical recipe is just:
 
 ```bash
-# Server: enable cross-project warm propagation
+# Server: enable cross-project warm propagation (set once)
 export WARM_CONSOLIDATION_TARGET=shared
 
-# Device A — Claude Desktop on Windows, working on memforge
-export MEMFORGE_NAMESPACE=project-memforge
-export MEMFORGE_SESSION_ID=desktop-windows-$(uuidgen)
+# On every device, in every project — no per-device config:
+cd /path/to/your/project
 npx memforge-mcp
+```
 
-# Device B — SSH session on a remote machine, also on memforge
-export MEMFORGE_NAMESPACE=project-memforge
-export MEMFORGE_SESSION_ID=ssh-$(hostname)-$(uuidgen)
-npx memforge-mcp
+What the server picks up automatically:
 
-# Device C — Claude Code on a laptop, working on a different project
-export MEMFORGE_NAMESPACE=project-callscreen
-export MEMFORGE_SESSION_ID=laptop-$(uuidgen)
+- **`session_id`** — a fresh UUID (`mcp-<uuid>`) is generated for each
+  MCP launch, isolating that device's hot-tier writes.
+- **`namespace`** — the basename of the git repo at the cwd (preferred),
+  falling back to the cwd directory basename, slugified to a valid
+  namespace token and prefixed with `project-`. So launching from
+  `~/dev/projects/memforge` produces `namespace=project-memforge`.
+
+You see what was picked up on stderr at launch:
+
+```
+memforge-mcp 3.2.0 · namespace=project-memforge · session=mcp-1f7e...
+```
+
+### Manual override (when auto-detection isn't what you want)
+
+Set either env var to override the auto-derived value. Useful for
+stable per-device session_ids (audit), or to scope multiple repos to
+the same project namespace:
+
+```bash
+# Stable per-device session_id (survives restarts)
+export MEMFORGE_SESSION_ID=desktop-windows-$(hostname)
+
+# Force a specific project namespace
+export MEMFORGE_NAMESPACE=project-customer-acme
+
 npx memforge-mcp
 ```
 
