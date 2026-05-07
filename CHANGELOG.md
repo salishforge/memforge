@@ -6,6 +6,23 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Claude Dreaming compatibility — Layer 4 (Bridge)** — bidirectional
+  sync between MemForge namespaces and Anthropic Memory Stores. New
+  routes `POST /memory/:id/anthropic/push` (export warm rows; creates
+  or updates a memory store), `POST /memory/:id/anthropic/pull`
+  (import records; strategies `anthropic-wins`, `memforge-wins`,
+  `merge`), `GET /memory/:id/anthropic/sync-state` (links + drift
+  indicator). New table `anthropic_memory_stores` (migration v3.7)
+  records each linkage with `last_pushed_at` / `last_pulled_at` /
+  `pushed_lsn` / `direction` (push|pull|bidirectional, auto-promotes
+  to bidirectional on the second-direction sync). Reuses Layer 3's
+  `warmRowsToMemoryStore` mapper. New TypeScript SDK methods
+  `client.anthropic.{push, pull, syncState}` and three MCP tools
+  `memforge_anthropic_{push, pull, sync_state}`. New OpenAPI tag
+  `AnthropicBridge`. Tests in `tests/dreams-bridge.test.ts` cover
+  push, pull-overwrite, and drift detection. Test concurrency forced
+  to 1 to avoid cross-file pollution between fetch monkey-patches.
+
 - **Claude Dreaming compatibility — Layer 3 (Service)** — when
   `DREAMS_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` are set, dream
   runs created with `source: 'anthropic'` delegate the curation pass

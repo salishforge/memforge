@@ -510,6 +510,46 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id', 'run_id'],
     },
   },
+  {
+    name: 'memforge_anthropic_push',
+    description: 'Bridge: export warm-tier rows for an agent/namespace to an Anthropic Memory Store. Requires DREAMS_PROVIDER=anthropic + ANTHROPIC_API_KEY on the server.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        limit: { type: 'number', description: 'Max rows to push (default 1000, max 5000)', minimum: 1, maximum: 5000 },
+        external_store_id: { type: 'string', description: 'Existing memory store id to update; omit to create a new one.' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_anthropic_pull',
+    description: "Bridge: import records from an Anthropic Memory Store into warm_tier. Strategies: anthropic-wins (default — overwrite), memforge-wins (insert net-new only), merge (overwrite content, preserve local metadata).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        external_store_id: { type: 'string', description: 'Anthropic memory store id to read from.' },
+        namespace: { type: 'string', description: 'Target namespace; defaults to "default"' },
+        strategy: { type: 'string', enum: ['memforge-wins', 'anthropic-wins', 'merge'], description: "Conflict policy. Default 'anthropic-wins'." },
+      },
+      required: ['agent_id', 'external_store_id'],
+    },
+  },
+  {
+    name: 'memforge_anthropic_sync_state',
+    description: 'Bridge: report current sync state for an agent/namespace — known store links, last push/pull timestamps, and a drift indicator (warm rows newer than the most recent push).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -737,6 +777,23 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_dreams_cancel':
       return client.dreams.cancel(agentId, args['run_id'] as string);
+
+    case 'memforge_anthropic_push':
+      return client.anthropic.push(agentId, {
+        namespace: args['namespace'] as string | undefined,
+        limit: args['limit'] as number | undefined,
+        externalStoreId: args['external_store_id'] as string | undefined,
+      });
+
+    case 'memforge_anthropic_pull':
+      return client.anthropic.pull(agentId, {
+        externalStoreId: args['external_store_id'] as string,
+        namespace: args['namespace'] as string | undefined,
+        strategy: args['strategy'] as 'memforge-wins' | 'anthropic-wins' | 'merge' | undefined,
+      });
+
+    case 'memforge_anthropic_sync_state':
+      return client.anthropic.syncState(agentId, args['namespace'] as string | undefined);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

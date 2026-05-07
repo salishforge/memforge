@@ -79,6 +79,9 @@ import type {
   DreamOutputMode,
   CreateDreamRunOptions,
   ListDreamRunsOptions,
+  AnthropicMemoryStoreLink,
+  AnthropicSyncState,
+  SyncStrategy,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -176,6 +179,34 @@ function rowToDreamRun(row: DreamRunRow): DreamRun {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(s: string): boolean {
   return typeof s === 'string' && UUID_RE.test(s);
+}
+
+interface AnthropicMemoryStoreRow {
+  id: string;
+  agent_id: string;
+  namespace: string;
+  external_store_id: string;
+  direction: 'push' | 'pull' | 'bidirectional';
+  warm_row_count: number;
+  last_pushed_at: Date | null;
+  last_pulled_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+function rowToAnthropicLink(row: AnthropicMemoryStoreRow): AnthropicMemoryStoreLink {
+  return {
+    id: row.id,
+    agent_id: row.agent_id,
+    namespace: row.namespace,
+    external_store_id: row.external_store_id,
+    direction: row.direction,
+    warm_row_count: row.warm_row_count,
+    last_pushed_at: row.last_pushed_at,
+    last_pulled_at: row.last_pulled_at,
+    metadata: row.metadata,
+    created_at: row.created_at,
+  };
 }
 
 /**
@@ -3786,6 +3817,178 @@ Guidelines:
       params,
     );
     return rows.map((r) => r.id);
+  }
+
+  // ─── Anthropic Memory Store Bridge (Layer 4) ────────────────────────────
+  //
+  // Bidirectional sync between MemForge namespaces and Anthropic Memory
+  // Stores. The mapper (warmRowsToMemoryStore / applyAnthropicOutput) is
+  // shared with the Service layer so a single change updates both paths
+  // when the wire format is finalized.
+
+  /**
+   * Push a slice of warm rows to an Anthropic Memory Store. When
+   * `external_store_id` is omitted a fresh store is created. Returns the
+   * link record (one row per (agent_id, namespace, external_store_id)).
+   */
+  async pushToAnthropic(
+    agentId: string,
+    options: { namespace?: string; limit?: number; externalStoreId?: string; metadata?: Record<string, unknown> } = {},
+  ): Promise<AnthropicMemoryStoreLink> {
+    this.assertAgentId(agentId);
+    if (!this.anthropicDreams) {
+      throw new Error("Anthropic client not configured — set DREAMS_PROVIDER=anthropic and ANTHROPIC_API_KEY");
+    }
+    const namespace = resolveNamespace(options.namespace);
+    const limit = Math.min(options.limit ?? 1000, 5000);
+
+    const { rows } = await this.pool.query<WarmRow>(
+      `SELECT id, agent_id, content, source_hot_ids, metadata,
+              consolidated_at, time_start, time_end, access_count,
+              last_accessed, namespace, session_id
+         FROM warm_tier
+        WHERE agent_id = $1 AND namespace = $2
+        ORDER BY importance DESC
+        LIMIT $3`,
+      [agentId, namespace, limit],
+    );
+
+    const records = warmRowsToMemoryStore(rows);
+    const { externalStoreId } = await this.anthropicDreams.upsertMemoryStore(records, options.externalStoreId);
+
+    const upserted = await this.pool.query<AnthropicMemoryStoreRow>(
+      `INSERT INTO anthropic_memory_stores
+         (agent_id, namespace, external_store_id, direction, warm_row_count,
+          last_pushed_at, pushed_lsn, metadata)
+       VALUES ($1, $2, $3, 'push', $4, now(), pg_current_wal_lsn(), $5)
+       ON CONFLICT (agent_id, namespace, external_store_id)
+         DO UPDATE SET warm_row_count = EXCLUDED.warm_row_count,
+                       last_pushed_at = EXCLUDED.last_pushed_at,
+                       pushed_lsn     = EXCLUDED.pushed_lsn,
+                       metadata       = EXCLUDED.metadata,
+                       direction      = CASE
+                         WHEN anthropic_memory_stores.direction = 'pull' THEN 'bidirectional'
+                         ELSE 'push'
+                       END
+       RETURNING id, agent_id, namespace, external_store_id, direction,
+                 warm_row_count, last_pushed_at, last_pulled_at, metadata, created_at`,
+      [agentId, namespace, externalStoreId, rows.length, JSON.stringify(options.metadata ?? {})],
+    );
+    const row = upserted.rows[0];
+    if (!row) throw new Error('failed to upsert anthropic_memory_stores row');
+    return rowToAnthropicLink(row);
+  }
+
+  /**
+   * Pull records from an Anthropic Memory Store and merge into warm_tier
+   * according to `strategy`:
+   *   - 'anthropic-wins' (default): overwrite local content for matched ids
+   *   - 'memforge-wins': do not overwrite existing rows; only insert net-new
+   *   - 'merge': overwrite content but preserve local importance/confidence
+   *     (same effective behavior as anthropic-wins given Layer 3's mapper —
+   *     reserved for future field-level merge)
+   */
+  async pullFromAnthropic(
+    agentId: string,
+    options: { namespace?: string; externalStoreId: string; strategy?: SyncStrategy },
+  ): Promise<AnthropicMemoryStoreLink> {
+    this.assertAgentId(agentId);
+    if (!this.anthropicDreams) {
+      throw new Error("Anthropic client not configured — set DREAMS_PROVIDER=anthropic and ANTHROPIC_API_KEY");
+    }
+    const namespace = resolveNamespace(options.namespace);
+    const strategy: SyncStrategy = options.strategy ?? 'anthropic-wins';
+
+    const records = await this.anthropicDreams.listMemoryStoreRecords(options.externalStoreId);
+
+    let inserted = 0;
+    let updated = 0;
+    for (const rec of records) {
+      const existingId = rec.id && /^\d+$/.test(rec.id) ? rec.id : null;
+      if (existingId) {
+        if (strategy === 'memforge-wins') continue;
+        const r = await this.pool.query(
+          `UPDATE warm_tier
+              SET content = $3,
+                  metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('_anthropic_pulled_at', now(),
+                                                 '_anthropic_external_store', $4::text)
+            WHERE id = $1 AND agent_id = $2 AND namespace = $5
+              AND content IS DISTINCT FROM $3`,
+          [BigInt(existingId), agentId, rec.content, options.externalStoreId, namespace],
+        );
+        updated += r.rowCount ?? 0;
+      } else {
+        // Net-new record from Anthropic: insert into warm_tier.
+        const r = await this.pool.query(
+          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, namespace)
+           VALUES ($1, $2, '{}'::bigint[],
+                   jsonb_build_object('_anthropic_pulled_at', now(),
+                                      '_anthropic_external_store', $3::text),
+                   $4)`,
+          [agentId, rec.content, options.externalStoreId, namespace],
+        );
+        inserted += r.rowCount ?? 0;
+      }
+    }
+
+    const upserted = await this.pool.query<AnthropicMemoryStoreRow>(
+      `INSERT INTO anthropic_memory_stores
+         (agent_id, namespace, external_store_id, direction, warm_row_count,
+          last_pulled_at, metadata)
+       VALUES ($1, $2, $3, 'pull', $4, now(),
+               jsonb_build_object('inserted', $5::int, 'updated', $6::int, 'strategy', $7::text))
+       ON CONFLICT (agent_id, namespace, external_store_id)
+         DO UPDATE SET warm_row_count = EXCLUDED.warm_row_count,
+                       last_pulled_at = EXCLUDED.last_pulled_at,
+                       metadata       = EXCLUDED.metadata,
+                       direction      = CASE
+                         WHEN anthropic_memory_stores.direction = 'push' THEN 'bidirectional'
+                         ELSE 'pull'
+                       END
+       RETURNING id, agent_id, namespace, external_store_id, direction,
+                 warm_row_count, last_pushed_at, last_pulled_at, metadata, created_at`,
+      [agentId, namespace, options.externalStoreId, records.length, inserted, updated, strategy],
+    );
+    const row = upserted.rows[0];
+    if (!row) throw new Error('failed to upsert anthropic_memory_stores row');
+    return rowToAnthropicLink(row);
+  }
+
+  async getAnthropicSyncState(agentId: string, namespace?: string): Promise<AnthropicSyncState> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+
+    const { rows } = await this.pool.query<AnthropicMemoryStoreRow>(
+      `SELECT id, agent_id, namespace, external_store_id, direction,
+              warm_row_count, last_pushed_at, last_pulled_at, metadata, created_at
+         FROM anthropic_memory_stores
+        WHERE agent_id = $1 AND namespace = $2
+        ORDER BY created_at DESC`,
+      [agentId, ns],
+    );
+
+    // Drift heuristic: any warm_tier row newer than the most recent push
+    // counts as drift. Cheap O(1) MAX query.
+    const driftQuery = await this.pool.query<{ has_drift: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM warm_tier w
+          WHERE w.agent_id = $1 AND w.namespace = $2
+            AND w.consolidated_at > COALESCE(
+              (SELECT MAX(last_pushed_at) FROM anthropic_memory_stores
+                WHERE agent_id = $1 AND namespace = $2),
+              'epoch'::timestamptz
+            )
+       ) AS has_drift`,
+      [agentId, ns],
+    );
+
+    return {
+      agent_id: agentId,
+      namespace: ns,
+      links: rows.map(rowToAnthropicLink),
+      drift_detected: driftQuery.rows[0]?.has_drift ?? false,
+    };
   }
 
   // ─── Export/Import ──────────────────────────────────────────────────────

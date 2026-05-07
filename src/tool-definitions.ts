@@ -433,6 +433,46 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id', 'run_id'],
     },
   },
+  {
+    name: 'memforge_anthropic_push',
+    description: 'Bridge: export warm-tier rows for an agent/namespace to an Anthropic Memory Store. Requires DREAMS_PROVIDER=anthropic + ANTHROPIC_API_KEY on the server.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        limit: { type: 'integer', description: 'Max rows to push (default 1000, max 5000)', minimum: 1, maximum: 5000 },
+        external_store_id: { type: 'string', description: 'Existing memory store id to update; omit to create a new one.' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_anthropic_pull',
+    description: "Bridge: import records from an Anthropic Memory Store into warm_tier. Strategies: anthropic-wins (default), memforge-wins, merge.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        external_store_id: { type: 'string', description: 'Anthropic memory store id to read from.' },
+        namespace: { type: 'string', description: 'Target namespace; defaults to "default"' },
+        strategy: { type: 'string', enum: ['memforge-wins', 'anthropic-wins', 'merge'], description: "Conflict policy. Default 'anthropic-wins'." },
+      },
+      required: ['agent_id', 'external_store_id'],
+    },
+  },
+  {
+    name: 'memforge_anthropic_sync_state',
+    description: 'Bridge: report current sync state for an agent/namespace — known store links, last push/pull timestamps, and a drift indicator.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

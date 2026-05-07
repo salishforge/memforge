@@ -215,6 +215,32 @@ export class AnthropicDreamsClient {
     return records;
   }
 
+  /**
+   * Bridge layer: create or update an Anthropic Memory Store with the given
+   * records. Returns the external_store_id (newly created if `storeId` is
+   * undefined). Same caveats as fetchMemoryStore — the wire format is
+   * undocumented and isolated here.
+   */
+  async upsertMemoryStore(
+    records: AnthropicMemoryRecord[],
+    storeId?: string,
+  ): Promise<{ externalStoreId: string }> {
+    const url = storeId
+      ? `https://api.anthropic.com/v1/memory_stores/${encodeURIComponent(storeId)}`
+      : 'https://api.anthropic.com/v1/memory_stores';
+    const json = await this.fetchWithRetry(url, {
+      method: storeId ? 'POST' : 'POST',
+      body: JSON.stringify({ records }),
+    });
+    const id = (json as { id?: string }).id ?? storeId;
+    if (!id) throw new Error('Anthropic memory store create response missing id');
+    return { externalStoreId: id };
+  }
+
+  async listMemoryStoreRecords(storeId: string): Promise<AnthropicMemoryRecord[]> {
+    return this.fetchMemoryStore(storeId);
+  }
+
   private async fetchWithRetry(url: string, init: { method: string; body?: string }): Promise<unknown> {
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {

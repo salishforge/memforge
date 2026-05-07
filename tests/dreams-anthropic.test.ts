@@ -51,6 +51,7 @@ const lastInputStores: Array<{ records: Array<{ id?: string; content: string }> 
 
 let stubServer: http.Server;
 let stubBaseUrl: string;
+let originalFetch: typeof fetch;
 
 function startStub(): Promise<void> {
   return new Promise((resolve) => {
@@ -119,12 +120,14 @@ function startStub(): Promise<void> {
       const addr = stubServer.address() as AddressInfo;
       stubBaseUrl = `http://localhost:${addr.port}`;
       // Patch fetch *before* importing dreams-anthropic so the URL
-      // constants resolve through our stub.
-      const origFetch = globalThis.fetch;
+      // constants resolve through our stub. Capture the prior fetch so
+      // after() can restore it — leaving the patch in place pollutes
+      // later test files in the same node process.
+      originalFetch = globalThis.fetch;
       globalThis.fetch = ((input: Request | URL | string, init?: RequestInit) => {
         const urlStr = typeof input === 'string' ? input : input.toString();
         const rewritten = urlStr.replace('https://api.anthropic.com', stubBaseUrl);
-        return origFetch(rewritten, init);
+        return originalFetch(rewritten, init);
       }) as typeof fetch;
       resolve();
     });
@@ -132,6 +135,7 @@ function startStub(): Promise<void> {
 }
 
 function stopStub(): Promise<void> {
+  if (originalFetch) globalThis.fetch = originalFetch;
   return new Promise((resolve) => stubServer.close(() => resolve()));
 }
 
@@ -141,6 +145,11 @@ let manager: import('../src/memory-manager.js').MemoryManager;
 let worker: import('../src/dream-runs.js').DreamRunsWorker;
 
 async function cleanup(): Promise<void> {
+  // Defensive: also clear any leftover pending dream_runs from prior test
+  // files in the same node process. Our worker drains by status='pending'
+  // regardless of agent — orphaned rows from another test would be picked
+  // up and cause FK errors against drift_signals here.
+  await pool.query(`DELETE FROM dream_runs WHERE status IN ('pending', 'running') AND agent_id LIKE 'test-%'`);
   await pool.query(`DELETE FROM dream_runs WHERE agent_id = $1`, [TEST_AGENT]);
   await pool.query(`DELETE FROM warm_tier WHERE agent_id = $1`, [TEST_AGENT]);
   await pool.query(`DELETE FROM hot_tier WHERE agent_id = $1`, [TEST_AGENT]);

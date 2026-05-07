@@ -483,6 +483,32 @@ export interface ListDreamRunsOptions {
   offset?: number;
 }
 
+// ─── Anthropic Memory Store Bridge (Layer 4) ────────────────────────────────
+
+export type SyncStrategy = 'memforge-wins' | 'anthropic-wins' | 'merge';
+
+/** Persistent linkage between a (agent_id, namespace) and an Anthropic Memory Store. */
+export interface AnthropicMemoryStoreLink {
+  id: string;
+  agent_id: string;
+  namespace: string;
+  external_store_id: string;
+  direction: 'push' | 'pull' | 'bidirectional';
+  warm_row_count: number;
+  last_pushed_at: Date | null;
+  last_pulled_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface AnthropicSyncState {
+  agent_id: string;
+  namespace: string;
+  links: AnthropicMemoryStoreLink[];
+  /** True when warm_tier has rows newer than the last push for any link. */
+  drift_detected: boolean;
+}
+
 export interface MemoryHealth {
   agent_id: string;
   total_memories: number;

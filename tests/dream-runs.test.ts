@@ -54,7 +54,10 @@ const manager = new MemoryManager({
 let worker: InstanceType<typeof DreamRunsWorker> | null = null;
 
 async function cleanup(): Promise<void> {
+  // Hard-stop any leftover pending runs from a crashed previous run before
+  // deleting the agent, otherwise CASCADE can race with an in-flight worker.
   await pool.query(`DELETE FROM dream_runs WHERE agent_id = $1`, [TEST_AGENT]);
+  await pool.query(`DELETE FROM drift_signals WHERE agent_id = $1`, [TEST_AGENT]);
   await pool.query(`DELETE FROM audit_chain WHERE agent_id = $1`, [TEST_AGENT]);
   await pool.query(`DELETE FROM memory_revisions WHERE agent_id = $1`, [TEST_AGENT]);
   await pool.query(`DELETE FROM retrieval_log WHERE agent_id = $1`, [TEST_AGENT]);

@@ -644,6 +644,30 @@ CREATE TRIGGER dream_runs_notify_inserted_trg
   EXECUTE FUNCTION dream_runs_notify_inserted();
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- anthropic_memory_stores (v3.7+) — Bridge between MemForge namespaces and
+-- Anthropic Memory Stores. One row per (agent_id, namespace,
+-- external_store_id) linkage with mutable last_pushed_at / last_pulled_at /
+-- pushed_lsn columns so /memory/:id/anthropic/sync-state can report drift
+-- without re-fetching the external store.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS anthropic_memory_stores (
+  id                UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id          TEXT         NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  namespace         TEXT         NOT NULL DEFAULT 'default',
+  external_store_id TEXT         NOT NULL,
+  direction         TEXT         NOT NULL CHECK (direction IN ('push', 'pull', 'bidirectional')),
+  warm_row_count    INTEGER      NOT NULL DEFAULT 0,
+  last_pushed_at    TIMESTAMPTZ,
+  last_pulled_at    TIMESTAMPTZ,
+  pushed_lsn        pg_lsn,
+  metadata          JSONB        NOT NULL DEFAULT '{}'::jsonb,
+  created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  UNIQUE (agent_id, namespace, external_store_id)
+);
+CREATE INDEX IF NOT EXISTS anthropic_memory_stores_agent_ns_idx
+  ON anthropic_memory_stores (agent_id, namespace);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).
@@ -801,6 +825,13 @@ ALTER TABLE dream_runs ENABLE ROW LEVEL SECURITY;
 -- FORCE intentionally omitted (see RLS section header).
 DROP POLICY IF EXISTS dream_runs_agent_isolation ON dream_runs;
 CREATE POLICY dream_runs_agent_isolation ON dream_runs
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE anthropic_memory_stores ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anthropic_memory_stores_agent_isolation ON anthropic_memory_stores;
+CREATE POLICY anthropic_memory_stores_agent_isolation ON anthropic_memory_stores
   FOR ALL
   USING (agent_id = current_setting('app.current_agent_id', true))
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));

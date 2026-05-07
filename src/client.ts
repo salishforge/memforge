@@ -55,6 +55,9 @@ import type {
   DreamStatus,
   DreamSource,
   DreamOutputMode,
+  AnthropicMemoryStoreLink,
+  AnthropicSyncState,
+  SyncStrategy,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -314,6 +317,44 @@ export class MemForgeClient {
         }
         await new Promise((r) => setTimeout(r, intervalMs));
       }
+    },
+  };
+
+  /**
+   * Anthropic Memory Store Bridge — bidirectional sync between MemForge
+   * namespaces and Anthropic Memory Stores. Requires DREAMS_PROVIDER=
+   * anthropic + ANTHROPIC_API_KEY on the server side.
+   */
+  readonly anthropic = {
+    push: (agentId: string, options?: {
+      namespace?: string;
+      limit?: number;
+      externalStoreId?: string;
+      metadata?: Record<string, unknown>;
+    }): Promise<AnthropicMemoryStoreLink> => {
+      return this.post<AnthropicMemoryStoreLink>(`/memory/${enc(agentId)}/anthropic/push`, {
+        namespace: options?.namespace,
+        limit: options?.limit,
+        external_store_id: options?.externalStoreId,
+        metadata: options?.metadata,
+      });
+    },
+
+    pull: (agentId: string, options: {
+      externalStoreId: string;
+      namespace?: string;
+      strategy?: SyncStrategy;
+    }): Promise<AnthropicMemoryStoreLink> => {
+      return this.post<AnthropicMemoryStoreLink>(`/memory/${enc(agentId)}/anthropic/pull`, {
+        external_store_id: options.externalStoreId,
+        namespace: options.namespace,
+        strategy: options.strategy,
+      });
+    },
+
+    syncState: (agentId: string, namespace?: string): Promise<AnthropicSyncState> => {
+      const qs = namespace ? `?namespace=${enc(namespace)}` : '';
+      return this.get<AnthropicSyncState>(`/memory/${enc(agentId)}/anthropic/sync-state${qs}`);
     },
   };
 

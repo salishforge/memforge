@@ -18,6 +18,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
       { name: 'Memory', description: 'Agent memory operations' },
       { name: 'Dreams', description: 'Async sleep-cycle jobs (MemForge native)' },
       { name: 'DreamsCompat', description: 'Anthropic Dreams API drop-in (/v1/dreams)' },
+      { name: 'AnthropicBridge', description: 'Bidirectional sync with Anthropic Memory Stores' },
       { name: 'System', description: 'Health and observability' },
       { name: 'Admin', description: 'Administrative endpoints' },
     ],
@@ -538,6 +539,75 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             '200': { description: 'Updated dream object' },
             '404': { description: 'Dream not found' },
             '500': { description: 'API error' },
+          },
+        },
+      },
+      '/memory/{agentId}/anthropic/push': {
+        post: {
+          summary: 'Bridge: export warm-tier rows to an Anthropic Memory Store',
+          tags: ['AnthropicBridge'],
+          parameters: [{ name: 'agentId', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' },
+                    limit: { type: 'integer', minimum: 1, maximum: 5000 },
+                    external_store_id: { type: 'string', description: 'Existing memory store id; omit to create new.' },
+                    metadata: { type: 'object', additionalProperties: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Link record', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/anthropic/pull': {
+        post: {
+          summary: 'Bridge: import records from an Anthropic Memory Store',
+          tags: ['AnthropicBridge'],
+          parameters: [{ name: 'agentId', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['external_store_id'],
+                  properties: {
+                    external_store_id: { type: 'string', minLength: 1, maxLength: 256 },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' },
+                    strategy: { type: 'string', enum: ['memforge-wins', 'anthropic-wins', 'merge'], default: 'anthropic-wins' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Link record', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/anthropic/sync-state': {
+        get: {
+          summary: 'Bridge: report current sync state with drift indicator',
+          tags: ['AnthropicBridge'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' } },
+          ],
+          responses: {
+            '200': { description: 'Sync state', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '500': { '$ref': '#/components/responses/InternalError' },
           },
         },
       },

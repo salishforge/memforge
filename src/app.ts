@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -1656,6 +1656,71 @@ export function createApp(deps: AppDependencies): express.Express {
       const list = await manager.listDeprecatedNamespaces(agentId);
       ok(res, list);
     } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  // ─── Anthropic Memory Store Bridge (Layer 4) ──────────────────────────
+  //
+  // Bidirectional sync between MemForge namespaces and Anthropic Memory
+  // Stores. Useful when an agent needs to keep MemForge as source of truth
+  // but periodically expose curated state to Anthropic Managed Agents.
+  //
+  // POST /memory/:id/anthropic/push  — export warm rows to a memory store
+  // POST /memory/:id/anthropic/pull  — import records from a memory store
+  // GET  /memory/:id/anthropic/sync-state — last push/pull + drift indicator
+
+  app.post('/memory/:agentId/anthropic/push', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = AnthropicPushSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid request body');
+      return;
+    }
+    try {
+      const link = await manager.pushToAnthropic(getAgentId(req), {
+        namespace: parsed.data.namespace,
+        limit: parsed.data.limit,
+        externalStoreId: parsed.data.external_store_id,
+        metadata: parsed.data.metadata,
+      });
+      ok(res, link);
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      fail(res, status, e.message);
+    }
+  });
+
+  app.post('/memory/:agentId/anthropic/pull', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = AnthropicPullSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid request body');
+      return;
+    }
+    try {
+      const link = await manager.pullFromAnthropic(getAgentId(req), {
+        namespace: parsed.data.namespace,
+        externalStoreId: parsed.data.external_store_id,
+        strategy: parsed.data.strategy,
+      });
+      ok(res, link);
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      fail(res, status, e.message);
+    }
+  });
+
+  app.get('/memory/:agentId/anthropic/sync-state', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const namespace = qstr(req.query['namespace']);
+    try {
+      const state = await manager.getAnthropicSyncState(getAgentId(req), namespace);
+      ok(res, state);
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      fail(res, status, e.message);
+    }
   });
 
   // ─── /v1 Drop-in: Anthropic Dreams API shim (Layer 2) ─────────────────

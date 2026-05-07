@@ -174,6 +174,25 @@ export const AnthropicDreamCreateSchema = z.object({
   instructions: z.string().max(4096).optional(),
 }).strict();
 
+// ─── Bridge: MemForge ↔ Anthropic Memory Store sync (Layer 4) ──────────────
+
+export const SyncStrategySchema = z.enum(['memforge-wins', 'anthropic-wins', 'merge']);
+
+export const AnthropicPushSchema = z.object({
+  namespace: NamespaceSchema.optional(),
+  /** Optional limit on how many warm rows to push per call (default 1000, max 5000). */
+  limit: z.number().int().min(1).max(5000).optional(),
+  /** Existing external_store_id to update; when omitted, a fresh store is created. */
+  external_store_id: z.string().min(1).max(256).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const AnthropicPullSchema = z.object({
+  namespace: NamespaceSchema.optional(),
+  external_store_id: z.string().min(1).max(256),
+  strategy: SyncStrategySchema.default('anthropic-wins'),
+});
+
 export const ImportSchema = z.object({
   lines: z.array(z.string()).optional(),
   namespace: NamespaceSchema.optional(),
