@@ -113,9 +113,22 @@ context = await memory.get_context("current topic")
 | GET | `/memory/:id/export` | Export all memories as JSONL (v2.6.0) |
 | POST | `/memory/:id/import` | Bulk import memories from JSONL (v2.6.0) |
 | GET | `/memory/:id/conflicts` | List detected memory conflicts (v2.6.0) |
+| POST | `/memory/:id/dreams` | Enqueue async dream run (v3.6, Claude Dreaming compat) |
+| GET | `/memory/:id/dreams/:runId` | Fetch dream run status (v3.6) |
+| GET | `/memory/:id/dreams` | List dream runs (v3.6) |
+| POST | `/memory/:id/dreams/:runId/cancel` | Cancel a dream run (v3.6) |
+| POST | `/v1/dreams` | Anthropic Dreams drop-in (v3.6) |
+| POST | `/memory/:id/anthropic/push` | Bridge: export to Anthropic Memory Store (v3.7) |
+| POST | `/memory/:id/anthropic/pull` | Bridge: import from Anthropic Memory Store (v3.7) |
+| GET | `/memory/:id/anthropic/sync-state` | Bridge: links + drift indicator (v3.7) |
 
 All `/memory/*` routes require `Authorization: Bearer <MEMFORGE_TOKEN>`.
-All responses: `{ ok: true, data: ... }` or `{ ok: false, error: "..." }`.
+`/v1/dreams` accepts either `Authorization: Bearer` or `x-api-key` (the
+latter only when `ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN=true`).
+All native responses: `{ ok: true, data: ... }` or `{ ok: false, error: "..." }`.
+The Drop-in `/v1/dreams` group returns Anthropic's envelope:
+`{ id, object: 'dream', memory_store_id, status, ... }` on success and
+`{ type: 'error', error: { type, message } }` on failure.
 
 ## Section 3: Tech Stack
 
@@ -202,6 +215,17 @@ Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW
 |----------|---------|-------------|
 | `ENABLE_LLM_RERANK` | `false` | LLM post-retrieval reranking of top-k results |
 | `ENABLE_LLM_INGEST` | `false` | LLM entity/tag extraction at write time |
+
+### Claude Dreaming (v3.6+)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DREAMS_PROVIDER` | `local` | `local` (MemForge sleep cycle) or `anthropic` (delegate Phase 3.5 to Anthropic Dreams). Requires `ANTHROPIC_API_KEY` when `anthropic`. |
+| `DREAMS_MODEL` | `claude-sonnet-4-6` | Model passed to Anthropic Dreams when `DREAMS_PROVIDER=anthropic`. |
+| `DREAMS_BUDGET_USD_MICROS` | `5000000` | Per-agent rolling 24h spend cap in micro-dollars ($5 default). 0 disables. |
+| `DREAMS_KILL_SWITCH` | `false` | Operational kill-switch — short-circuits all Anthropic calls to local fallback. |
+| `ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN` | `false` | When true, `/v1/dreams` accepts `x-api-key` as auth (mapped to `Authorization: Bearer`). When false, only Bearer works. |
+| `DISABLE_DREAM_RUNS_WORKER` | `false` | Disable the in-process worker that drains `dream_runs`. Use when running the worker out-of-band. |
 
 ### Security
 
@@ -303,4 +327,15 @@ npm run test:security     # Security / input-validation tests
 
 See [CHANGELOG.md](CHANGELOG.md) for full version history. Current version: v3.0.0-beta.3.
 
-Key versions: v3.0.0-beta.3 (RLS + audit trigger in canonical schema, version regularization, doc cleanup), v2.7.1 (beta release cleanup, dead code removal), v2.7.0 (halfvec storage), v2.6.0 (active knowledge management, Python SDK), v2.2.0 (production hardening, embeddings, retrieval quality).
+Key versions: v3.7 (Claude Dreaming Layer 4 — Anthropic Memory Store bridge), v3.6 (Claude Dreaming Layers 1–3 — async dream runs, Anthropic Drop-in API, Anthropic Dreams Service delegation), v3.0.0-beta.3 (RLS + audit trigger in canonical schema, version regularization, doc cleanup), v2.7.1 (beta release cleanup, dead code removal), v2.7.0 (halfvec storage), v2.6.0 (active knowledge management, Python SDK), v2.2.0 (production hardening, embeddings, retrieval quality).
+
+### Claude Dreaming integration (v3.6 + v3.7)
+
+Four-layer integration with Anthropic's Dreams feature; each layer is independent and additive.
+
+1. **Parity** — async sleep-cycle job model (`POST /memory/:id/dreams`); LISTEN/NOTIFY-driven worker; cancellation; first-class run records in `dream_runs` table.
+2. **Drop-in** — `/v1/dreams` mirrors Anthropic SDK shape; callers using `client.beta.dreams.create()` swap base URLs and keep their code.
+3. **Service** — `DREAMS_PROVIDER=anthropic` delegates Phase 3.5 of the cycle to Anthropic; local scoring stays canonical, Anthropic wins content/dedup, MemForge wins importance/confidence/valid_until.
+4. **Bridge** — `POST /memory/:id/anthropic/{push,pull}` syncs warm memories ↔ Anthropic Memory Stores with anthropic-wins / memforge-wins / merge strategies.
+
+See [INTEGRATION.md](INTEGRATION.md) for end-to-end usage examples.

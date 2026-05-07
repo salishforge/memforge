@@ -803,6 +803,121 @@ curl -X POST http://localhost:3333/admin/config/reload \
 
 ---
 
+## Claude Dreaming Integration (v3.6+)
+
+MemForge's "sleep cycle" overlaps in concept with Anthropic's **Dreams**
+feature for Managed Agents (`POST /v1/dreams`). MemForge interoperates
+with it through four layers — pick whichever match your deployment shape:
+
+### Layer 1: Async dream runs (no Anthropic dep)
+
+The native MemForge way to run a sleep cycle as an async job with a run
+id, status polling, and cancellation. Use this when an external scheduler
+or UI wants to track long-running cycles.
+
+```typescript
+// Enqueue
+const run = await client.dreams.create('agent-1', {
+  sessionIds: ['device-laptop', 'device-phone'],
+  instructions: 'Focus on factual accuracy in financial memories.',
+});
+console.log(run.id, run.status); // pending
+
+// Poll until terminal
+const final = await client.dreams.waitFor('agent-1', run.id);
+console.log(final.status); // completed | failed | canceled
+```
+
+REST: `POST /memory/:id/dreams` returns 202 + Location;
+`GET /memory/:id/dreams/:runId` for status; `POST .../cancel`.
+
+### Layer 2: Anthropic Dreams API drop-in
+
+If you have code written against the Anthropic SDK
+(`client.beta.dreams.create()`), point its base URL at MemForge and it
+works unchanged. `memory_store_id` maps to MemForge `agent_id`.
+
+```bash
+curl -X POST http://localhost:3333/v1/dreams \
+  -H "x-api-key: $MEMFORGE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_store_id": "agent-1",
+    "model": "claude-sonnet-4-6",
+    "session_ids": ["device-laptop"],
+    "instructions": "Resolve contradictions; prefer recent observations."
+  }'
+```
+
+The response shape mirrors Anthropic's
+`{ id, object: 'dream', memory_store_id, status, ... }`. `x-api-key`
+auth requires `ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN=true`; `Authorization: Bearer`
+always works.
+
+### Layer 3: Delegate curation to Anthropic
+
+Set `DREAMS_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` and dream
+runs created with `source: 'anthropic'` will offload Phase 3.5 of the
+sleep cycle to Anthropic's Dreams API. Local scoring (Phase 1, Phase 2.5
+conflict resolution, Phase 3 revision) still runs first; Anthropic
+curates content/dedup; MemForge keeps `importance`/`confidence`/
+`valid_until`/graph metadata.
+
+```typescript
+const run = await client.dreams.create('agent-1', {
+  source: 'anthropic',
+  model: 'claude-sonnet-4-6',
+});
+const final = await client.dreams.waitFor('agent-1', run.id);
+console.log(final.external_dream_id, final.cost_usd_micros);
+```
+
+Failure modes:
+- 401/403 from Anthropic → run fails (auth misconfiguration must be
+  visible)
+- 429/5xx → retry up to 3× with exponential backoff, then fall back to
+  the local cycle output and annotate
+  `error='anthropic_unavailable_local_fallback'`
+- Budget exceeded (`DREAMS_BUDGET_USD_MICROS`, default $5/agent/24h) →
+  fail before calling Anthropic
+
+### Layer 4: Bidirectional sync with Anthropic Memory Stores
+
+Push warm rows up to an Anthropic Memory Store; pull cleaned records
+back. Useful when MemForge is your source of truth but other systems
+consume Anthropic Memory Stores directly.
+
+```typescript
+// Export the top-1000 highest-importance warm rows.
+const link = await client.anthropic.push('agent-1');
+console.log(link.external_store_id);  // 'ms_xxx'
+
+// Some time later — pull cleaned records back.
+await client.anthropic.pull('agent-1', {
+  externalStoreId: link.external_store_id,
+  strategy: 'anthropic-wins',  // or 'memforge-wins' | 'merge'
+});
+
+// Drift indicator: are local writes newer than the last push?
+const state = await client.anthropic.syncState('agent-1');
+console.log(state.drift_detected, state.links);
+```
+
+REST: `POST /memory/:id/anthropic/push`, `POST .../pull`,
+`GET .../sync-state`. MCP tools: `memforge_anthropic_{push, pull,
+sync_state}`.
+
+### Picking the right layer
+
+| Need | Use |
+|---|---|
+| External scheduler / UI tracks long-running cycles | Layer 1 |
+| Already using `Anthropic.beta.dreams.create()` | Layer 2 |
+| Want Anthropic's curation, with MemForge's domain scoring | Layer 3 |
+| MemForge ↔ Managed Agents memory roundtrip | Layer 4 |
+
+---
+
 ## Memory Lifecycle: When to Call What
 
 | Event | MemForge Call | Frequency |

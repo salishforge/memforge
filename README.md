@@ -58,7 +58,8 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 - **Webhooks** — Event-driven notifications on consolidated/revised/reflected/evicted/graduated
 - **Multi-Tenant** — All operations scoped by agent ID
 - **Security Hardened** — Zod validation, advisory locks, prompt injection boundaries, RLS, SSRF prevention, security headers. 9 audit rounds, all clean at MEDIUM+.
-- **MCP Server** — 17 tools for Claude Code, Cursor, and MCP-compatible AI tools
+- **Claude Dreaming** — Four-layer integration with Anthropic's Dreams feature: native async dream runs, `/v1/dreams` drop-in shim, optional Service-layer delegation to Anthropic, and bidirectional sync with Anthropic Memory Stores. See [INTEGRATION.md § Claude Dreaming Integration](INTEGRATION.md#claude-dreaming-integration-v36).
+- **MCP Server** — 30 tools for Claude Code, Cursor, and MCP-compatible AI tools
 - **TypeScript SDK** — Zero-dependency HTTP client for any JS runtime
 - **Python SDK** — `MemForgeClient`, `ResilientMemForgeClient`, `ConversationMemory` adapter, OpenAI + Anthropic tool definitions. `pip install memforge`.
 - **Docker Standalone** — Single container image with embedded PostgreSQL. `docker run -p 3333:3333 salishforge/memforge:standalone`
