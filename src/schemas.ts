@@ -157,6 +157,23 @@ export const ListDreamRunsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// ─── Drop-in: Anthropic Dreams API shape (Layer 2) ──────────────────────────
+//
+// Mirrors POST /v1/dreams from the Anthropic Managed Agents API
+// (beta `dreaming-2026-04-21`) so SDK callers can swap base URLs and
+// keep their request/response code unchanged. `memory_store_id` is
+// treated as the MemForge `agent_id` directly — see the /v1/dreams
+// route handler in app.ts for the mapping rationale.
+//
+// strict() so a typo in field names produces an explicit 400 rather
+// than a silent default.
+export const AnthropicDreamCreateSchema = z.object({
+  memory_store_id: z.string().min(1).max(256),
+  session_ids: z.array(z.string().min(1).max(256)).max(100).optional(),
+  model: z.string().min(1).max(128),
+  instructions: z.string().max(4096).optional(),
+}).strict();
+
 export const ImportSchema = z.object({
   lines: z.array(z.string()).optional(),
   namespace: NamespaceSchema.optional(),

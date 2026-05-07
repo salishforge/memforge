@@ -3425,6 +3425,25 @@ Guidelines:
     return row ? rowToDreamRun(row) : null;
   }
 
+  /**
+   * Lookup by id alone — used by the Drop-in /v1/dreams/:id route which
+   * mirrors Anthropic's API where the dream id is the only handle. UUID
+   * unguessability (122-bit random) is the cross-tenant defense; deployments
+   * needing stricter isolation should use OAuth2 introspection with per-
+   * agent scopes (see auth.ts).
+   */
+  async getDreamRunById(runId: string): Promise<DreamRun | null> {
+    if (!isUuid(runId)) {
+      throw new TypeError(`Invalid dream run id '${runId}'`);
+    }
+    const { rows } = await this.pool.query<DreamRunRow>(
+      `SELECT ${DREAM_RUN_COLUMNS} FROM dream_runs WHERE id = $1`,
+      [runId],
+    );
+    const row = rows[0];
+    return row ? rowToDreamRun(row) : null;
+  }
+
   async listDreamRuns(
     agentId: string,
     options: ListDreamRunsOptions = {},

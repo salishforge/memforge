@@ -16,6 +16,8 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
     servers: [{ url: `http://localhost:${port}`, description: 'Local' }],
     tags: [
       { name: 'Memory', description: 'Agent memory operations' },
+      { name: 'Dreams', description: 'Async sleep-cycle jobs (MemForge native)' },
+      { name: 'DreamsCompat', description: 'Anthropic Dreams API drop-in (/v1/dreams)' },
       { name: 'System', description: 'Health and observability' },
       { name: 'Admin', description: 'Administrative endpoints' },
     ],
@@ -480,6 +482,62 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             '200': { description: 'Updated dream run', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
             '404': { '$ref': '#/components/responses/NotFound' },
             '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/v1/dreams': {
+        post: {
+          summary: 'Drop-in Anthropic Dreams API: enqueue a dream',
+          description: "Mirrors Anthropic's POST /v1/dreams (managed-agents-2026-04-01, dreaming-2026-04-21). `memory_store_id` is treated as the MemForge `agent_id`. Returns 200 + dream object, matching the Anthropic SDK shape so callers can swap base URLs.",
+          tags: ['DreamsCompat'],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['memory_store_id', 'model'],
+                  properties: {
+                    memory_store_id: { type: 'string', minLength: 1, maxLength: 256 },
+                    session_ids: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+                    model: { type: 'string', maxLength: 128 },
+                    instructions: { type: 'string', maxLength: 4096 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Dream object (Anthropic shape)' },
+            '400': { description: 'Invalid request (Anthropic error envelope)' },
+            '500': { description: 'API error' },
+          },
+        },
+      },
+      '/v1/dreams/{dreamId}': {
+        get: {
+          summary: 'Drop-in Anthropic Dreams API: fetch a dream',
+          tags: ['DreamsCompat'],
+          parameters: [
+            { name: 'dreamId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          ],
+          responses: {
+            '200': { description: 'Dream object (Anthropic shape)' },
+            '404': { description: 'Dream not found' },
+            '500': { description: 'API error' },
+          },
+        },
+      },
+      '/v1/dreams/{dreamId}/cancel': {
+        post: {
+          summary: 'Drop-in Anthropic Dreams API: cancel a dream',
+          tags: ['DreamsCompat'],
+          parameters: [
+            { name: 'dreamId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          ],
+          responses: {
+            '200': { description: 'Updated dream object' },
+            '404': { description: 'Dream not found' },
+            '500': { description: 'API error' },
           },
         },
       },

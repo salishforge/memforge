@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -54,6 +54,42 @@ function qnum(v: unknown): number | undefined {
 
 function pstr(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+// ─── Anthropic-Dreams shape translator (Layer 2 Drop-in) ────────────────────
+//
+// Render a MemForge DreamRun in the envelope an Anthropic Dreams SDK
+// caller expects. Mapping decisions:
+//   - id stays the UUID; Anthropic's "drm_xxx" prefix is cosmetic and we
+//     don't synthesize one (clients that care about the prefix can prefix
+//     in their integration layer)
+//   - memory_store_id ↔ agent_id (the Drop-in identity bridge, see
+//     /v1/dreams route comment)
+//   - timestamps return as ISO-8601 strings; Anthropic's wire shape uses
+//     RFC3339, identical for our purposes
+//   - usage maps in_tokens/out_tokens to Anthropic's input_tokens/output_tokens
+//   - error stays string|null; Anthropic returns a structured object on
+//     failure but the field name and nullability match
+function dreamRunToAnthropicShape(run: import('./types.js').DreamRun): Record<string, unknown> {
+  return {
+    id: run.id,
+    object: 'dream',
+    type: 'memory_dream',
+    memory_store_id: run.agent_id,
+    output_memory_store_id: run.output_namespace,
+    session_ids: run.session_ids,
+    model: run.model,
+    instructions: run.instructions,
+    status: run.status,
+    created_at: run.created_at instanceof Date ? run.created_at.toISOString() : run.created_at,
+    started_at: run.started_at instanceof Date ? run.started_at.toISOString() : run.started_at,
+    completed_at: run.completed_at instanceof Date ? run.completed_at.toISOString() : run.completed_at,
+    usage: {
+      input_tokens: run.usage_in_tokens,
+      output_tokens: run.usage_out_tokens,
+    },
+    error: run.error,
+  };
 }
 
 // ─── Multi-device identity helpers ──────────────────────────────────────────
@@ -282,6 +318,27 @@ export function createApp(deps: AppDependencies): express.Express {
 
   app.use('/memory', bearerAuth);
   app.use('/pool', bearerAuth);
+
+  // ─── /v1 Drop-in: Anthropic-compatible Dreams API ────────────────────────
+  //
+  // Layer 2: lets clients written against `client.beta.dreams.create()` (the
+  // Anthropic SDK) point at MemForge with one base-URL change. The shim
+  // before bearerAuth copies `x-api-key` to `Authorization: Bearer …` so
+  // the rest of the auth chain works unchanged. Gated by
+  // ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN — when false (default), only an
+  // explicit Bearer token is accepted, and any x-api-key value is ignored
+  // (so a leaked Anthropic key alone can't be used as a MemForge token).
+  const allowAnyToken = process.env['ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN'] === 'true';
+  app.use('/v1', (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.headers['authorization'] && allowAnyToken) {
+      const apiKey = req.headers['x-api-key'];
+      if (typeof apiKey === 'string' && apiKey.length > 0) {
+        req.headers['authorization'] = `Bearer ${apiKey}`;
+      }
+    }
+    next();
+  });
+  app.use('/v1', bearerAuth);
 
   // ─── Routes ────────────────────────────────────────────────────────────
 
@@ -1599,6 +1656,105 @@ export function createApp(deps: AppDependencies): express.Express {
       const list = await manager.listDeprecatedNamespaces(agentId);
       ok(res, list);
     } catch (err) { fail(res, 500, (err as Error).message); }
+  });
+
+  // ─── /v1 Drop-in: Anthropic Dreams API shim (Layer 2) ─────────────────
+  //
+  // memory_store_id ↔ agent_id mapping:
+  //   The Anthropic API treats memory_store_id as opaque (canonical form
+  //   "ms_xxx"). Here we treat it as the literal MemForge agent_id. Callers
+  //   migrating from Anthropic Memory Stores can either (a) name their
+  //   MemForge agents with the same string, or (b) handle the rename in
+  //   their own integration layer. This avoids an extra registry table for
+  //   a feature whose primary value is *shape compatibility*; if a real
+  //   memory-store registry is needed it lands in Layer 4 (Bridge).
+  //
+  // Response shape mirrors Anthropic's beta dreaming envelope so SDK
+  // typings round-trip cleanly. The native /memory/:id/dreams routes
+  // remain the source of truth for non-compat callers.
+
+  app.post('/v1/dreams', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = AnthropicDreamCreateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.join('.') || 'body';
+      res.status(400).json({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: `${field}: ${issue?.message ?? 'invalid'}` },
+      });
+      return;
+    }
+    const body = parsed.data;
+    try {
+      const run = await manager.createDreamRun(body.memory_store_id, {
+        sessionIds: body.session_ids,
+        model: body.model,
+        instructions: body.instructions,
+        source: 'local',
+      });
+      // Anthropic SDK shape: 200 with the dream object (NOT 202 like the
+      // native /memory/:id/dreams path — Anthropic returns 200).
+      res.status(200).json(dreamRunToAnthropicShape(run));
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      res.status(status).json({
+        type: 'error',
+        error: {
+          type: status === 400 ? 'invalid_request_error' : 'api_error',
+          message: status >= 500 ? 'Internal server error' : e.message,
+        },
+      });
+    }
+  });
+
+  app.get('/v1/dreams/:dreamId', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const dreamId = pstr(req.params['dreamId']);
+    try {
+      // We do not know the agent_id from the URL alone (Anthropic's API
+      // doesn't carry it either). Look up by id only — RLS / scope guards
+      // already restrict to caller-owned rows, and run ids are UUIDs so
+      // enumeration is impractical.
+      const run = await manager.getDreamRunById(dreamId);
+      if (!run) {
+        res.status(404).json({ type: 'error', error: { type: 'not_found_error', message: 'dream not found' } });
+        return;
+      }
+      res.json(dreamRunToAnthropicShape(run));
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      res.status(status).json({
+        type: 'error',
+        error: {
+          type: status === 400 ? 'invalid_request_error' : 'api_error',
+          message: status >= 500 ? 'Internal server error' : e.message,
+        },
+      });
+    }
+  });
+
+  app.post('/v1/dreams/:dreamId/cancel', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const dreamId = pstr(req.params['dreamId']);
+    try {
+      const existing = await manager.getDreamRunById(dreamId);
+      if (!existing) {
+        res.status(404).json({ type: 'error', error: { type: 'not_found_error', message: 'dream not found' } });
+        return;
+      }
+      const run = await manager.cancelDreamRun(existing.agent_id, dreamId);
+      res.json(dreamRunToAnthropicShape(run));
+    } catch (err) {
+      const e = err as Error;
+      const status = e instanceof TypeError ? 400 : 500;
+      res.status(status).json({
+        type: 'error',
+        error: {
+          type: status === 400 ? 'invalid_request_error' : 'api_error',
+          message: status >= 500 ? 'Internal server error' : e.message,
+        },
+      });
+    }
   });
 
   // ─── Global error handler ─────────────────────────────────────────────

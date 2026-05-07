@@ -6,6 +6,24 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Claude Dreaming compatibility — Layer 2 (Drop-in)** — adds the
+  `/v1/dreams` route group that mirrors Anthropic's Managed Agents
+  Dreams API shape (`POST /v1/dreams`, `GET /v1/dreams/:id`,
+  `POST /v1/dreams/:id/cancel`). Lets callers written against
+  `client.beta.dreams.create()` swap base URLs and keep their
+  request/response code unchanged. `memory_store_id` is treated as
+  the MemForge `agent_id` directly — no extra registry table for a
+  feature whose primary value is shape compatibility. New
+  `ANTHROPIC_COMPAT_ALLOW_ANY_TOKEN` env (default `false`) gates the
+  `x-api-key` auth fallback; the `Authorization: Bearer` path always
+  works. Errors return Anthropic's `{ type, error: { type, message } }`
+  envelope, not MemForge's `{ ok, error }` shape — matches what the
+  Anthropic SDK expects to deserialize. New `OpenAPI` tag
+  `DreamsCompat` separates the drop-in surface from native `/dreams`.
+  Tests in `tests/dreams-compat.test.ts` cover x-api-key + Bearer paths,
+  strict-zod rejection of unknown fields, the session_ids cap, and
+  Anthropic-shape responses.
+
 - **Claude Dreaming compatibility — Layer 1 (Parity)** — async
   sleep-cycle job model with first-class run records, status polling,
   and cancellation, mirroring Anthropic's "Dreams" feature shape so
