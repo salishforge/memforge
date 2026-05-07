@@ -49,12 +49,26 @@ Rules:
 - When correcting, explain what was wrong and what evidence supports the correction.
 - Respond with ONLY the JSON object.`;
 
+/** Thrown internally when a dream-run cancellation is observed at a phase boundary. */
+export class DreamCancellationError extends Error {
+  constructor(public readonly runId: string) {
+    super(`dream run ${runId} canceled mid-cycle`);
+    this.name = 'DreamCancellationError';
+  }
+}
+
 export class SleepCycleEngine {
   private readonly pool: Pool;
   private readonly llm: LLMProvider;
   private readonly embedder: EmbeddingProvider;
   private readonly config: SleepCycleConfig;
   private readonly audit: AuditChain | null;
+  /**
+   * When non-null, the engine polls dream_runs.cancel_requested_at at each
+   * phase boundary. Synchronous /sleep callers leave this null — they have
+   * no run record to check against and cannot be canceled.
+   */
+  private readonly dreamRunId: string | null;
 
   constructor(
     pool: Pool,
@@ -62,12 +76,44 @@ export class SleepCycleEngine {
     embedder: EmbeddingProvider,
     config: Partial<SleepCycleConfig> = {},
     audit: AuditChain | null = null,
+    dreamRunId?: string,
   ) {
     this.pool = pool;
     this.llm = llm;
     this.embedder = embedder;
     this.config = { ...DEFAULT_CONFIG, ...config, weights: { ...DEFAULT_CONFIG.weights, ...config.weights } };
     this.audit = audit;
+    this.dreamRunId = dreamRunId ?? null;
+  }
+
+  /**
+   * Phase-boundary cancellation check. Throws DreamCancellationError when
+   * the run has been canceled so the cycle exits cleanly via the existing
+   * error path. No-op when not running under a dream run id (the synchronous
+   * /sleep path has no record to cancel against).
+   */
+  private async throwIfCanceled(): Promise<void> {
+    if (!this.dreamRunId) return;
+    const { rows } = await this.pool.query<{ canceled: boolean }>(
+      `SELECT (cancel_requested_at IS NOT NULL) AS canceled
+         FROM dream_runs WHERE id = $1`,
+      [this.dreamRunId],
+    );
+    if (rows[0]?.canceled === true) {
+      throw new DreamCancellationError(this.dreamRunId);
+    }
+  }
+
+  /**
+   * Suffix appended to revision/reflection system prompts when the dream
+   * run carries free-text instructions. Wrapped in a clearly-marked block
+   * so an LLM treats it as guidance rather than memory content. Empty
+   * string when no instructions are set, so callers can concatenate freely.
+   */
+  private get instructionsSuffix(): string {
+    const ins = this.config.instructions?.trim();
+    if (!ins) return '';
+    return `\n\n<run_instructions>\n${ins}\n</run_instructions>`;
   }
 
   /**
@@ -79,12 +125,15 @@ export class SleepCycleEngine {
     let tokensUsed = 0;
 
     // Phase 0: Autonomous weight adaptation
+    await this.throwIfCanceled();
     await this.phaseWeightAdaptation(agentId);
 
     // Phase 1: Scoring
+    await this.throwIfCanceled();
     const scoresUpdated = await this.phaseScoring(agentId);
 
     // Phase 2: Triage
+    await this.throwIfCanceled();
     const { evicted, flaggedIds } = await this.phaseTriage(agentId);
 
     // Phase 2b: Capacity eviction — enforce per-agent warm_tier hard cap.
@@ -93,6 +142,7 @@ export class SleepCycleEngine {
     const capacityEvicted = await this.phaseCapacityEviction(agentId);
 
     // Phase 2.5: Conflict Resolution — resolve contradicting memories
+    await this.throwIfCanceled();
     const conflictsResolved = await this.phaseConflictResolution(agentId);
 
     // Phase 3: Revision (bounded by token budget and optional per-cycle cap)
@@ -104,6 +154,9 @@ export class SleepCycleEngine {
         skipped = flaggedIds.length - revised;
         break;
       }
+      // Cancellation polling inside the per-memory loop — Phase 3 is the
+      // longest-running phase so cancellations should land within one revision.
+      await this.throwIfCanceled();
       const tokens = await this.reviseMemory(agentId, warmId);
       if (tokens > 0) {
         revised++;
@@ -117,6 +170,7 @@ export class SleepCycleEngine {
     let edgesInvalidated = 0;
     let entitiesMerged = 0;
     if (tokensUsed < this.config.tokenBudget) {
+      await this.throwIfCanceled();
       edgesInvalidated = await this.phaseGraphMaintenance(agentId);
       entitiesMerged = await this.phaseEntityDedup(agentId);
     }
@@ -124,6 +178,7 @@ export class SleepCycleEngine {
     // Phase 5: Reflection (optional)
     let didReflect = false;
     if (this.config.includeReflection && tokensUsed < this.config.tokenBudget) {
+      await this.throwIfCanceled();
       didReflect = await this.phaseReflection(agentId);
     }
 
@@ -634,12 +689,17 @@ ${wrapUserContent('recent_retrievals', retrievalList || 'None')}
 ## Related memories
 ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
+    // Append run-level instructions to the system prompt when set. Wrapped
+    // in <run_instructions>...</run_instructions> so the LLM treats it as
+    // guidance, not as memory data to be quoted back.
+    const systemPrompt = REVISION_SYSTEM_PROMPT + this.instructionsSuffix;
+
     // Estimate tokens (rough: 4 chars per token)
-    const estimatedInputTokens = Math.ceil((REVISION_SYSTEM_PROMPT.length + userPrompt.length) / 4);
+    const estimatedInputTokens = Math.ceil((systemPrompt.length + userPrompt.length) / 4);
 
     let responseText: string;
     try {
-      responseText = await this.llm.chat(REVISION_SYSTEM_PROMPT, userPrompt);
+      responseText = await this.llm.chat(systemPrompt, userPrompt);
     } catch (err) {
       log.error({ err, warmTierId: String(warmTierId) }, 'revision failed');
       return 0;

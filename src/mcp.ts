@@ -451,6 +451,65 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_dreams_create',
+    description: 'Enqueue a dream run — async sleep-cycle job mirroring Anthropic Claude Dreaming. Returns a run id (status="pending"); poll memforge_dreams_status until terminal.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        session_ids: {
+          type: 'array',
+          description: 'Subset of per-device session_ids to scope the run to. Hard cap 100 (matches Anthropic Dreams).',
+          items: { type: 'string' },
+        },
+        model: { type: 'string', description: 'Model identifier — pass-through for source="anthropic", advisory for "local".' },
+        instructions: { type: 'string', description: 'Free-text guidance plumbed into Phase 3 (Revision) prompt. Max 4096 chars.' },
+        source: { type: 'string', enum: ['local', 'anthropic'], description: "'local' uses MemForge's own cycle (default). 'anthropic' delegates to Anthropic Dreams (requires Service layer)." },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_status',
+    description: 'Fetch a dream run by id. Useful for polling pending or running cycles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        run_id: { type: 'string', description: 'Dream run UUID returned by memforge_dreams_create.' },
+      },
+      required: ['agent_id', 'run_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_list',
+    description: 'List dream runs for an agent. Filter by status or source.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'canceled'], description: 'Filter by run status.' },
+        source: { type: 'string', enum: ['local', 'anthropic', 'bridge_pull', 'bridge_push'], description: 'Filter by run source.' },
+        limit: { type: 'number', description: 'Max results (default 50, max 500)', minimum: 1, maximum: 500 },
+        offset: { type: 'number', description: 'Rows to skip', minimum: 0 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_cancel',
+    description: 'Request cancellation of a dream run. Pending runs go straight to "canceled"; running runs exit at the next phase boundary.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        run_id: { type: 'string', description: 'Dream run UUID.' },
+      },
+      required: ['agent_id', 'run_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -655,6 +714,29 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_list_deprecated_namespaces':
       return client.listDeprecatedNamespaces(agentId);
+
+    case 'memforge_dreams_create':
+      return client.dreams.create(agentId, {
+        namespace: args['namespace'] as string | undefined,
+        sessionIds: args['session_ids'] as string[] | undefined,
+        model: args['model'] as string | undefined,
+        instructions: args['instructions'] as string | undefined,
+        source: args['source'] as 'local' | 'anthropic' | undefined,
+      });
+
+    case 'memforge_dreams_status':
+      return client.dreams.status(agentId, args['run_id'] as string);
+
+    case 'memforge_dreams_list':
+      return client.dreams.list(agentId, {
+        status: args['status'] as 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | undefined,
+        source: args['source'] as 'local' | 'anthropic' | 'bridge_pull' | 'bridge_push' | undefined,
+        limit: args['limit'] as number | undefined,
+        offset: args['offset'] as number | undefined,
+      });
+
+    case 'memforge_dreams_cancel':
+      return client.dreams.cancel(agentId, args['run_id'] as string);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

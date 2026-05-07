@@ -374,6 +374,65 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_dreams_create',
+    description: 'Enqueue a dream run — async sleep-cycle job mirroring Anthropic Claude Dreaming. Returns a run id (status="pending"); poll memforge_dreams_status until terminal.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        session_ids: {
+          type: 'array',
+          description: 'Subset of per-device session_ids to scope the run to. Hard cap 100 (matches Anthropic Dreams).',
+          items: { type: 'string' },
+        },
+        model: { type: 'string', description: 'Model identifier — pass-through for source="anthropic", advisory for "local".' },
+        instructions: { type: 'string', description: 'Free-text guidance plumbed into Phase 3 (Revision) and Phase 5 (Reflection) prompts. Max 4096 chars.' },
+        source: { type: 'string', enum: ['local', 'anthropic'], description: "'local' uses MemForge's own cycle (default). 'anthropic' delegates Phase 3.5 to Anthropic Dreams (requires Service layer)." },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_status',
+    description: 'Fetch a dream run by id. Useful for polling pending or running cycles.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        run_id: { type: 'string', description: 'Dream run UUID returned by memforge_dreams_create.' },
+      },
+      required: ['agent_id', 'run_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_list',
+    description: 'List dream runs for an agent. Filter by status or source.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'canceled'], description: 'Filter by run status.' },
+        source: { type: 'string', enum: ['local', 'anthropic', 'bridge_pull', 'bridge_push'], description: 'Filter by run source.' },
+        limit: { type: 'integer', description: 'Max results (default 50, max 500)', minimum: 1, maximum: 500 },
+        offset: { type: 'integer', description: 'Rows to skip', minimum: 0 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_dreams_cancel',
+    description: 'Request cancellation of a dream run. Pending runs go straight to "canceled"; running runs exit at the next phase boundary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        run_id: { type: 'string', description: 'Dream run UUID.' },
+      },
+      required: ['agent_id', 'run_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

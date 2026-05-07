@@ -373,6 +373,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
                     evictionThreshold: { type: 'number' },
                     revisionThreshold: { type: 'number' },
                     includeReflection: { type: 'boolean' },
+                    instructions: { type: 'string', maxLength: 4096, description: 'v3.6+ — free-text guidance plumbed into Phase 3 (Revision) prompt.' },
                   },
                 },
               },
@@ -381,6 +382,103 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           responses: {
             '200': { description: 'Sleep cycle result', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
             '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/dreams': {
+        post: {
+          summary: 'Enqueue a dream run (async sleep cycle, Claude Dreaming-compatible)',
+          tags: ['Dreams'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' },
+                    session_ids: {
+                      type: 'array',
+                      items: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' },
+                      maxItems: 100,
+                      description: 'Hard cap 100 (matches Anthropic Dreams).',
+                    },
+                    model: { type: 'string', maxLength: 128 },
+                    instructions: { type: 'string', maxLength: 4096 },
+                    source: { type: 'string', enum: ['local', 'anthropic'], description: 'local (default) or anthropic (Service layer required).' },
+                    output_mode: { type: 'string', enum: ['in_place', 'new_namespace'], description: 'in_place is default; new_namespace is currently rejected (requires namespace-scoped sleep — tracked).' },
+                    sleep: {
+                      type: 'object',
+                      properties: {
+                        tokenBudget: { type: 'integer' },
+                        evictionThreshold: { type: 'number' },
+                        revisionThreshold: { type: 'number' },
+                        includeReflection: { type: 'boolean' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '202': {
+              description: 'Dream run enqueued (status=pending). Location header carries the run URL.',
+              content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } },
+              headers: {
+                Location: { schema: { type: 'string' }, description: 'URL of the created dream run.' },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+        get: {
+          summary: 'List dream runs for an agent',
+          tags: ['Dreams'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'status', in: 'query', schema: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'canceled'] } },
+            { name: 'source', in: 'query', schema: { type: 'string', enum: ['local', 'anthropic', 'bridge_pull', 'bridge_push'] } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 50 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+          ],
+          responses: {
+            '200': { description: 'List of dream runs with total count', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/dreams/{runId}': {
+        get: {
+          summary: 'Fetch a dream run by id',
+          tags: ['Dreams'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'runId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          ],
+          responses: {
+            '200': { description: 'Dream run detail', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '404': { '$ref': '#/components/responses/NotFound' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/dreams/{runId}/cancel': {
+        post: {
+          summary: 'Cancel a dream run (pending → canceled, running → exits at next phase boundary)',
+          tags: ['Dreams'],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'runId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          ],
+          responses: {
+            '200': { description: 'Updated dream run', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
+            '404': { '$ref': '#/components/responses/NotFound' },
             '500': { '$ref': '#/components/responses/InternalError' },
           },
         },

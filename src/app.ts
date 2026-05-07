@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -804,6 +804,108 @@ export function createApp(deps: AppDependencies): express.Express {
     } catch (err) {
       const e = err as Error;
       if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Dream runs (Claude Dreaming compatibility, v3.6) ────────────────────
+  // Async sleep-cycle job model — first-class run records with status polling
+  // and cancellation. The synchronous /sleep route is kept for back-compat;
+  // /dreams is the recommended path for any cycle that may take more than a
+  // request lifetime to complete (or that needs to be canceled).
+
+  /**
+   * POST /memory/:agentId/dreams
+   *
+   * Enqueue a dream run. The worker picks it up asynchronously; clients poll
+   * GET /memory/:agentId/dreams/:runId for status. Returns 202 + Location.
+   */
+  app.post('/memory/:agentId/dreams', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = CreateDreamRunSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid request body');
+      return;
+    }
+    const body = parsed.data;
+    const agentId = getAgentId(req);
+
+    // Headers can supply namespace / session_id like the rest of the API,
+    // but session_ids[] in the body is the explicit Anthropic-Dreams parity.
+    const namespace = body.namespace ?? resolveCallerNamespace(req, undefined);
+
+    try {
+      const run = await manager.createDreamRun(agentId, {
+        namespace,
+        sessionIds: body.session_ids,
+        model: body.model,
+        instructions: body.instructions,
+        source: body.source,
+        outputMode: body.output_mode,
+        sleepConfigOverrides: body.sleep,
+      });
+      res.setHeader('Location', `/memory/${encodeURIComponent(agentId)}/dreams/${run.id}`);
+      res.status(202).json({ ok: true, data: run });
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  /** GET /memory/:agentId/dreams/:runId */
+  app.get('/memory/:agentId/dreams/:runId', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const runId = pstr(req.params['runId']);
+    try {
+      const run = await manager.getDreamRun(getAgentId(req), runId);
+      if (!run) {
+        fail(res, 404, `dream run ${runId} not found`);
+        return;
+      }
+      ok(res, run);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  /** GET /memory/:agentId/dreams?[status=&source=&limit=&offset=] */
+  app.get('/memory/:agentId/dreams', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const parsed = ListDreamRunsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? 'Invalid query');
+      return;
+    }
+    try {
+      const result = await manager.listDreamRuns(getAgentId(req), parsed.data);
+      ok(res, result);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /** POST /memory/:agentId/dreams/:runId/cancel */
+  app.post('/memory/:agentId/dreams/:runId/cancel', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const runId = pstr(req.params['runId']);
+    try {
+      const run = await manager.cancelDreamRun(getAgentId(req), runId);
+      ok(res, run);
+    } catch (err) {
+      const e = err as Error;
+      if (e.message.includes('not found')) {
+        fail(res, 404, e.message);
+      } else if (e instanceof TypeError) {
         fail(res, 400, e.message);
       } else {
         fail(res, 500, e.message);

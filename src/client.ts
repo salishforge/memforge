@@ -51,6 +51,10 @@ import type {
   AgentRole,
   DriftReport,
   ProcedureOutcome,
+  DreamRun,
+  DreamStatus,
+  DreamSource,
+  DreamOutputMode,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -222,6 +226,96 @@ export class MemForgeClient {
   }): Promise<SleepCycleResult> {
     return this.post<SleepCycleResult>(`/memory/${enc(agentId)}/sleep`, options ?? {});
   }
+
+  /**
+   * Dream-runs API — async sleep-cycle jobs with run ids, status polling,
+   * and cancellation. Mirrors the Anthropic Dreams SDK shape so callers can
+   * swap providers with minimal code change.
+   */
+  readonly dreams = {
+    /**
+     * Enqueue a dream run. Server returns immediately with a status='pending'
+     * record; poll status() (or call waitFor) for completion.
+     */
+    create: async (agentId: string, options?: {
+      namespace?: string;
+      sessionIds?: string[];
+      model?: string;
+      instructions?: string;
+      source?: DreamSource;
+      outputMode?: DreamOutputMode;
+      sleep?: {
+        tokenBudget?: number;
+        evictionThreshold?: number;
+        revisionThreshold?: number;
+        includeReflection?: boolean;
+      };
+    }): Promise<DreamRun> => {
+      const body = {
+        namespace: options?.namespace,
+        session_ids: options?.sessionIds,
+        model: options?.model,
+        instructions: options?.instructions,
+        source: options?.source,
+        output_mode: options?.outputMode,
+        sleep: options?.sleep,
+      };
+      return this.post<DreamRun>(`/memory/${enc(agentId)}/dreams`, body);
+    },
+
+    /** Fetch a single dream run. Throws on 404 with the server's error message. */
+    status: async (agentId: string, runId: string): Promise<DreamRun> => {
+      return this.get<DreamRun>(`/memory/${enc(agentId)}/dreams/${enc(runId)}`);
+    },
+
+    /** List dream runs for an agent. */
+    list: async (agentId: string, options?: {
+      status?: DreamStatus;
+      source?: DreamSource;
+      limit?: number;
+      offset?: number;
+    }): Promise<{ runs: DreamRun[]; total: number }> => {
+      const params = new URLSearchParams();
+      if (options?.status) params.set('status', options.status);
+      if (options?.source) params.set('source', options.source);
+      if (options?.limit !== undefined) params.set('limit', String(options.limit));
+      if (options?.offset !== undefined) params.set('offset', String(options.offset));
+      const qs = params.toString();
+      return this.get<{ runs: DreamRun[]; total: number }>(
+        `/memory/${enc(agentId)}/dreams${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    /** Request cancellation. Pending runs go to 'canceled'; running runs exit at next phase boundary. */
+    cancel: async (agentId: string, runId: string): Promise<DreamRun> => {
+      return this.post<DreamRun>(`/memory/${enc(agentId)}/dreams/${enc(runId)}/cancel`, {});
+    },
+
+    /**
+     * Poll until the run reaches a terminal state. Throws on timeout. The
+     * loop is intentionally simple — fixed interval, no exponential backoff.
+     * Replace with a webhook subscription when polling cost matters.
+     */
+    waitFor: async (
+      agentId: string,
+      runId: string,
+      options?: { timeoutMs?: number; intervalMs?: number },
+    ): Promise<DreamRun> => {
+      const timeoutMs = options?.timeoutMs ?? 5 * 60_000;
+      const intervalMs = options?.intervalMs ?? 1_000;
+      const start = Date.now();
+      while (true) {
+        const run = await this.dreams.status(agentId, runId);
+        if (run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') {
+          return run;
+        }
+        if (Date.now() - start > timeoutMs) {
+          throw new Error(`dream run ${runId} did not terminate within ${timeoutMs}ms (last status=${run.status})`);
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    },
+  };
 
   /** Get memory health metrics. */
   async memoryHealth(agentId: string): Promise<MemoryHealth> {

@@ -6,6 +6,30 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Claude Dreaming compatibility — Layer 1 (Parity)** — async
+  sleep-cycle job model with first-class run records, status polling,
+  and cancellation, mirroring Anthropic's "Dreams" feature shape so
+  external orchestrators built against `client.beta.dreams.create()`
+  have a familiar surface on MemForge. New `dream_runs` table
+  (migration `v3.6.sql`) with run id, immutable input snapshot
+  (warm-row id capture at run-start), session_id scoping (≤100 to
+  match Anthropic's cap), free-text instructions plumbed into Phase 3
+  (Revision) prompts, and lifecycle pending → running → completed |
+  failed | canceled. Worker (`src/dream-runs.ts`) wakes on
+  `LISTEN dream_runs_inserted` and uses `FOR UPDATE SKIP LOCKED` so
+  multi-instance deployments don't double-process. New routes
+  `POST /memory/:id/dreams`, `GET /memory/:id/dreams/:runId`,
+  `GET /memory/:id/dreams`, `POST /memory/:id/dreams/:runId/cancel`.
+  TypeScript SDK adds `client.dreams.{create, status, list, cancel,
+  waitFor}` matching the Anthropic SDK shape so callers can swap
+  providers with a base-URL change. MCP tools:
+  `memforge_dreams_create`, `memforge_dreams_status`,
+  `memforge_dreams_list`, `memforge_dreams_cancel`. The synchronous
+  `/sleep` route is unchanged — `/dreams` is additive. Cancellation
+  inside a running cycle exits at the next phase boundary via a new
+  `DreamCancellationError`. `output_mode='new_namespace'` is rejected
+  at the boundary pending namespace-scoped sleep phases (a follow-up).
+
 - **Selective forgetting (deprecated namespaces)** — closes the
   fourth and final residual Phase 4 item from the ROADMAP. Operators
   can now mark a namespace as deprecated via

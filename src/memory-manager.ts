@@ -14,7 +14,7 @@ import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent 
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema, SessionIdSchema } from './schemas.js';
 import { getConfig } from './config.js';
-import { SleepCycleEngine } from './sleep-cycle.js';
+import { SleepCycleEngine, DreamCancellationError } from './sleep-cycle.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
@@ -64,6 +64,12 @@ import type {
   DriftSnapshot,
   DriftReport,
   ProcedureOutcome,
+  DreamRun,
+  DreamStatus,
+  DreamSource,
+  DreamOutputMode,
+  CreateDreamRunOptions,
+  ListDreamRunsOptions,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -86,6 +92,81 @@ function resolveSessionId(sid: string | undefined): string {
     throw new TypeError(`Invalid session_id '${sid}': ${result.error.issues[0]?.message ?? 'validation failed'}`);
   }
   return result.data;
+}
+
+/**
+ * Dream-run row column list and conversion helpers. Kept module-level so
+ * MemoryManager methods and the worker (src/dream-runs.ts) share an identical
+ * row shape — diverging selectors would silently break field mapping.
+ */
+const DREAM_RUN_COLUMNS = `
+  id, agent_id, namespace, session_ids, model, instructions,
+  status, source, output_mode, output_namespace, input_warm_ids,
+  external_dream_id, external_memory_store_id, external_output_store_id,
+  usage_in_tokens, usage_out_tokens, cost_usd_micros,
+  sleep_cycle_result, error, cancel_requested_at,
+  created_at, started_at, completed_at
+`;
+
+interface DreamRunRow {
+  id: string;
+  agent_id: string;
+  namespace: string;
+  session_ids: string[] | null;
+  model: string;
+  instructions: string | null;
+  status: DreamStatus;
+  source: DreamSource;
+  output_mode: DreamOutputMode;
+  output_namespace: string | null;
+  input_warm_ids: string[] | null;
+  external_dream_id: string | null;
+  external_memory_store_id: string | null;
+  external_output_store_id: string | null;
+  usage_in_tokens: number;
+  usage_out_tokens: number;
+  cost_usd_micros: string;
+  sleep_cycle_result: SleepCycleResult | null;
+  error: string | null;
+  cancel_requested_at: Date | null;
+  created_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+}
+
+function rowToDreamRun(row: DreamRunRow): DreamRun {
+  return {
+    id: row.id,
+    agent_id: row.agent_id,
+    namespace: row.namespace,
+    session_ids: row.session_ids,
+    model: row.model,
+    instructions: row.instructions,
+    status: row.status,
+    source: row.source,
+    output_mode: row.output_mode,
+    output_namespace: row.output_namespace,
+    input_warm_ids: row.input_warm_ids,
+    external_dream_id: row.external_dream_id,
+    external_memory_store_id: row.external_memory_store_id,
+    external_output_store_id: row.external_output_store_id,
+    usage_in_tokens: row.usage_in_tokens,
+    usage_out_tokens: row.usage_out_tokens,
+    cost_usd_micros: typeof row.cost_usd_micros === 'string'
+      ? parseInt(row.cost_usd_micros, 10)
+      : row.cost_usd_micros,
+    sleep_cycle_result: row.sleep_cycle_result,
+    error: row.error,
+    cancel_requested_at: row.cancel_requested_at,
+    created_at: row.created_at,
+    started_at: row.started_at,
+    completed_at: row.completed_at,
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(s: string): boolean {
+  return typeof s === 'string' && UUID_RE.test(s);
 }
 
 /**
@@ -2064,7 +2145,16 @@ Ranking (numbers only):`;
    *
    * Requires an LLM provider (either the main one or a dedicated revision LLM).
    */
-  async sleep(agentId: string, configOverrides?: Partial<SleepCycleConfig>): Promise<SleepCycleResult> {
+  async sleep(
+    agentId: string,
+    configOverrides?: Partial<SleepCycleConfig>,
+    /**
+     * Dream run id — when provided, the engine polls dream_runs.cancel_requested_at
+     * at each phase boundary and exits early if cancellation was requested.
+     * Synchronous /sleep callers omit this; the worker (src/dream-runs.ts) supplies it.
+     */
+    dreamRunId?: string,
+  ): Promise<SleepCycleResult> {
     this.assertAgentId(agentId);
 
     // Per-agent mutex — reject concurrent sleep cycles for the same agent
@@ -2089,7 +2179,7 @@ Ranking (numbers only):`;
       weights: { ...this.config.sleepCycle.weights, ...safeOverrides.weights },
     };
 
-    const engine = new SleepCycleEngine(this.pool, revisionLlm, this.embedder, cycleConfig, this.audit);
+    const engine = new SleepCycleEngine(this.pool, revisionLlm, this.embedder, cycleConfig, this.audit, dreamRunId);
 
     const promise = engine.run(agentId);
     this.sleepLocks.set(agentId, promise);
@@ -3251,6 +3341,302 @@ Guidelines:
       [agentId],
     );
     return rows;
+  }
+
+  // ─── Dream Runs (Claude Dreaming compatibility) ─────────────────────────
+  //
+  // Public CRUD for dream_runs. The worker loop in src/dream-runs.ts wakes
+  // on `LISTEN dream_runs_inserted` and calls back into runDreamCycle() to
+  // execute the actual sleep cycle. createDreamRun() only enqueues; it
+  // never blocks on the cycle itself.
+
+  /**
+   * Enqueue a dream run. Returns the freshly-inserted row (status='pending').
+   * The worker processes it asynchronously; poll getDreamRun() for status.
+   *
+   * Auto-registers the agent if missing (mirrors add()'s behavior).
+   */
+  async createDreamRun(agentId: string, options: CreateDreamRunOptions = {}): Promise<DreamRun> {
+    this.assertAgentId(agentId);
+    if (this.config.autoRegisterAgents) {
+      await this.registerAgent(agentId);
+    }
+
+    const namespace = resolveNamespace(options.namespace);
+    const sessionIds = options.sessionIds?.map((s) => resolveSessionId(s)) ?? null;
+    if (sessionIds && sessionIds.length > 100) {
+      throw new TypeError('session_ids may not exceed 100 entries');
+    }
+
+    if (options.instructions !== undefined && options.instructions.length > 4096) {
+      throw new TypeError('instructions must be 4096 characters or fewer');
+    }
+
+    const source: DreamSource = options.source ?? 'local';
+    const outputMode: DreamOutputMode = options.outputMode ?? 'in_place';
+    // 'new_namespace' requires namespace-scoped sleep phases — sleep cycles
+    // are agent-wide today (see SleepSchema commentary). Tracked as a follow-up;
+    // accepting the value at the API boundary then silently mutating in place
+    // would lie to the caller, so we reject early.
+    if (outputMode === 'new_namespace') {
+      throw new TypeError(
+        "output_mode 'new_namespace' is not yet implemented — sleep cycles are agent-wide. Use 'in_place' (default) for now.",
+      );
+    }
+    const model =
+      options.model ??
+      (source === 'anthropic'
+        ? (process.env['DREAMS_MODEL'] ?? 'claude-sonnet-4-6')
+        : (this.llm?.model ?? 'memforge-local'));
+
+    const { rows } = await this.pool.query<DreamRunRow>(
+      `INSERT INTO dream_runs (
+         agent_id, namespace, session_ids, model, instructions,
+         source, output_mode
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${DREAM_RUN_COLUMNS}`,
+      [agentId, namespace, sessionIds, model, options.instructions ?? null, source, outputMode],
+    );
+
+    const row = rows[0];
+    if (!row) {
+      throw new Error('failed to create dream run');
+    }
+
+    if (this.audit) {
+      void this.audit
+        .recordBatch(agentId, 'dream_runs', 'create', { id: row.id, source, output_mode: outputMode }, 'api')
+        .catch((err) => log.error({ err }, 'dream-run audit failed'));
+    }
+
+    return rowToDreamRun(row);
+  }
+
+  async getDreamRun(agentId: string, runId: string): Promise<DreamRun | null> {
+    this.assertAgentId(agentId);
+    if (!isUuid(runId)) {
+      throw new TypeError(`Invalid dream run id '${runId}'`);
+    }
+    const { rows } = await this.pool.query<DreamRunRow>(
+      `SELECT ${DREAM_RUN_COLUMNS} FROM dream_runs WHERE id = $1 AND agent_id = $2`,
+      [runId, agentId],
+    );
+    const row = rows[0];
+    return row ? rowToDreamRun(row) : null;
+  }
+
+  async listDreamRuns(
+    agentId: string,
+    options: ListDreamRunsOptions = {},
+  ): Promise<{ runs: DreamRun[]; total: number }> {
+    this.assertAgentId(agentId);
+    const limit = Math.min(options.limit ?? 50, 500);
+    const offset = options.offset ?? 0;
+
+    const filters: string[] = ['agent_id = $1'];
+    const params: SqlParam[] = [agentId];
+    if (options.status) {
+      params.push(options.status);
+      filters.push(`status = $${params.length}`);
+    }
+    if (options.source) {
+      params.push(options.source);
+      filters.push(`source = $${params.length}`);
+    }
+    const where = filters.join(' AND ');
+
+    const totalResult = await this.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM dream_runs WHERE ${where}`,
+      params,
+    );
+    const total = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+
+    params.push(limit, offset);
+    const { rows } = await this.pool.query<DreamRunRow>(
+      `SELECT ${DREAM_RUN_COLUMNS} FROM dream_runs
+        WHERE ${where}
+        ORDER BY created_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+
+    return { runs: rows.map(rowToDreamRun), total };
+  }
+
+  /**
+   * Mark a run for cancellation. Pending runs go straight to 'canceled'.
+   * Running runs set `cancel_requested_at`; the cycle checks at every phase
+   * boundary (see SleepCycleEngine.run) and exits early.
+   */
+  async cancelDreamRun(agentId: string, runId: string): Promise<DreamRun> {
+    this.assertAgentId(agentId);
+    if (!isUuid(runId)) {
+      throw new TypeError(`Invalid dream run id '${runId}'`);
+    }
+
+    const { rows } = await this.pool.query<DreamRunRow>(
+      `UPDATE dream_runs
+          SET status = CASE WHEN status = 'pending' THEN 'canceled' ELSE status END,
+              cancel_requested_at = COALESCE(cancel_requested_at, now()),
+              completed_at = CASE
+                WHEN status = 'pending' THEN now()
+                ELSE completed_at
+              END
+        WHERE id = $1 AND agent_id = $2
+          AND status IN ('pending','running')
+        RETURNING ${DREAM_RUN_COLUMNS}`,
+      [runId, agentId],
+    );
+
+    const row = rows[0];
+    if (!row) {
+      // Either does not exist, belongs to another agent, or is already terminal.
+      const existing = await this.getDreamRun(agentId, runId);
+      if (!existing) throw new Error(`dream run ${runId} not found`);
+      return existing;
+    }
+
+    if (this.audit) {
+      void this.audit
+        .recordBatch(agentId, 'dream_runs', 'update', { id: row.id, status: row.status, action: 'cancel' }, 'api')
+        .catch((err) => log.error({ err }, 'dream-run cancel audit failed'));
+    }
+
+    return rowToDreamRun(row);
+  }
+
+  /**
+   * Worker-only entry point: claim the next pending run with FOR UPDATE
+   * SKIP LOCKED so multiple memforge instances don't double-process. Returns
+   * the row (now status='running') and starts an open transaction the worker
+   * commits/rolls-back via the supplied client.
+   *
+   * The worker is responsible for:
+   *  - calling runDreamCycle(runId) with the returned row
+   *  - committing on success / rolling back on failure
+   *
+   * Internal — exposed only to src/dream-runs.ts.
+   */
+  async _claimNextPendingDreamRun(): Promise<DreamRun | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query<DreamRunRow>(
+        `UPDATE dream_runs
+            SET status = 'running', started_at = now()
+          WHERE id = (
+            SELECT id FROM dream_runs
+              WHERE status = 'pending'
+              ORDER BY created_at
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+          )
+          RETURNING ${DREAM_RUN_COLUMNS}`,
+      );
+      await client.query('COMMIT');
+      const row = rows[0];
+      return row ? rowToDreamRun(row) : null;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Worker-only: execute the sleep cycle for a claimed run. Captures input
+   * snapshot, dispatches to the local engine (Anthropic engine in Layer 3),
+   * persists results, and transitions to a terminal state.
+   */
+  async _executeDreamRun(run: DreamRun): Promise<DreamRun> {
+    try {
+      // 1. Capture immutable input snapshot.
+      const inputIds = await this.snapshotInputWarmIds(run);
+      await this.pool.query(
+        `UPDATE dream_runs
+            SET input_warm_ids = $1,
+                input_snapshot_lsn = pg_current_wal_lsn()
+          WHERE id = $2`,
+        [inputIds, run.id],
+      );
+
+      // 2. Dispatch.
+      // Layer 1 only handles 'local'. Service layer (Layer 3) will branch
+      // on run.source === 'anthropic'. Bridge sources never reach the worker
+      // path — they're exec'd inline by the bridge endpoints.
+      if (run.source !== 'local') {
+        throw new Error(
+          `dream run source '${run.source}' is not yet supported on this build (requires Service or Bridge layer)`,
+        );
+      }
+
+      const overrides: Partial<SleepCycleConfig> = {};
+      if (run.instructions) overrides.instructions = run.instructions;
+
+      const result = await this.sleep(run.agent_id, overrides, run.id);
+
+      // 3. Persist completion.
+      const { rows } = await this.pool.query<DreamRunRow>(
+        `UPDATE dream_runs
+            SET status = CASE
+                  WHEN cancel_requested_at IS NOT NULL THEN 'canceled'
+                  ELSE 'completed'
+                END,
+                completed_at = now(),
+                sleep_cycle_result = $2,
+                usage_in_tokens = $3
+          WHERE id = $1
+          RETURNING ${DREAM_RUN_COLUMNS}`,
+        [run.id, JSON.stringify(result), result.tokens_used],
+      );
+      const row = rows[0];
+      if (!row) throw new Error(`dream run ${run.id} disappeared during execution`);
+      return rowToDreamRun(row);
+    } catch (err) {
+      const isCanceled = err instanceof DreamCancellationError;
+      const message = isCanceled ? null : ((err as Error).message ?? String(err));
+      const { rows } = await this.pool.query<DreamRunRow>(
+        `UPDATE dream_runs
+            SET status = $2,
+                completed_at = now(),
+                error = $3
+          WHERE id = $1 AND status NOT IN ('completed','canceled','failed')
+          RETURNING ${DREAM_RUN_COLUMNS}`,
+        [run.id, isCanceled ? 'canceled' : 'failed', message],
+      );
+      if (!isCanceled) {
+        log.error({ err, runId: run.id }, 'dream run failed');
+      } else {
+        log.info({ runId: run.id }, 'dream run canceled');
+      }
+      const row = rows[0];
+      if (row) return rowToDreamRun(row);
+      throw err;
+    }
+  }
+
+  /**
+   * Capture warm-row ids that exist for this agent at run-start. The cycle
+   * may add, remove, or revise rows during execution — `input_warm_ids[]`
+   * preserves the input set for forensic auditing and reproducibility,
+   * mirroring Anthropic Dreams' immutable-input semantics.
+   *
+   * Empty `session_ids` means "all sessions in this namespace".
+   */
+  private async snapshotInputWarmIds(run: DreamRun): Promise<bigint[]> {
+    const params: SqlParam[] = [run.agent_id, run.namespace];
+    let sessionFilter = '';
+    if (run.session_ids && run.session_ids.length > 0) {
+      params.push(run.session_ids);
+      sessionFilter = `AND session_id = ANY($${params.length}::text[])`;
+    }
+    const { rows } = await this.pool.query<{ id: bigint }>(
+      `SELECT id FROM warm_tier
+        WHERE agent_id = $1 AND namespace = $2 ${sessionFilter}`,
+      params,
+    );
+    return rows.map((r) => r.id);
   }
 
   // ─── Export/Import ──────────────────────────────────────────────────────

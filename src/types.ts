@@ -388,6 +388,99 @@ export interface SleepCycleConfig {
     reflection: number;
     stability: number;
   };
+  /**
+   * Free-text guidance plumbed into Phase 3 (Revision) and Phase 5 (Reflection)
+   * system-prompt suffixes. Originates from `instructions` on a dream run —
+   * used so an external orchestrator can steer curation per cycle without
+   * altering provider config. Capped at 4096 chars at the boundary.
+   */
+  instructions?: string;
+  /**
+   * Where revised memories land. 'in_place' overwrites the source warm rows
+   * (the legacy /sleep behavior). 'new_namespace' writes revisions into a
+   * derived namespace `<original>__dream__<runId>`, leaving the input
+   * untouched — mirrors Anthropic Dreams' immutable-input semantics.
+   */
+  outputMode?: 'in_place' | 'new_namespace';
+}
+
+// ─── Dream Runs (Claude Dreaming compatibility) ──────────────────────────────
+//
+// A dream run is the persistent record of an async sleep cycle. Lifecycle:
+// pending → running → (completed | failed | canceled). One row per run in
+// the dream_runs table. Distinct from SleepCycleResult: that is the engine's
+// per-run summary; DreamRun is the externally-visible job object.
+
+export type DreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
+
+/**
+ * Where the curation work happens.
+ *  - `local` runs MemForge's own sleep cycle (no Anthropic dep).
+ *  - `anthropic` delegates Phase 3.5 to Anthropic Dreams.
+ *  - `bridge_pull` / `bridge_push` mark runs that were initiated by a
+ *    bidirectional sync rather than a user dream-create call.
+ */
+export type DreamSource = 'local' | 'anthropic' | 'bridge_pull' | 'bridge_push';
+
+export type DreamOutputMode = 'in_place' | 'new_namespace';
+
+export interface DreamRun {
+  id: string;
+  agent_id: string;
+  namespace: string;
+  session_ids: string[] | null;
+  model: string;
+  instructions: string | null;
+  status: DreamStatus;
+  source: DreamSource;
+  output_mode: DreamOutputMode;
+  output_namespace: string | null;
+  /**
+   * Warm-row ids snapshotted at run-start. Stored as strings (pg returns
+   * int8 as text by default, matching MemForge's wire convention so
+   * JSON.stringify works without a BigInt toJSON polyfill).
+   */
+  input_warm_ids: string[] | null;
+  external_dream_id: string | null;
+  external_memory_store_id: string | null;
+  external_output_store_id: string | null;
+  usage_in_tokens: number;
+  usage_out_tokens: number;
+  cost_usd_micros: number;
+  sleep_cycle_result: SleepCycleResult | null;
+  error: string | null;
+  cancel_requested_at: Date | null;
+  created_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+}
+
+export interface CreateDreamRunOptions {
+  /** Default 'default'; selects which warm-tier namespace is the input. */
+  namespace?: string;
+  /** Subset of session_ids to scope the run to. Hard-capped at 100 (Anthropic limit). */
+  sessionIds?: string[];
+  /** Model identifier — pass-through for `anthropic` source; advisory for `local`. */
+  model?: string;
+  /** Free-text guidance plumbed into revision and reflection prompts. ≤4096 chars. */
+  instructions?: string;
+  /** Default 'local'; forces engine selection irrespective of env defaults. */
+  source?: DreamSource;
+  /**
+   * 'in_place' (default) writes revisions over the input warm rows.
+   * 'new_namespace' clones changes into `<namespace>__dream__<runId>`.
+   */
+  outputMode?: DreamOutputMode;
+  /** Override per-cycle sleep config (token budget, thresholds, etc.). */
+  sleepConfigOverrides?: Partial<SleepCycleConfig>;
+}
+
+export interface ListDreamRunsOptions {
+  status?: DreamStatus;
+  source?: DreamSource;
+  /** Default 50, max 500. */
+  limit?: number;
+  offset?: number;
 }
 
 export interface MemoryHealth {

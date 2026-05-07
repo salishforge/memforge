@@ -12,6 +12,7 @@ import { createDefaultRegistry } from './classifier.js';
 import { wrapLLMProvider } from './llm-safety.js';
 import { AuditChain } from './audit.js';
 import { createApp } from './app.js';
+import { DreamRunsWorker } from './dream-runs.js';
 import { getLogger } from './logger.js';
 import { configureWebhooks } from './webhooks.js';
 import type { ConsolidationMode } from './types.js';
@@ -109,10 +110,27 @@ const server = app.listen(PORT, () => {
   log.info({ port: PORT, embeddings: manager.embeddingsEnabled, summarization: manager.summarizationEnabled }, 'server started');
 });
 
+// ─── Dream-runs worker ──────────────────────────────────────────────────────
+// Started after the HTTP listener so the server is reachable before async
+// work begins. Workers can be disabled with DISABLE_DREAM_RUNS_WORKER for
+// deployments that run the worker out-of-band (a dedicated job runner).
+const dreamRunsWorker = process.env['DISABLE_DREAM_RUNS_WORKER'] === 'true'
+  ? null
+  : new DreamRunsWorker(manager, getPool(process.env['DATABASE_URL'] || undefined));
+
+if (dreamRunsWorker) {
+  void dreamRunsWorker.start().catch((err) => {
+    log.error({ err }, 'dream-runs worker failed to start — async dream runs disabled');
+  });
+}
+
 // Graceful shutdown
 async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'shutting down');
   server.close(async () => {
+    if (dreamRunsWorker) {
+      await dreamRunsWorker.stop().catch(() => undefined);
+    }
     await Promise.all([closePool(), closeRedis()]);
     process.exit(0);
   });

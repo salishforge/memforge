@@ -112,11 +112,49 @@ export const ConfigReloadSchema = z.object({
 // to filter by namespace; tracked as a future enhancement. The schema
 // intentionally does NOT accept a namespace field so the API doesn't claim
 // behavior it cannot deliver.
+//
+// `instructions` and `output_mode` were added in v3.6 (Claude Dreaming) and
+// only take effect when the route plumbs them through; legacy callers still
+// see identical behavior.
 export const SleepSchema = z.object({
   tokenBudget: z.number().optional(),
   evictionThreshold: z.number().optional(),
   revisionThreshold: z.number().optional(),
   includeReflection: z.boolean().optional(),
+  instructions: z.string().max(4096).optional(),
+  output_mode: z.enum(['in_place', 'new_namespace']).optional(),
+});
+
+// ─── Dream Runs (Claude Dreaming compatibility, v3.6) ───────────────────────
+// Native MemForge async-job shape. The Drop-in `/v1/dreams` schema in v3.7
+// remaps Anthropic's snake_case fields onto these.
+
+export const DreamStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'canceled']);
+export const DreamSourceSchema = z.enum(['local', 'anthropic', 'bridge_pull', 'bridge_push']);
+export const DreamOutputModeSchema = z.enum(['in_place', 'new_namespace']);
+
+export const CreateDreamRunSchema = z.object({
+  namespace: NamespaceSchema.optional(),
+  /** Hard-capped at 100 to match Anthropic Dreams' session_ids[] cap. */
+  session_ids: z.array(SessionIdSchema).max(100).optional(),
+  model: z.string().min(1).max(128).optional(),
+  instructions: z.string().max(4096).optional(),
+  source: DreamSourceSchema.optional(),
+  output_mode: DreamOutputModeSchema.optional(),
+  /** Per-run sleep config overrides — same shape as SleepSchema sans output_mode/instructions. */
+  sleep: z.object({
+    tokenBudget: z.number().int().positive().optional(),
+    evictionThreshold: z.number().min(0).max(1).optional(),
+    revisionThreshold: z.number().min(0).max(1).optional(),
+    includeReflection: z.boolean().optional(),
+  }).optional(),
+});
+
+export const ListDreamRunsQuerySchema = z.object({
+  status: DreamStatusSchema.optional(),
+  source: DreamSourceSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export const ImportSchema = z.object({
