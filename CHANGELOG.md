@@ -6,6 +6,27 @@ All notable changes to MemForge are documented here.
 
 ### Added
 
+- **Claude Dreaming compatibility — Layer 3 (Service)** — when
+  `DREAMS_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` are set, dream
+  runs created with `source: 'anthropic'` delegate the curation pass
+  to Anthropic's Dreams API after the local sleep cycle finishes.
+  Local Phase 1/2/2.5/3 still run with MemForge's domain-specific
+  scoring (drift, frequency, role-aware importance); Anthropic wins
+  `content` and dedup, MemForge wins `importance`, `confidence`,
+  `valid_until`, and graph metadata. `dream_runs.cost_usd_micros`,
+  `usage_in_tokens`, `usage_out_tokens`, `external_dream_id`,
+  `external_memory_store_id`, `external_output_store_id` populated
+  on completion. New module `src/dreams-anthropic.ts` (HTTP client,
+  retries, budget, mapper) — no `@anthropic-ai/sdk` runtime dep so
+  the integration stays optional. New env: `DREAMS_PROVIDER`,
+  `DREAMS_MODEL`, `DREAMS_BUDGET_USD_MICROS` (per-agent rolling 24h
+  cap, default $5), `DREAMS_KILL_SWITCH`. Failure modes: 401/403
+  fail the run (no fallback — surfaces misconfiguration); 429/5xx
+  retry up to 3× with exponential backoff, then fall back to local
+  cycle and annotate `error='anthropic_unavailable_local_fallback'`.
+  Tests in `tests/dreams-anthropic.test.ts` cover success, 401 hard-
+  fail, and 5xx local fallback against a stub Anthropic server.
+
 - **Claude Dreaming compatibility — Layer 2 (Drop-in)** — adds the
   `/v1/dreams` route group that mirrors Anthropic's Managed Agents
   Dreams API shape (`POST /v1/dreams`, `GET /v1/dreams/:id`,

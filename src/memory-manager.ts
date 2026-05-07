@@ -15,6 +15,14 @@ import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema, SessionIdSchema } from './schemas.js';
 import { getConfig } from './config.js';
 import { SleepCycleEngine, DreamCancellationError } from './sleep-cycle.js';
+import {
+  AnthropicDreamsClient,
+  warmRowsToMemoryStore,
+  applyAnthropicOutput,
+  DreamsAnthropicAuthError,
+  DreamsAnthropicTransientError,
+  DreamsAnthropicBudgetError,
+} from './dreams-anthropic.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
@@ -31,6 +39,7 @@ import type {
   ClearResult,
   AgentStats,
   TimelineEntry,
+  WarmRow,
   EntitySearchResult,
   GraphNode,
   GraphEdge,
@@ -167,6 +176,23 @@ function rowToDreamRun(row: DreamRunRow): DreamRun {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(s: string): boolean {
   return typeof s === 'string' && UUID_RE.test(s);
+}
+
+/**
+ * Construct an AnthropicDreamsClient if the env is configured for it.
+ * Returns null when DREAMS_PROVIDER is unset/`local`/`none`, or when
+ * ANTHROPIC_API_KEY is missing — runs requesting source='anthropic' will
+ * fail loudly at execute time, not silently do something else.
+ */
+function buildAnthropicDreamsClient(): AnthropicDreamsClient | null {
+  const provider = process.env['DREAMS_PROVIDER'] ?? 'local';
+  if (provider !== 'anthropic') return null;
+  if (!process.env['ANTHROPIC_API_KEY']) return null;
+  try {
+    return new AnthropicDreamsClient();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -327,6 +353,12 @@ export class MemoryManager {
   private readonly embedder: EmbeddingProvider;
   private readonly llm: LLMProvider | null;
   private readonly audit: AuditChain | null;
+  /**
+   * Optional Service-layer client. Constructed lazily from
+   * ANTHROPIC_API_KEY + DREAMS_PROVIDER=anthropic; null otherwise. Runs
+   * created with `source: 'anthropic'` require this to be set.
+   */
+  private readonly anthropicDreams: AnthropicDreamsClient | null;
   private readonly sleepLocks = new Map<string, Promise<SleepCycleResult>>();
   private vectorCast: 'halfvec' | 'vector' | null = null;
 
@@ -336,6 +368,7 @@ export class MemoryManager {
     this.embedder = this.config.embeddingProvider ?? new NoOpEmbeddingProvider();
     this.llm = this.config.llmProvider ?? null;
     this.audit = this.config.auditChain ?? null;
+    this.anthropicDreams = buildAnthropicDreamsClient();
   }
 
   private async vcast(): Promise<string> {
@@ -3570,7 +3603,10 @@ Guidelines:
    */
   async _executeDreamRun(run: DreamRun): Promise<DreamRun> {
     try {
-      // 1. Capture immutable input snapshot.
+      // 1. Capture immutable input snapshot. Keep the array in scope —
+      // the local `run` object reflects the row state BEFORE the UPDATE
+      // below, so its `input_warm_ids` is still null. Service-layer code
+      // must read `inputIds` instead of `run.input_warm_ids`.
       const inputIds = await this.snapshotInputWarmIds(run);
       await this.pool.query(
         `UPDATE dream_runs
@@ -3580,13 +3616,19 @@ Guidelines:
         [inputIds, run.id],
       );
 
-      // 2. Dispatch.
-      // Layer 1 only handles 'local'. Service layer (Layer 3) will branch
-      // on run.source === 'anthropic'. Bridge sources never reach the worker
-      // path — they're exec'd inline by the bridge endpoints.
-      if (run.source !== 'local') {
+      // 2. Dispatch on source.
+      //   - 'local': run the cycle and return.
+      //   - 'anthropic': run the local cycle FIRST so MemForge's domain-
+      //     specific scoring (Phase 1, Phase 2.5 conflict resolution,
+      //     Phase 3 revision) happens with the canonical heuristics, then
+      //     hand the input warm rows to Anthropic Dreams for content
+      //     curation, and merge the result back. Anthropic wins content +
+      //     dedup, MemForge wins importance/confidence/valid_until.
+      //   - 'bridge_*': not exec'd via the worker; bridge endpoints handle
+      //     these inline. Reaching this branch indicates a misconfigured run.
+      if (run.source === 'bridge_pull' || run.source === 'bridge_push') {
         throw new Error(
-          `dream run source '${run.source}' is not yet supported on this build (requires Service or Bridge layer)`,
+          `dream run source '${run.source}' must be executed via the bridge endpoints, not the worker`,
         );
       }
 
@@ -3594,6 +3636,61 @@ Guidelines:
       if (run.instructions) overrides.instructions = run.instructions;
 
       const result = await this.sleep(run.agent_id, overrides, run.id);
+      let usageInTokens = result.tokens_used;
+      let usageOutTokens = 0;
+      let costUsdMicros = 0;
+      let externalDreamId: string | null = null;
+      let externalMemoryStoreId: string | null = null;
+      let externalOutputStoreId: string | null = null;
+
+      if (run.source === 'anthropic') {
+        if (!this.anthropicDreams) {
+          throw new Error(
+            "Anthropic Dreams source requested but client not configured — set DREAMS_PROVIDER=anthropic and ANTHROPIC_API_KEY",
+          );
+        }
+        try {
+          const inputRows = await this.fetchWarmRowsByIds(run.agent_id, inputIds.map((id) => String(id)));
+          const inputRecords = warmRowsToMemoryStore(inputRows);
+          const anthropicResult = await this.anthropicDreams.runDream({
+            agentId: run.agent_id,
+            pool: this.pool,
+            sessionIds: run.session_ids,
+            instructions: run.instructions,
+            inputRecords,
+            model: run.model,
+          });
+          const merge = await applyAnthropicOutput(this.pool, run.agent_id, anthropicResult.outputRecords, run.id);
+          log.info({
+            runId: run.id, anthropicUpdated: merge.updated,
+            externalDreamId: anthropicResult.externalDreamId,
+          }, 'anthropic dreams pass merged');
+
+          usageInTokens += anthropicResult.inputTokens;
+          usageOutTokens = anthropicResult.outputTokens;
+          costUsdMicros = anthropicResult.costUsdMicros;
+          externalDreamId = anthropicResult.externalDreamId;
+          externalMemoryStoreId = anthropicResult.externalMemoryStoreId;
+          externalOutputStoreId = anthropicResult.externalOutputStoreId;
+        } catch (err) {
+          if (err instanceof DreamsAnthropicAuthError || err instanceof DreamsAnthropicBudgetError) {
+            // Auth and budget errors fail the run — the caller must see the
+            // misconfiguration. Local fallback would mask a real problem.
+            throw err;
+          }
+          if (err instanceof DreamsAnthropicTransientError) {
+            log.warn({ err, runId: run.id }, 'anthropic dreams transient failure — using local cycle output');
+            // Local cycle already ran; just annotate and continue. The
+            // dream_runs row gets `error` set below.
+            await this.pool.query(
+              `UPDATE dream_runs SET error = $2 WHERE id = $1`,
+              [run.id, 'anthropic_unavailable_local_fallback'],
+            );
+          } else {
+            throw err;
+          }
+        }
+      }
 
       // 3. Persist completion.
       const { rows } = await this.pool.query<DreamRunRow>(
@@ -3604,10 +3701,24 @@ Guidelines:
                 END,
                 completed_at = now(),
                 sleep_cycle_result = $2,
-                usage_in_tokens = $3
+                usage_in_tokens = $3,
+                usage_out_tokens = $4,
+                cost_usd_micros = $5,
+                external_dream_id = COALESCE($6, external_dream_id),
+                external_memory_store_id = COALESCE($7, external_memory_store_id),
+                external_output_store_id = COALESCE($8, external_output_store_id)
           WHERE id = $1
           RETURNING ${DREAM_RUN_COLUMNS}`,
-        [run.id, JSON.stringify(result), result.tokens_used],
+        [
+          run.id,
+          JSON.stringify(result),
+          usageInTokens,
+          usageOutTokens,
+          costUsdMicros,
+          externalDreamId,
+          externalMemoryStoreId,
+          externalOutputStoreId,
+        ],
       );
       const row = rows[0];
       if (!row) throw new Error(`dream run ${run.id} disappeared during execution`);
@@ -3633,6 +3744,25 @@ Guidelines:
       if (row) return rowToDreamRun(row);
       throw err;
     }
+  }
+
+  /**
+   * Fetch the warm rows referenced by the given ids, scoped to the agent.
+   * Used by the Service-layer dispatch to materialize the input set for
+   * Anthropic Dreams. Returns an empty array if `ids` is empty (the
+   * snapshot was either empty or missed a save).
+   */
+  private async fetchWarmRowsByIds(agentId: string, ids: string[]): Promise<WarmRow[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await this.pool.query<WarmRow>(
+      `SELECT id, agent_id, content, source_hot_ids, metadata,
+              consolidated_at, time_start, time_end, access_count,
+              last_accessed, namespace, session_id
+         FROM warm_tier
+        WHERE agent_id = $1 AND id = ANY($2::bigint[])`,
+      [agentId, ids],
+    );
+    return rows;
   }
 
   /**
