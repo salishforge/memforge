@@ -82,8 +82,6 @@ import type {
   AnthropicMemoryStoreLink,
   AnthropicSyncState,
   SyncStrategy,
-  EpistemicStatus,
-  EpistemicFilter,
   ExplanationFactor,
   CausalChainNode,
   PredictionResult,

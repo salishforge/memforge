@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS hot_tier (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   content_hash TEXT,
   namespace    TEXT        NOT NULL DEFAULT 'default',
-  session_id   TEXT        NOT NULL DEFAULT 'default'
+  session_id   TEXT        NOT NULL DEFAULT 'default',
+  context_signals JSONB   NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
@@ -105,7 +106,12 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   embedding_model             TEXT,
   -- Originating hot-tier session for provenance (v3.5) — NULL = consolidated before
   -- per-session tracking, distinct from the literal 'default' session.
-  session_id                  TEXT
+  session_id                  TEXT,
+  -- Phase 5: Epistemic confidence model (v3.8)
+  epistemic_status            TEXT        NOT NULL DEFAULT 'provisional',
+  evidence_count              INTEGER     NOT NULL DEFAULT 1,
+  -- Phase 5: Memory sentiment tagging (v3.8)
+  context_signals             JSONB       NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
@@ -668,6 +674,60 @@ CREATE INDEX IF NOT EXISTS anthropic_memory_stores_agent_ns_idx
   ON anthropic_memory_stores (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- Phase 5: Causal Memory Graph (v3.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS causal_edges (
+  id                BIGSERIAL   PRIMARY KEY,
+  agent_id          TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  cause_id          BIGINT      NOT NULL REFERENCES warm_tier(id) ON DELETE CASCADE,
+  effect_id         BIGINT      NOT NULL REFERENCES warm_tier(id) ON DELETE CASCADE,
+  strength          REAL        NOT NULL DEFAULT 0.0,
+  observation_count INTEGER     NOT NULL DEFAULT 1,
+  avg_lag_seconds   REAL,
+  confidence        REAL        NOT NULL DEFAULT 0.5,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (agent_id, cause_id, effect_id)
+);
+
+CREATE INDEX IF NOT EXISTS causal_edges_agent_cause_idx ON causal_edges (agent_id, cause_id);
+CREATE INDEX IF NOT EXISTS causal_edges_agent_effect_idx ON causal_edges (agent_id, effect_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Phase 5: Hierarchical Abstraction Engine (v3.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS abstractions (
+  id                    BIGSERIAL   PRIMARY KEY,
+  agent_id              TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  level                 TEXT        NOT NULL,
+  content               TEXT        NOT NULL,
+  source_reflection_ids BIGINT[]    NOT NULL DEFAULT '{}',
+  confidence            REAL        NOT NULL DEFAULT 0.5,
+  active                BOOLEAN     NOT NULL DEFAULT true,
+  namespace             TEXT        NOT NULL DEFAULT 'default',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS abstractions_agent_level_idx ON abstractions (agent_id, level, active);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Phase 5: Adaptive Sleep Intelligence (v3.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sleep_phase_analytics (
+  id           BIGSERIAL   PRIMARY KEY,
+  agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  phase        TEXT        NOT NULL,
+  duration_ms  INTEGER     NOT NULL,
+  tokens_used  INTEGER     NOT NULL DEFAULT 0,
+  changes_made INTEGER     NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS sleep_phase_analytics_agent_idx ON sleep_phase_analytics (agent_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).
@@ -832,6 +892,27 @@ CREATE POLICY dream_runs_agent_isolation ON dream_runs
 ALTER TABLE anthropic_memory_stores ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS anthropic_memory_stores_agent_isolation ON anthropic_memory_stores;
 CREATE POLICY anthropic_memory_stores_agent_isolation ON anthropic_memory_stores
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE causal_edges ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS causal_edges_agent_isolation ON causal_edges;
+CREATE POLICY causal_edges_agent_isolation ON causal_edges
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE abstractions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS abstractions_agent_isolation ON abstractions;
+CREATE POLICY abstractions_agent_isolation ON abstractions
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE sleep_phase_analytics ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sleep_phase_analytics_agent_isolation ON sleep_phase_analytics;
+CREATE POLICY sleep_phase_analytics_agent_isolation ON sleep_phase_analytics
   FOR ALL
   USING (agent_id = current_setting('app.current_agent_id', true))
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));

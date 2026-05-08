@@ -9,7 +9,7 @@ import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
 import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
 import type { EmbeddingProvider } from './embedding.js';
-import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult, PhaseAnalytics } from './types.js';
+import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult } from './types.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
