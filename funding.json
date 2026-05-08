@@ -1,6 +1,5 @@
 {
-    "$schema": "https://fundingjson.org/schema/v1.1.0.json",
-    "version": "v1.1.0",
+    "$schema": "https://fundingjson.org/schema/v1.1.0/funding.schema.json",
     "entity": {
         "type": "individual",
         "role": "maintainer",
@@ -44,7 +43,7 @@
             {
                 "guid": "direct-email",
                 "type": "other",
-                "address": "john@salishforge.com",
+                "address": "mailto:john@salishforge.com",
                 "description": "For grants, compute credits, corporate sponsorships, or larger direct transfers. Reach out via email and I'll route to the appropriate payment method."
             },
             {
