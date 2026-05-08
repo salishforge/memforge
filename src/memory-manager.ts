@@ -82,6 +82,17 @@ import type {
   AnthropicMemoryStoreLink,
   AnthropicSyncState,
   SyncStrategy,
+  ExplanationFactor,
+  CausalChainNode,
+  PredictionResult,
+  Abstraction,
+  AbstractionLevel,
+  ContextSignals,
+  UrgencyLevel,
+  SentimentTag,
+  SessionType,
+  BootstrapOptions,
+  BootstrapResult,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -424,6 +435,50 @@ export class MemoryManager {
     }
   }
 
+  // ─── Feature 6: Context signal inference ──────────────────────────────────
+
+  private inferContextSignals(content: string): ContextSignals {
+    const lower = content.toLowerCase();
+    const signals: ContextSignals = {};
+
+    // Urgency inference
+    if (/\b(urgent|asap|emergency|critical)\b/i.test(content)) {
+      signals.urgency = 'critical';
+    } else if (/\b(broken|fix|bug|error)\b/i.test(content)) {
+      signals.urgency = 'high';
+    } else if (/\b(planning|design|brainstorm)\b/i.test(content)) {
+      signals.urgency = 'low';
+    } else {
+      signals.urgency = 'medium';
+    }
+
+    // Sentiment inference
+    const positiveWords = ['success', 'great', 'excellent', 'good', 'resolved', 'fixed', 'improved', 'working', 'completed', 'happy'];
+    const negativeWords = ['failed', 'broken', 'error', 'bug', 'crash', 'wrong', 'bad', 'issue', 'problem', 'regression'];
+    const posCount = positiveWords.filter((w) => lower.includes(w)).length;
+    const negCount = negativeWords.filter((w) => lower.includes(w)).length;
+    if (posCount > negCount) signals.sentiment = 'positive';
+    else if (negCount > posCount) signals.sentiment = 'negative';
+    else signals.sentiment = 'neutral';
+
+    // Session type inference
+    if (/\b(debug|debugg|stack trace|stacktrace|error log)\b/i.test(content)) {
+      signals.session_type = 'debug';
+    } else if (/\b(planning|design|brainstorm|roadmap|proposal)\b/i.test(content)) {
+      signals.session_type = 'plan';
+    } else if (/\b(review|feedback|pr |pull request|code review)\b/i.test(content)) {
+      signals.session_type = 'review';
+    } else if (/\b(explore|research|investigate|spike|prototype)\b/i.test(content)) {
+      signals.session_type = 'explore';
+    } else if (/\b(build|implement|create|develop|feature)\b/i.test(content)) {
+      signals.session_type = 'build';
+    } else {
+      signals.session_type = 'unknown';
+    }
+
+    return signals;
+  }
+
   // ─── Agent registration ───────────────────────────────────────────────────
 
   async registerAgent(agentId: string, metadata: Record<string, unknown> = {}): Promise<void> {
@@ -500,11 +555,14 @@ export class MemoryManager {
       if (hints.supersedes) enrichedMetadata['_hint_supersedes'] = String(hints.supersedes);
     }
 
+    // Feature 6: Memory Sentiment Tagging — infer context signals from content via keyword heuristics
+    const contextSignals = this.inferContextSignals(content);
+
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals)],
     );
 
     const result = rows[0]!;
@@ -808,6 +866,24 @@ Ranking (numbers only):`;
       results = deduplicated;
     }
 
+    // Feature 1: Epistemic filtering — restrict results by confidence calibration level
+    if (opts.epistemic) {
+      switch (opts.epistemic) {
+        case 'only_established':
+          results = results.filter((r) => r.epistemic_status === 'established');
+          break;
+        case 'include_provisional':
+          results = results.filter((r) => r.epistemic_status === 'established' || r.epistemic_status === 'provisional');
+          break;
+        case 'include_contested':
+          results = results.filter((r) => r.epistemic_status === 'established' || r.epistemic_status === 'provisional' || r.epistemic_status === 'contested');
+          break;
+        case 'all':
+          // No filtering
+          break;
+      }
+    }
+
     // Minimum quality threshold — don't return results that barely match
     if (results.length > 1 && results[0]) {
       const topScore = results[0].rank;
@@ -815,6 +891,24 @@ Ranking (numbers only):`;
         // Drop results scoring less than 10% of the top result
         results = results.filter((r) => r.rank >= topScore * 0.1);
       }
+    }
+
+    // Feature 2: Explainable Memory Operations — attach explanation factors when requested
+    if (opts.explain) {
+      results = results.map((r) => {
+        const factors: ExplanationFactor[] = [];
+        factors.push({ name: 'rank_score', weight: r.rank, detail: `Final composite score after fusion and boosts` });
+        if (r.epistemic_status) {
+          const epistemicWeight = r.epistemic_status === 'established' ? 1.0 : r.epistemic_status === 'provisional' ? 0.5 : 0.2;
+          factors.push({ name: 'epistemic_status', weight: epistemicWeight, detail: `Status: ${r.epistemic_status}, evidence count: ${r.evidence_count ?? 0}` });
+        }
+        factors.push({ name: 'search_mode', weight: 0, detail: `Query mode: ${mode}` });
+        if (decayRate > 0) {
+          const ageHours = (Date.now() - new Date(r.consolidated_at).getTime()) / (1000 * 60 * 60);
+          factors.push({ name: 'temporal_decay', weight: Math.exp(-decayRate * ageHours), detail: `Age: ${ageHours.toFixed(1)}h, decay rate: ${decayRate}` });
+        }
+        return { ...r, explanation: factors };
+      });
     }
 
     // Track zero-result queries as knowledge gaps; deduplicated and capped at 1000/agent
@@ -869,6 +963,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+              epistemic_status, evidence_count,
               ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -908,6 +1003,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+              epistemic_status, evidence_count,
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -944,6 +1040,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+              epistemic_status, evidence_count,
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -983,6 +1080,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+              epistemic_status, evidence_count,
               (1 - (embedding <=> $2::${await this.vcast()})) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -1273,8 +1371,9 @@ Ranking (numbers only):`;
             metadata: Record<string, unknown>;
             created_at: Date;
             session_id: string;
+            context_signals: ContextSignals;
           }>(
-            `SELECT id, content, metadata, created_at, session_id
+            `SELECT id, content, metadata, created_at, session_id, context_signals
              FROM hot_tier
              WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
@@ -1408,11 +1507,32 @@ Ranking (numbers only):`;
           // Warm rows are written into targetNs (defaults to source namespace; set to
           // 'shared' or another value when WARM_CONSOLIDATION_TARGET is configured for
           // cross-project propagation).
+          // Merge context_signals from all hot rows in this batch:
+          // urgency = highest, sentiment = majority, session_type = majority
+          const mergedSignals: ContextSignals = (() => {
+            const urgencyOrder: UrgencyLevel[] = ['low', 'medium', 'high', 'critical'];
+            let maxUrgency: UrgencyLevel = 'medium';
+            const sentimentCounts: Record<string, number> = {};
+            const sessionTypeCounts: Record<string, number> = {};
+            for (const r of hotRows.rows) {
+              const sig = r.context_signals ?? {};
+              if (sig.urgency) {
+                const idx = urgencyOrder.indexOf(sig.urgency);
+                if (idx > urgencyOrder.indexOf(maxUrgency)) maxUrgency = sig.urgency;
+              }
+              if (sig.sentiment) sentimentCounts[sig.sentiment] = (sentimentCounts[sig.sentiment] ?? 0) + 1;
+              if (sig.session_type) sessionTypeCounts[sig.session_type] = (sessionTypeCounts[sig.session_type] ?? 0) + 1;
+            }
+            const topSentiment = Object.entries(sentimentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as SentimentTag | undefined;
+            const topSessionType = Object.entries(sessionTypeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as SessionType | undefined;
+            return { urgency: maxUrgency, sentiment: topSentiment ?? 'neutral', session_type: topSessionType ?? 'unknown' };
+          })();
+
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id)
-             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, epistemic_status, context_signals)
+             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, 'provisional', $13)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals)],
           );
           const warmRowId = warmRow.rows[0]!.id;
 
@@ -4505,5 +4625,310 @@ Guidelines:
     } finally {
       client.release();
     }
+  }
+
+  // ─── Feature 1: Epistemic Profile ──────────────────────────────────────────
+
+  async getEpistemicProfile(agentId: string): Promise<Record<string, number>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{ epistemic_status: string; count: string }>(
+      `SELECT epistemic_status, count(*)::text as count
+       FROM warm_tier WHERE agent_id = $1
+       GROUP BY epistemic_status`,
+      [agentId],
+    );
+    const profile: Record<string, number> = {
+      established: 0,
+      provisional: 0,
+      contested: 0,
+      deprecated: 0,
+      inferred: 0,
+    };
+    for (const row of rows) {
+      profile[row.epistemic_status] = parseInt(row.count, 10);
+    }
+    return profile;
+  }
+
+  // ─── Feature 2: Explainable Memory Operations ─────────────────────────────
+
+  async explainMemory(agentId: string, warmTierId: bigint): Promise<Record<string, unknown>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{
+      id: bigint; content: string; importance: number; confidence: number;
+      epistemic_status: string; evidence_count: number;
+      access_count: number; last_accessed: Date | null;
+      staleness_score: number; revision_count: number;
+      consolidated_at: Date; graduated: boolean;
+    }>(
+      `SELECT id, content, importance, confidence, epistemic_status, evidence_count,
+              access_count, last_accessed, staleness_score, revision_count,
+              consolidated_at, graduated
+       FROM warm_tier WHERE id = $1 AND agent_id = $2`,
+      [warmTierId, agentId],
+    );
+    if (rows.length === 0) {
+      throw Object.assign(
+        new Error(`warm_tier row ${warmTierId} not found for agent ${agentId}`),
+        { code: 'NOT_FOUND' },
+      );
+    }
+    const row = rows[0]!;
+    const evictionThreshold = this.config.sleepCycle.evictionThreshold;
+    const revisionThreshold = this.config.sleepCycle.revisionThreshold;
+    return {
+      id: row.id,
+      content_preview: row.content.slice(0, 200),
+      importance: row.importance,
+      confidence: row.confidence,
+      epistemic_status: row.epistemic_status,
+      evidence_count: row.evidence_count,
+      access_count: row.access_count,
+      last_accessed: row.last_accessed,
+      staleness_score: row.staleness_score,
+      revision_count: row.revision_count,
+      consolidated_at: row.consolidated_at,
+      graduated: row.graduated,
+      thresholds: {
+        eviction: evictionThreshold,
+        revision: revisionThreshold,
+        would_evict: row.importance < evictionThreshold && !row.graduated,
+        would_flag_revision: row.confidence < revisionThreshold,
+      },
+    };
+  }
+
+  // ─── Feature 3: Causal Memory Graph ───────────────────────────────────────
+
+  async getCausalChain(
+    agentId: string,
+    memoryId: bigint,
+    direction: 'causes' | 'effects',
+    depth: number = 3,
+  ): Promise<CausalChainNode[]> {
+    this.assertAgentId(agentId);
+    const safeDepth = Math.min(Math.max(1, depth), 10);
+
+    // Recursive CTE traversing causal_edges in the requested direction
+    const isEffects = direction === 'effects';
+    const startCol = isEffects ? 'cause_id' : 'effect_id';
+    const nextCol = isEffects ? 'effect_id' : 'cause_id';
+    const joinCol = isEffects ? 'cause_id' : 'effect_id';
+    const castDirection = isEffects ? 'effect' : 'cause';
+
+    const { rows } = await this.pool.query<CausalChainNode>(
+      `WITH RECURSIVE chain AS (
+         SELECT ce.${nextCol} AS memory_id, ce.strength AS edge_strength, ce.confidence AS edge_confidence, 1 AS depth
+         FROM causal_edges ce
+         WHERE ce.agent_id = $1 AND ce.${startCol} = $2
+       UNION ALL
+         SELECT ce.${nextCol}, ce.strength, ce.confidence, c.depth + 1
+         FROM causal_edges ce
+         JOIN chain c ON ce.${joinCol} = c.memory_id AND ce.agent_id = $1
+         WHERE c.depth < $3
+       )
+       SELECT c.memory_id, w.content, '${castDirection}'::text AS direction,
+              c.edge_strength, c.edge_confidence, c.depth
+       FROM chain c
+       JOIN warm_tier w ON w.id = c.memory_id AND w.agent_id = $1
+       ORDER BY c.depth ASC, c.edge_strength DESC
+       LIMIT 50`,
+      [agentId, memoryId, safeDepth],
+    );
+    return rows;
+  }
+
+  async predict(agentId: string, context: string): Promise<PredictionResult> {
+    this.assertAgentId(agentId);
+    if (!context || typeof context !== 'string') {
+      throw new TypeError('context must be a non-empty string');
+    }
+
+    // Find warm-tier memories matching the context
+    const contextResults = await this.query(agentId, {
+      q: context,
+      limit: 5,
+      namespace: DEFAULT_NAMESPACE,
+    });
+
+    if (contextResults.length === 0) {
+      return { predicted_events: [] };
+    }
+
+    const matchIds = contextResults.map((r) => r.id);
+
+    // Follow causal_edges from matched memories to find probable effects
+    const { rows } = await this.pool.query<{
+      content: string; memory_id: bigint; strength: number;
+      confidence: number; avg_lag_seconds: number | null;
+    }>(
+      `SELECT w.content, ce.effect_id AS memory_id, ce.strength, ce.confidence, ce.avg_lag_seconds
+       FROM causal_edges ce
+       JOIN warm_tier w ON w.id = ce.effect_id AND w.agent_id = $1
+       WHERE ce.agent_id = $1 AND ce.cause_id = ANY($2)
+       ORDER BY ce.strength * ce.confidence DESC
+       LIMIT 10`,
+      [agentId, matchIds],
+    );
+
+    return {
+      predicted_events: rows.map((r) => ({
+        content: r.content,
+        memory_id: r.memory_id,
+        probability: Math.min(1.0, r.strength * r.confidence),
+        avg_lag_seconds: r.avg_lag_seconds,
+      })),
+    };
+  }
+
+  // ─── Feature 4: Hierarchical Abstraction Engine ───────────────────────────
+
+  async getAbstractions(
+    agentId: string,
+    level?: AbstractionLevel,
+    namespace?: string,
+  ): Promise<Abstraction[]> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+    const params: SqlParam[] = [agentId, ns];
+    let levelFilter = '';
+    if (level) {
+      params.push(level);
+      levelFilter = `AND level = $${params.length}`;
+    }
+    params.push(50); // limit
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<Abstraction>(
+      `SELECT id, agent_id, level, content, source_reflection_ids, confidence, active, namespace, created_at
+       FROM abstractions
+       WHERE agent_id = $1 AND namespace = $2 AND active = true ${levelFilter}
+       ORDER BY confidence DESC, created_at DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows;
+  }
+
+  async getPrinciples(agentId: string, namespace?: string): Promise<Abstraction[]> {
+    return this.getAbstractions(agentId, 'principle', namespace);
+  }
+
+  // ─── Feature 7: Cross-Agent Transfer Learning ─────────────────────────────
+
+  async bootstrapAgent(options: BootstrapOptions): Promise<BootstrapResult> {
+    this.assertAgentId(options.sourceAgentId);
+    this.assertAgentId(options.targetAgentId);
+    if (options.sourceAgentId === options.targetAgentId) {
+      throw new TypeError('source and target agent must be different');
+    }
+
+    const ns = resolveNamespace(options.namespace);
+    const maxMemories = options.maxMemories ?? 100;
+    const maxProcedures = options.maxProcedures ?? 20;
+    const maxPrinciples = options.maxPrinciples ?? 10;
+
+    // Ensure target agent exists
+    if (this.config.autoRegisterAgents) {
+      await this.registerAgent(options.targetAgentId);
+    }
+
+    let memoriesTransferred = 0;
+    let proceduresTransferred = 0;
+    let principlesTransferred = 0;
+
+    // Copy established memories with discounted confidence
+    if (maxMemories > 0) {
+      const { rows: memories } = await this.pool.query<{
+        content: string; metadata: Record<string, unknown>; importance: number;
+        confidence: number; namespace: string;
+      }>(
+        `SELECT content, metadata, importance, confidence, namespace
+         FROM warm_tier
+         WHERE agent_id = $1 AND namespace = $2 AND epistemic_status = 'established'
+         ORDER BY importance DESC
+         LIMIT $3`,
+        [options.sourceAgentId, ns, maxMemories],
+      );
+      for (const mem of memories) {
+        const transferMeta: Record<string, unknown> = {
+          ...mem.metadata,
+          _transferred_from: options.sourceAgentId,
+        };
+        await this.pool.query(
+          `INSERT INTO warm_tier (agent_id, content, source_hot_ids, metadata, importance, confidence, namespace, epistemic_status)
+           VALUES ($1, $2, '{}', $3, $4, $5, $6, 'inferred')`,
+          [options.targetAgentId, mem.content, JSON.stringify(transferMeta), mem.importance * 0.5, mem.confidence * 0.5, mem.namespace],
+        );
+        memoriesTransferred++;
+      }
+    }
+
+    // Copy active procedures with discounted confidence
+    if (maxProcedures > 0) {
+      const { rows: procedures } = await this.pool.query<{
+        condition: string; action: string; confidence: number; namespace: string;
+        metadata: Record<string, unknown>;
+      }>(
+        `SELECT condition, action, confidence, namespace, metadata
+         FROM procedures
+         WHERE agent_id = $1 AND namespace = $2 AND active = true
+         ORDER BY confidence DESC
+         LIMIT $3`,
+        [options.sourceAgentId, ns, maxProcedures],
+      );
+      for (const proc of procedures) {
+        const transferMeta: Record<string, unknown> = {
+          ...proc.metadata,
+          _transferred_from: options.sourceAgentId,
+        };
+        await this.pool.query(
+          `INSERT INTO procedures (agent_id, condition, action, confidence, namespace, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT DO NOTHING`,
+          [options.targetAgentId, proc.condition, proc.action, proc.confidence * 0.5, proc.namespace, JSON.stringify(transferMeta)],
+        );
+        proceduresTransferred++;
+      }
+    }
+
+    // Copy active principles with discounted confidence
+    if (maxPrinciples > 0) {
+      const { rows: principles } = await this.pool.query<{
+        content: string; confidence: number; namespace: string; level: string;
+        source_reflection_ids: bigint[];
+      }>(
+        `SELECT content, confidence, namespace, level, source_reflection_ids
+         FROM abstractions
+         WHERE agent_id = $1 AND namespace = $2 AND active = true AND level = 'principle'
+         ORDER BY confidence DESC
+         LIMIT $3`,
+        [options.sourceAgentId, ns, maxPrinciples],
+      );
+      for (const p of principles) {
+        await this.pool.query(
+          `INSERT INTO abstractions (agent_id, level, content, source_reflection_ids, confidence, namespace)
+           VALUES ($1, $2, $3, '{}', $4, $5)`,
+          [options.targetAgentId, p.level, p.content, p.confidence * 0.5, p.namespace],
+        );
+        principlesTransferred++;
+      }
+    }
+
+    log.info({
+      sourceAgentId: options.sourceAgentId,
+      targetAgentId: options.targetAgentId,
+      memoriesTransferred,
+      proceduresTransferred,
+      principlesTransferred,
+    }, 'agent bootstrap complete');
+
+    return {
+      memories_transferred: memoriesTransferred,
+      procedures_transferred: proceduresTransferred,
+      principles_transferred: principlesTransferred,
+      source_agent_id: options.sourceAgentId,
+      target_agent_id: options.targetAgentId,
+    };
   }
 }

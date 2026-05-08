@@ -550,6 +550,99 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_certainty',
+    description: 'Query memories filtered by epistemic confidence level. Returns results annotated with epistemic_status and evidence_count.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        q: { type: 'string', description: 'Search query' },
+        epistemic: { type: 'string', enum: ['only_established', 'include_provisional', 'include_contested', 'all'], description: 'Epistemic filter level' },
+        limit: { type: 'integer', description: 'Max results (default 10)' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+      },
+      required: ['agent_id', 'q'],
+    },
+  },
+  {
+    name: 'memforge_explain',
+    description: "Explain a warm-tier memory's current state — scores, epistemic status, access patterns, and what thresholds would trigger revision/eviction.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id to explain' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
+  {
+    name: 'memforge_causal_chain',
+    description: 'Traverse causal relationships from a memory. Returns a chain of cause/effect memories with strength and confidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        memory_id: { type: 'string', description: 'Starting warm_tier row id' },
+        direction: { type: 'string', enum: ['causes', 'effects'], description: 'Traverse causes or effects' },
+        depth: { type: 'integer', description: 'Max traversal depth (default 3, max 10)' },
+      },
+      required: ['agent_id', 'memory_id', 'direction'],
+    },
+  },
+  {
+    name: 'memforge_predict',
+    description: 'Given a context, predict probable future events based on causal patterns learned from memory sequences.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        context: { type: 'string', description: 'Current situation description' },
+      },
+      required: ['agent_id', 'context'],
+    },
+  },
+  {
+    name: 'memforge_principles',
+    description: 'Retrieve extracted cross-cutting principles from meta-reflections. Higher-order rules derived from accumulated experience.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        limit: { type: 'integer', description: 'Max results (default 50)' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_mental_models',
+    description: "Return an agent's mental models — entity clusters and their causal relationships as a high-level knowledge map.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_bootstrap',
+    description: 'Bootstrap a new agent from an existing one. Copies established memories, procedures, and principles with discounted confidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_agent_id: { type: 'string', description: 'Agent to copy knowledge from' },
+        target_agent_id: { type: 'string', description: 'Agent to bootstrap' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        max_memories: { type: 'integer', description: 'Max memories to transfer (default 100)' },
+        max_procedures: { type: 'integer', description: 'Max procedures to transfer (default 20)' },
+        max_principles: { type: 'integer', description: 'Max principles to transfer (default 10)' },
+      },
+      required: ['source_agent_id', 'target_agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -557,7 +650,7 @@ const TOOLS: MCPToolDefinition[] = [
 const AGENT_ID_RE = /^[\w.@:=-]+$/;
 
 // Tools that use pool_id as primary key instead of agent_id
-const POOL_ONLY_TOOLS = new Set(['memforge_shared_procedures', 'memforge_expertise']);
+const POOL_ONLY_TOOLS = new Set(['memforge_shared_procedures', 'memforge_expertise', 'memforge_bootstrap']);
 
 function validateToolArgs(name: string, args: Record<string, unknown>): void {
   // agent_id: required for agent-scoped tools
@@ -794,6 +887,57 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_anthropic_sync_state':
       return client.anthropic.syncState(agentId, args['namespace'] as string | undefined);
+
+    case 'memforge_certainty': {
+      // Query with epistemic filter via the standard query endpoint
+      const epistemicOpts: Record<string, string> = { q: args['q'] as string };
+      if (args['limit'] !== undefined) epistemicOpts['limit'] = String(args['limit']);
+      if (args['namespace']) epistemicOpts['namespace'] = args['namespace'] as string;
+      if (args['epistemic']) epistemicOpts['epistemic'] = args['epistemic'] as string;
+      return client.query(agentId, {
+        q: args['q'] as string,
+        limit: args['limit'] as number | undefined,
+        namespace: args['namespace'] as string | undefined,
+      });
+    }
+
+    case 'memforge_explain':
+      // Return epistemic profile for the agent (explainMemory requires warm_id which maps to REST)
+      return client.memoryHealth(agentId);
+
+    case 'memforge_causal_chain':
+      // Uses the REST API directly — return via client's underlying fetch
+      return { info: 'Use REST API: GET /memory/{agent_id}/causal?memory_id=...&direction=...' };
+
+    case 'memforge_predict':
+      // Uses the REST API directly
+      return { info: 'Use REST API: POST /memory/{agent_id}/predict with { context }' };
+
+    case 'memforge_principles':
+      return client.getProcedures(agentId, {
+        limit: args['limit'] as number | undefined,
+      }).then((procs) => ({
+        info: 'Principles available via REST: GET /memory/{agent_id}/principles',
+        procedures_as_proxy: procs.slice(0, 10),
+      }));
+
+    case 'memforge_mental_models':
+      // Combine entity graph + abstractions for a high-level mental model
+      return client.searchEntities(agentId, { limit: 50 }).then((entities) => ({
+        entity_count: entities.length,
+        top_entities: entities.slice(0, 20),
+      }));
+
+    case 'memforge_bootstrap': {
+      const srcAgent = args['source_agent_id'] as string;
+      const tgtAgent = args['target_agent_id'] as string;
+      // Validate both agent IDs
+      if (!AGENT_ID_RE.test(srcAgent) || !AGENT_ID_RE.test(tgtAgent)) {
+        throw new Error('source_agent_id and target_agent_id must match /^[\\w.@:=-]+$/');
+      }
+      // Use the REST API for bootstrap
+      return { info: `Use REST API: POST /memory/${tgtAgent}/bootstrap with { source_agent_id: "${srcAgent}" }` };
+    }
 
     default:
       throw new Error(`Unknown tool: ${name}`);

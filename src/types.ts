@@ -67,6 +67,9 @@ export interface QueryResult {
   time_start: Date | null;
   time_end: Date | null;
   rank: number;
+  epistemic_status?: EpistemicStatus;
+  evidence_count?: number;
+  explanation?: ExplanationFactor[];
 }
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
@@ -91,6 +94,10 @@ export interface QueryOptions {
   maxTokens?: number;
   /** Namespace to search within (default: 'default') */
   namespace?: string;
+  /** Epistemic filter — restrict results by confidence calibration level */
+  epistemic?: EpistemicFilter;
+  /** When true, attach per-result explanation factors to the response */
+  explain?: boolean;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -820,5 +827,107 @@ export interface ResumeContext {
     avg_importance: number;
     avg_confidence: number;
   };
+}
+
+// ─── Phase 5: Epistemic Confidence Model ────────────────────────────────────
+
+export type EpistemicStatus = 'established' | 'provisional' | 'contested' | 'deprecated' | 'inferred';
+
+export type EpistemicFilter = 'only_established' | 'include_provisional' | 'include_contested' | 'all';
+
+// ─── Phase 5: Explainable Memory Operations ─────────────────────────────────
+
+export interface ExplanationFactor {
+  name: string;
+  weight: number;
+  detail: string;
+}
+
+// ─── Phase 5: Causal Memory Graph ───────────────────────────────────────────
+
+export interface CausalEdge {
+  id: bigint;
+  agent_id: string;
+  cause_id: bigint;
+  effect_id: bigint;
+  strength: number;
+  observation_count: number;
+  avg_lag_seconds: number | null;
+  confidence: number;
+  created_at: Date;
+}
+
+export interface CausalChainNode {
+  memory_id: bigint;
+  content: string;
+  direction: 'cause' | 'effect';
+  edge_strength: number;
+  edge_confidence: number;
+  depth: number;
+}
+
+export interface PredictionResult {
+  predicted_events: Array<{
+    content: string;
+    memory_id: bigint;
+    probability: number;
+    avg_lag_seconds: number | null;
+  }>;
+}
+
+// ─── Phase 5: Hierarchical Abstraction ──────────────────────────────────────
+
+export type AbstractionLevel = 'principle' | 'strategy' | 'mental_model';
+
+export interface Abstraction {
+  id: bigint;
+  agent_id: string;
+  level: AbstractionLevel;
+  content: string;
+  source_reflection_ids: bigint[];
+  confidence: number;
+  active: boolean;
+  namespace: string;
+  created_at: Date;
+}
+
+// ─── Phase 5: Adaptive Sleep Intelligence ───────────────────────────────────
+
+export interface PhaseAnalytics {
+  phase: string;
+  duration_ms: number;
+  tokens_used: number;
+  changes_made: number;
+}
+
+// ─── Phase 5: Memory Sentiment Tagging ──────────────────────────────────────
+
+export type UrgencyLevel = 'low' | 'medium' | 'high' | 'critical';
+export type SentimentTag = 'positive' | 'negative' | 'neutral';
+export type SessionType = 'debug' | 'plan' | 'review' | 'explore' | 'build' | 'unknown';
+
+export interface ContextSignals {
+  urgency?: UrgencyLevel;
+  sentiment?: SentimentTag;
+  session_type?: SessionType;
+}
+
+// ─── Phase 5: Cross-Agent Transfer Learning ─────────────────────────────────
+
+export interface BootstrapOptions {
+  sourceAgentId: string;
+  targetAgentId: string;
+  namespace?: string;
+  maxMemories?: number;
+  maxProcedures?: number;
+  maxPrinciples?: number;
+}
+
+export interface BootstrapResult {
+  memories_transferred: number;
+  procedures_transferred: number;
+  principles_transferred: number;
+  source_agent_id: string;
+  target_agent_id: string;
 }
 
