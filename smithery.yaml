@@ -1,0 +1,25 @@
+startCommand:
+  type: stdio
+
+configSchema:
+  type: object
+  required:
+    - MEMFORGE_URL
+  properties:
+    MEMFORGE_URL:
+      type: string
+      default: "http://localhost:3333"
+      description: "URL of the MemForge service"
+    MEMFORGE_TOKEN:
+      type: string
+      description: "Bearer token for MemForge API authentication"
+
+commandFunction: |-
+  (config) => ({
+    command: "npx",
+    args: ["memforge-mcp"],
+    env: {
+      MEMFORGE_URL: config.MEMFORGE_URL,
+      MEMFORGE_TOKEN: config.MEMFORGE_TOKEN || ""
+    }
+  })

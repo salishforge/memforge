@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.salishforge/memforge-mcp",
+  "title": "MemForge",
+  "description": "Neuroscience-inspired memory system for AI agents. Tiered storage (hot/warm/cold), hybrid retrieval (FTS + pgvector), knowledge graph, and a 10-phase sleep cycle that actively revises and improves stored knowledge during idle periods. 17 MCP tools.",
+  "version": "3.0.0",
+  "repository": {
+    "url": "https://github.com/salishforge/memforge",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "memforge-mcp",
+      "version": "3.0.0",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "MEMFORGE_URL",
+          "description": "URL of the MemForge service (e.g. http://localhost:3333)",
+          "isRequired": true
+        },
+        {
+          "name": "MEMFORGE_TOKEN",
+          "description": "Bearer token for MemForge API authentication",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
