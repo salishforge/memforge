@@ -9,7 +9,7 @@ import { wrapUserContent } from './llm.js';
 import type { LLMProvider } from './llm.js';
 import { safeParseLLMResponse, RevisionResponseSchema } from './schemas.js';
 import type { EmbeddingProvider } from './embedding.js';
-import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult } from './types.js';
+import type { SleepCycleConfig, SleepCycleResult, RevisionType, SharedPoolSleepCycleResult, PhaseAnalytics } from './types.js';
 import type { AuditChain } from './audit.js';
 import { getLogger } from './logger.js';
 
@@ -228,11 +228,32 @@ export class SleepCycleEngine {
       log.error({ err, agentId }, 'deprecated namespace decay failed');
     }
 
+    // Phase 5.11: Principle Extraction — extract cross-cutting principles from meta-reflections
+    try {
+      await this.phasePrincipleExtraction(agentId, tokensUsed);
+    } catch (err) {
+      log.error({ err, agentId }, 'principle extraction failed');
+    }
+
+    // Phase 5.12: Epistemic Promotion — promote/demote memories based on evidence
+    try {
+      await this.phaseEpistemicPromotion(agentId);
+    } catch (err) {
+      log.error({ err, agentId }, 'epistemic promotion failed');
+    }
+
     // Phase 5.8: Drift Snapshot — record drift signals for trend detection
     try {
       await this.phaseDriftSnapshot(agentId, temporalExpired);
     } catch (err) {
       log.error({ err, agentId }, 'drift snapshot failed');
+    }
+
+    // Phase 6.1: Causal Inference — discover A→B patterns from temporal sequences
+    try {
+      await this.phaseCausalInference(agentId);
+    } catch (err) {
+      log.error({ err, agentId }, 'causal inference failed');
     }
 
     // Phase 6: Archive expired audit records
@@ -882,27 +903,42 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
         }
       }
 
-      const winnerId = scoreA >= scoreB ? a.id : b.id;
-      const strategy = scoreA >= scoreB
-        ? `multi_factor(A=${scoreA},B=${scoreB})`
-        : `multi_factor(A=${scoreA},B=${scoreB})`;
+      // Feature 1: Epistemic — when score delta < 20%, set both to 'contested' instead of picking a winner
+      const scoreDelta = Math.abs(scoreA - scoreB);
+      const maxScore = Math.max(scoreA, scoreB, 1);
 
-      const loserId = winnerId === a.id ? b.id : a.id;
+      if (scoreDelta / maxScore < 0.2) {
+        // Close call — mark both as contested
+        await this.pool.query(
+          `UPDATE memory_conflicts SET resolved = true, resolution_strategy = $2, resolved_at = now()
+           WHERE id = $1`,
+          [conflict.id, `contested(A=${scoreA},B=${scoreB},delta=${(scoreDelta / maxScore * 100).toFixed(0)}%)`],
+        );
+        await this.pool.query(
+          `UPDATE warm_tier SET epistemic_status = 'contested'
+           WHERE id = ANY($1) AND agent_id = $2`,
+          [[a.id, b.id], agentId],
+        );
+      } else {
+        const winnerId = scoreA >= scoreB ? a.id : b.id;
+        const strategy = `multi_factor(A=${scoreA},B=${scoreB})`;
+        const loserId = winnerId === a.id ? b.id : a.id;
 
-      // Mark conflict resolved
-      await this.pool.query(
-        `UPDATE memory_conflicts SET resolved = true, winner_id = $2, resolution_strategy = $3, resolved_at = now()
-         WHERE id = $1`,
-        [conflict.id, winnerId, strategy],
-      );
+        // Mark conflict resolved
+        await this.pool.query(
+          `UPDATE memory_conflicts SET resolved = true, winner_id = $2, resolution_strategy = $3, resolved_at = now()
+           WHERE id = $1`,
+          [conflict.id, winnerId, strategy],
+        );
 
-      // Reduce loser's confidence (agent-scoped for defense-in-depth)
-      await this.pool.query(
-        `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
-           metadata = metadata || '{"_conflict_loser": true}'::jsonb
-         WHERE id = $1 AND agent_id = $2`,
-        [loserId, agentId],
-      );
+        // Reduce loser's confidence (agent-scoped for defense-in-depth)
+        await this.pool.query(
+          `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
+             metadata = metadata || '{"_conflict_loser": true}'::jsonb
+           WHERE id = $1 AND agent_id = $2`,
+          [loserId, agentId],
+        );
+      }
 
       resolved++;
     }
@@ -1404,6 +1440,179 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     if (parseInt(recentRevisions.rows[0]?.count ?? '0', 10) < 3) return false;
 
     return true;
+  }
+
+  // ─── Phase 5.11: Principle Extraction ─────────────────────────────────────
+
+  private async phasePrincipleExtraction(agentId: string, tokensUsed: number): Promise<void> {
+    if (tokensUsed >= this.config.tokenBudget) return;
+    if (!this.llm) return;
+
+    // Find meta-reflections (reflection_level > 1) that haven't been processed for principles
+    const { rows: metaReflections } = await this.pool.query<{
+      id: bigint; content: string; key_insights: string[];
+    }>(
+      `SELECT id, content, key_insights FROM reflections
+       WHERE agent_id = $1 AND reflection_level > 1
+       ORDER BY created_at DESC LIMIT 10`,
+      [agentId],
+    );
+
+    if (metaReflections.length < 3) return;
+
+    const insightsText = metaReflections
+      .map((r) => `Reflection ${r.id}: ${r.content.slice(0, 500)}`)
+      .join('\n\n');
+
+    try {
+      const response = await this.llm.chat(
+        `You extract cross-cutting principles from meta-reflections. Respond with JSON: { "principles": [{ "content": "...", "confidence": 0.0-1.0 }] }` + this.instructionsSuffix,
+        `Given these meta-reflections:\n\n${insightsText}\n\nExtract cross-cutting principles as a JSON array.`,
+      );
+
+      const { PrincipleExtractionSchema } = await import('./schemas.js');
+      const parsed = safeParseLLMResponse(PrincipleExtractionSchema, response);
+
+      const reflectionIds = metaReflections.map((r) => r.id);
+      for (const p of parsed.principles) {
+        await this.pool.query(
+          `INSERT INTO abstractions (agent_id, level, content, source_reflection_ids, confidence, namespace)
+           VALUES ($1, 'principle', $2, $3, $4, 'default')
+           ON CONFLICT DO NOTHING`,
+          [agentId, p.content, reflectionIds, p.confidence],
+        );
+      }
+
+      // Deactivate low-confidence principles that have appeared in 3+ cycles
+      await this.pool.query(
+        `UPDATE abstractions SET active = false
+         WHERE agent_id = $1 AND level = 'principle' AND confidence < 0.2
+           AND created_at < now() - interval '3 days' AND active = true`,
+        [agentId],
+      );
+    } catch (err) {
+      log.error({ err, agentId }, 'principle extraction LLM call failed');
+    }
+  }
+
+  // ─── Phase 5.12: Epistemic Promotion ──────────────────────────────────────
+
+  private async phaseEpistemicPromotion(agentId: string): Promise<void> {
+    // Promote provisional → established when evidence_count >= 3 from distinct sessions
+    await this.pool.query(
+      `UPDATE warm_tier SET epistemic_status = 'established', last_corroborated_at = now()
+       WHERE agent_id = $1
+         AND epistemic_status = 'provisional'
+         AND evidence_count >= 3
+         AND id IN (
+           SELECT rl.warm_tier_id
+           FROM retrieval_log rl
+           WHERE rl.agent_id = $1 AND rl.outcome = 'positive'
+           GROUP BY rl.warm_tier_id
+           HAVING COUNT(DISTINCT rl.namespace) >= 2
+         )`,
+      [agentId],
+    );
+
+    // Demote established → provisional when staleness_score > 0.7 and no access in 30 days
+    await this.pool.query(
+      `UPDATE warm_tier SET epistemic_status = 'provisional'
+       WHERE agent_id = $1
+         AND epistemic_status = 'established'
+         AND staleness_score > 0.7
+         AND (last_accessed IS NULL OR last_accessed < now() - interval '30 days')`,
+      [agentId],
+    );
+
+    // Increment evidence_count for memories with recent positive retrievals
+    await this.pool.query(
+      `UPDATE warm_tier w SET evidence_count = evidence_count + 1
+       FROM (
+         SELECT warm_tier_id
+         FROM retrieval_log
+         WHERE agent_id = $1 AND outcome = 'positive' AND created_at > now() - interval '24 hours'
+         GROUP BY warm_tier_id
+       ) recent
+       WHERE w.id = recent.warm_tier_id AND w.agent_id = $1`,
+      [agentId],
+    );
+  }
+
+  // ─── Phase 6.1: Causal Inference ──────────────────────────────────────────
+
+  private async phaseCausalInference(agentId: string): Promise<void> {
+    // Find repeated A→B patterns in memory_sequences — same entity pair appearing ≥3 times
+    // with temporal consistency
+    const { rows: patterns } = await this.pool.query<{
+      pred_id: bigint; succ_id: bigint; occurrence_count: string;
+      avg_gap: number; stddev_gap: number;
+    }>(
+      `SELECT ms.predecessor_id AS pred_id, ms.successor_id AS succ_id,
+              count(*)::text AS occurrence_count,
+              avg(ms.gap_seconds)::real AS avg_gap,
+              COALESCE(stddev(ms.gap_seconds), 0)::real AS stddev_gap
+       FROM memory_sequences ms
+       WHERE ms.agent_id = $1
+       GROUP BY ms.predecessor_id, ms.successor_id
+       HAVING count(*) >= 3
+       LIMIT 50`,
+      [agentId],
+    );
+
+    for (const p of patterns) {
+      const count = parseInt(p.occurrence_count, 10);
+      // coefficient of variation = stddev / mean (lower = more consistent)
+      const cv = p.avg_gap > 0 ? p.stddev_gap / p.avg_gap : 1;
+      const strength = count * (1 / Math.max(cv, 0.1));
+
+      if (strength < 0.1) continue; // too weak
+
+      await this.pool.query(
+        `INSERT INTO causal_edges (agent_id, cause_id, effect_id, strength, observation_count, avg_lag_seconds, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (agent_id, cause_id, effect_id)
+         DO UPDATE SET
+           strength = $4,
+           observation_count = $5,
+           avg_lag_seconds = $6,
+           confidence = LEAST(1.0, causal_edges.confidence + 0.1)`,
+        [agentId, p.pred_id, p.succ_id, Math.min(strength, 100), count, p.avg_gap, Math.min(1.0, 0.5 + count * 0.1)],
+      );
+    }
+
+    // Prune edges with strength < 0.1
+    await this.pool.query(
+      `DELETE FROM causal_edges WHERE agent_id = $1 AND strength < 0.1`,
+      [agentId],
+    );
+  }
+
+  // ─── Feature 5: Phase Analytics Helper ────────────────────────────────────
+
+  private async recordPhaseAnalytics(
+    agentId: string,
+    phase: string,
+    durationMs: number,
+    tokensUsed: number,
+    changesMade: number,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO sleep_phase_analytics (agent_id, phase, duration_ms, tokens_used, changes_made)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [agentId, phase, durationMs, tokensUsed, changesMade],
+    ).catch((err) => log.error({ err }, 'phase analytics recording failed'));
+  }
+
+  private async shouldSkipPhase(agentId: string, phase: string): Promise<boolean> {
+    // Check if last 3 cycles produced zero changes for this phase — skip if so
+    const { rows } = await this.pool.query<{ changes_made: number }>(
+      `SELECT changes_made FROM sleep_phase_analytics
+       WHERE agent_id = $1 AND phase = $2
+       ORDER BY created_at DESC LIMIT 3`,
+      [agentId, phase],
+    );
+    if (rows.length < 3) return false;
+    return rows.every((r) => r.changes_made === 0);
   }
 }
 

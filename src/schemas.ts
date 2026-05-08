@@ -224,6 +224,33 @@ export const DeclareRoleSchema = z.object({
   description: z.string().max(1_000).optional(),
 });
 
+// ─── Phase 5: New Feature Request Schemas ──────────────────────────────────
+
+export const BootstrapSchema = z.object({
+  source_agent_id: z.string().min(1).max(256),
+  namespace: NamespaceSchema.optional(),
+  max_memories: z.number().int().min(0).max(1000).optional(),
+  max_procedures: z.number().int().min(0).max(100).optional(),
+  max_principles: z.number().int().min(0).max(100).optional(),
+});
+
+export const PredictSchema = z.object({
+  context: z.string().min(1).max(10_000),
+});
+
+export const EpistemicFilterSchema = z.enum([
+  'only_established',
+  'include_provisional',
+  'include_contested',
+  'all',
+]);
+
+export const AbstractionLevelSchema = z.enum([
+  'principle',
+  'strategy',
+  'mental_model',
+]);
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({
@@ -267,6 +294,13 @@ export const ProcedureExtractionSchema = z.object({
   })).max(10).default([]),
 });
 
+
+export const PrincipleExtractionSchema = z.object({
+  principles: z.array(z.object({
+    content: z.string().min(1).max(2_000),
+    confidence: z.number().min(0).max(1),
+  })).max(10).default([]),
+});
 
 // ─── OAuth2 Introspect Schema ───────────────────────────────────────────────
 

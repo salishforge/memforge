@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, BootstrapSchema, PredictSchema, EpistemicFilterSchema, AbstractionLevelSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -443,6 +443,8 @@ export function createApp(deps: AppDependencies): express.Express {
     const decay = qstr(req.query['decay']);
     const maxTokens = qstr(req.query['max_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
+    const rawEpistemic = qstr(req.query['epistemic']);
+    const rawExplain = qstr(req.query['explain']);
 
     if (!q) {
       fail(res, 400, '"q" query param (string) is required');
@@ -513,6 +515,18 @@ export function createApp(deps: AppDependencies): express.Express {
 
     res.setHeader('X-Cache', 'MISS');
 
+    // Validate epistemic filter if provided
+    let epistemic: import('./types.js').EpistemicFilter | undefined;
+    if (rawEpistemic) {
+      const epResult = EpistemicFilterSchema.safeParse(rawEpistemic);
+      if (!epResult.success) {
+        fail(res, 400, '"epistemic" must be one of: only_established, include_provisional, include_contested, all');
+        return;
+      }
+      epistemic = epResult.data;
+    }
+    const explain = rawExplain === 'true';
+
     try {
       const results = await manager.query(agentId, {
         q,
@@ -523,6 +537,8 @@ export function createApp(deps: AppDependencies): express.Express {
         decayRate,
         maxTokens: maxTokensNum,
         namespace,
+        epistemic,
+        explain,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
@@ -1819,6 +1835,185 @@ export function createApp(deps: AppDependencies): express.Express {
           message: status >= 500 ? 'Internal server error' : e.message,
         },
       });
+    }
+  });
+
+  // ─── Feature 1: Epistemic Profile ──────────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/epistemic
+   * Returns counts by epistemic_status.
+   */
+  app.get('/memory/:agentId/epistemic', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    try {
+      const profile = await manager.getEpistemicProfile(getAgentId(req));
+      ok(res, profile);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Feature 3: Causal Memory Graph ──────────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/causal?memory_id=...&direction=causes|effects&depth=...
+   */
+  app.get('/memory/:agentId/causal', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const memoryId = qstr(req.query['memory_id']);
+    const direction = qstr(req.query['direction']);
+    const depth = qstr(req.query['depth']);
+
+    if (!memoryId) {
+      fail(res, 400, '"memory_id" query param is required');
+      return;
+    }
+    if (!direction || !['causes', 'effects'].includes(direction)) {
+      fail(res, 400, '"direction" must be "causes" or "effects"');
+      return;
+    }
+    const depthNum = depth !== undefined ? parseInt(depth, 10) : 3;
+    if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
+      fail(res, 400, '"depth" must be an integer between 1 and 10');
+      return;
+    }
+
+    try {
+      const chain = await manager.getCausalChain(
+        getAgentId(req),
+        BigInt(memoryId),
+        direction as 'causes' | 'effects',
+        depthNum,
+      );
+      ok(res, chain);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * POST /memory/:agentId/predict
+   * Body: { context }
+   */
+  app.post('/memory/:agentId/predict', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const parsed = PredictSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? '"context" (string) is required');
+      return;
+    }
+
+    try {
+      const predictions = await manager.predict(getAgentId(req), parsed.data.context);
+      ok(res, predictions);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Feature 4: Hierarchical Abstraction Engine ──────────────────────────
+
+  /**
+   * GET /memory/:agentId/principles?namespace=...&limit=...
+   */
+  app.get('/memory/:agentId/principles', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawNamespace = qstr(req.query['namespace']);
+    const limit = qnum(req.query['limit']);
+
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    try {
+      const principles = await manager.getPrinciples(getAgentId(req), namespace);
+      const limited = limit ? principles.slice(0, limit) : principles;
+      ok(res, limited);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * GET /memory/:agentId/abstractions?level=...&namespace=...
+   */
+  app.get('/memory/:agentId/abstractions', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawLevel = qstr(req.query['level']);
+    const rawNamespace = qstr(req.query['namespace']);
+
+    let level: import('./types.js').AbstractionLevel | undefined;
+    if (rawLevel) {
+      const levelResult = AbstractionLevelSchema.safeParse(rawLevel);
+      if (!levelResult.success) {
+        fail(res, 400, '"level" must be one of: principle, strategy, mental_model');
+        return;
+      }
+      level = levelResult.data;
+    }
+
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    try {
+      const abstractions = await manager.getAbstractions(getAgentId(req), level, namespace);
+      ok(res, abstractions);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  // ─── Feature 7: Cross-Agent Transfer Learning ───────────────────────────
+
+  /**
+   * POST /memory/:agentId/bootstrap
+   * Body: { source_agent_id, namespace?, max_memories?, max_procedures?, max_principles? }
+   */
+  app.post('/memory/:agentId/bootstrap', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = BootstrapSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? '"source_agent_id" is required');
+      return;
+    }
+
+    try {
+      const result = await manager.bootstrapAgent({
+        sourceAgentId: parsed.data.source_agent_id,
+        targetAgentId: getAgentId(req),
+        namespace: parsed.data.namespace,
+        maxMemories: parsed.data.max_memories,
+        maxProcedures: parsed.data.max_procedures,
+        maxPrinciples: parsed.data.max_principles,
+      });
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
     }
   });
 
