@@ -119,36 +119,86 @@ export class SleepCycleEngine {
   /**
    * Execute a full sleep cycle for an agent.
    * Phases run sequentially; LLM phases respect the token budget.
+   *
+   * Each top-level phase invocation is wrapped in timing + a
+   * `recordPhaseAnalytics()` write so callers can inspect per-phase
+   * duration/changes via `sleep_phase_analytics`. Phases that are safe to
+   * skip when idle (the cleanup / reflection tail) consult
+   * `shouldSkipPhase()` first: if the last three recorded runs all had
+   * `changes_made = 0`, the phase short-circuits without I/O and without
+   * recording a fresh row (so the skip persists naturally — a write would
+   * just re-anchor the same zero history with a new timestamp).
    */
   async run(agentId: string): Promise<SleepCycleResult> {
     const start = Date.now();
     let tokensUsed = 0;
 
+    // Local helper — wraps a phase call with timing + analytics. Returns
+    // the phase's reported change count so the caller can fold it into
+    // SleepCycleResult. Skippable phases pass skippable=true; non-skippable
+    // (core hot-path) phases must always run.
+    const runPhase = async (
+      phase: string,
+      fn: () => Promise<number>,
+      opts: { skippable?: boolean } = {},
+    ): Promise<number> => {
+      if (opts.skippable && (await this.shouldSkipPhase(agentId, phase))) {
+        log.debug({ agentId, phase }, 'sleep phase skipped — 3 prior idle runs');
+        return 0;
+      }
+      const phaseStart = Date.now();
+      const changes = await fn();
+      await this.recordPhaseAnalytics(
+        agentId,
+        phase,
+        Date.now() - phaseStart,
+        0,
+        changes,
+      );
+      return changes;
+    };
+
     // Phase 0: Autonomous weight adaptation
     await this.throwIfCanceled();
-    await this.phaseWeightAdaptation(agentId);
+    await runPhase('weight-adaptation', async () => {
+      await this.phaseWeightAdaptation(agentId);
+      return 0;
+    });
 
     // Phase 1: Scoring
     await this.throwIfCanceled();
-    const scoresUpdated = await this.phaseScoring(agentId);
+    const scoresUpdated = await runPhase('scoring', () => this.phaseScoring(agentId));
 
     // Phase 2: Triage
     await this.throwIfCanceled();
-    const { evicted, flaggedIds } = await this.phaseTriage(agentId);
+    let evicted = 0;
+    let flaggedIds: bigint[] = [];
+    await runPhase('triage', async () => {
+      const triage = await this.phaseTriage(agentId);
+      evicted = triage.evicted;
+      flaggedIds = triage.flaggedIds;
+      return evicted + flaggedIds.length;
+    });
 
     // Phase 2b: Capacity eviction — enforce per-agent warm_tier hard cap.
     // Runs after threshold eviction so the threshold pass already removed the
     // cheapest evictees; we only evict further if the agent is still over cap.
-    const capacityEvicted = await this.phaseCapacityEviction(agentId);
+    const capacityEvicted = await runPhase('capacity-eviction', () =>
+      this.phaseCapacityEviction(agentId),
+    );
 
     // Phase 2.5: Conflict Resolution — resolve contradicting memories
     await this.throwIfCanceled();
-    const conflictsResolved = await this.phaseConflictResolution(agentId);
+    const conflictsResolved = await runPhase('conflict-resolution', () =>
+      this.phaseConflictResolution(agentId),
+    );
 
     // Phase 3: Revision (bounded by token budget and optional per-cycle cap)
     const maxRevisions = this.config.maxRevisionsPerCycle ?? flaggedIds.length;
     let revised = 0;
     let skipped = 0;
+    const phase3Start = Date.now();
+    const phase3StartTokens = tokensUsed;
     for (const warmId of flaggedIds) {
       if (tokensUsed >= this.config.tokenBudget || revised >= maxRevisions) {
         skipped = flaggedIds.length - revised;
@@ -165,21 +215,41 @@ export class SleepCycleEngine {
         skipped++;
       }
     }
+    await this.recordPhaseAnalytics(
+      agentId,
+      'revision',
+      Date.now() - phase3Start,
+      tokensUsed - phase3StartTokens,
+      revised,
+    );
 
     // Phase 4: Graph maintenance + entity deduplication
     let edgesInvalidated = 0;
     let entitiesMerged = 0;
     if (tokensUsed < this.config.tokenBudget) {
       await this.throwIfCanceled();
-      edgesInvalidated = await this.phaseGraphMaintenance(agentId);
-      entitiesMerged = await this.phaseEntityDedup(agentId);
+      edgesInvalidated = await runPhase(
+        'graph-maintenance',
+        () => this.phaseGraphMaintenance(agentId),
+        { skippable: true },
+      );
+      entitiesMerged = await runPhase(
+        'entity-dedup',
+        () => this.phaseEntityDedup(agentId),
+        { skippable: true },
+      );
     }
 
     // Phase 5: Reflection (optional)
     let didReflect = false;
     if (this.config.includeReflection && tokensUsed < this.config.tokenBudget) {
       await this.throwIfCanceled();
-      didReflect = await this.phaseReflection(agentId);
+      const reflectionChanges = await runPhase(
+        'reflection',
+        async () => ((await this.phaseReflection(agentId)) ? 1 : 0),
+        { skippable: true },
+      );
+      didReflect = reflectionChanges > 0;
     }
 
     // Phase 5b: Cold tier retention purge (optional)
@@ -189,18 +259,32 @@ export class SleepCycleEngine {
     // tail of the cycle, consistent with Phase 6 (audit archive).
     let coldPurged = 0;
     if (this.config.coldRetentionDays) {
-      coldPurged = await this.phaseColdPurge(agentId, this.config.coldRetentionDays);
+      const retentionDays = this.config.coldRetentionDays;
+      coldPurged = await runPhase('cold-purge', () =>
+        this.phaseColdPurge(agentId, retentionDays),
+      );
     }
 
     // Phase 5.5: Schema Detection — find repeated temporal sequences
-    let schemasDetected = 0;
-    schemasDetected = await this.phaseSchemaDetection(agentId);
+    const schemasDetected = await runPhase(
+      'schema-detection',
+      () => this.phaseSchemaDetection(agentId),
+      { skippable: true },
+    );
 
     // Phase 5.6: Temporal Validation — penalize expired memories, flag for revision
-    const temporalExpired = await this.phaseTemporalValidation(agentId);
+    const temporalExpired = await runPhase(
+      'temporal-validation',
+      () => this.phaseTemporalValidation(agentId),
+      { skippable: true },
+    );
 
     // Phase 5.7: Procedure Evolution — adjust confidence based on outcome history
-    const proceduresEvolved = await this.phaseProcedureEvolution(agentId);
+    const proceduresEvolved = await runPhase(
+      'procedure-evolution',
+      () => this.phaseProcedureEvolution(agentId),
+      { skippable: true },
+    );
 
     // Phase 5.9: Embedding Migration — re-embed rows whose embedding_model
     // differs from the current provider. Positioned before drift snapshot so
@@ -210,9 +294,15 @@ export class SleepCycleEngine {
     let embeddingsMigrated = 0;
     let embeddingsBacklog = 0;
     try {
-      const result = await this.phaseEmbeddingMigration(agentId);
-      embeddingsMigrated = result.migrated;
-      embeddingsBacklog = result.backlog;
+      embeddingsMigrated = await runPhase(
+        'embedding-migration',
+        async () => {
+          const result = await this.phaseEmbeddingMigration(agentId);
+          embeddingsBacklog = result.backlog;
+          return result.migrated;
+        },
+        { skippable: true },
+      );
     } catch (err) {
       log.error({ err, agentId }, 'embedding migration failed');
     }
@@ -223,7 +313,11 @@ export class SleepCycleEngine {
     // importance falls below evictionThreshold.
     let deprecatedDecayed = 0;
     try {
-      deprecatedDecayed = await this.phaseDeprecatedDecay(agentId);
+      deprecatedDecayed = await runPhase(
+        'deprecated-decay',
+        () => this.phaseDeprecatedDecay(agentId),
+        { skippable: true },
+      );
     } catch (err) {
       log.error({ err, agentId }, 'deprecated namespace decay failed');
     }
@@ -231,14 +325,19 @@ export class SleepCycleEngine {
     // Phase 5.12: Epistemic Promotion — promote/demote memories based on evidence
     let epistemicPromoted = 0;
     try {
-      epistemicPromoted = await this.phaseEpistemicPromotion(agentId);
+      epistemicPromoted = await runPhase('epistemic-promotion', () =>
+        this.phaseEpistemicPromotion(agentId),
+      );
     } catch (err) {
       log.error({ err, agentId }, 'epistemic promotion failed');
     }
 
     // Phase 5.8: Drift Snapshot — record drift signals for trend detection
     try {
-      await this.phaseDriftSnapshot(agentId, temporalExpired);
+      await runPhase('drift-snapshot', async () => {
+        await this.phaseDriftSnapshot(agentId, temporalExpired);
+        return 0;
+      });
     } catch (err) {
       log.error({ err, agentId }, 'drift snapshot failed');
     }
@@ -246,9 +345,12 @@ export class SleepCycleEngine {
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
     if (this.audit) {
+      const audit = this.audit;
       try {
-        const archiveResult = await this.audit.archiveExpired(agentId);
-        auditArchived = archiveResult.archived + archiveResult.pruned;
+        auditArchived = await runPhase('audit-archive', async () => {
+          const archiveResult = await audit.archiveExpired(agentId);
+          return archiveResult.archived + archiveResult.pruned;
+        });
       } catch (err) {
         log.error({ err }, 'audit archive failed');
       }
