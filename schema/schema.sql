@@ -33,16 +33,18 @@ CREATE TABLE IF NOT EXISTS agents (
 -- Added in v2.4: content_hash
 -- Added in v3.1: namespace
 -- Added in v3.5: session_id (per-device isolation; default 'default')
+-- Added in v3.8: context_signals (urgency/sentiment/session_type via keyword heuristics)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS hot_tier (
-  id           BIGSERIAL   PRIMARY KEY,
-  agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  content      TEXT        NOT NULL,
-  metadata     JSONB       NOT NULL DEFAULT '{}',
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  content_hash TEXT,
-  namespace    TEXT        NOT NULL DEFAULT 'default',
-  session_id   TEXT        NOT NULL DEFAULT 'default'
+  id              BIGSERIAL   PRIMARY KEY,
+  agent_id        TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  content         TEXT        NOT NULL,
+  metadata        JSONB       NOT NULL DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  content_hash    TEXT,
+  namespace       TEXT        NOT NULL DEFAULT 'default',
+  session_id      TEXT        NOT NULL DEFAULT 'default',
+  context_signals JSONB       NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
@@ -60,6 +62,7 @@ CREATE INDEX IF NOT EXISTS hot_tier_session_idx      ON hot_tier (agent_id, name
 --        content_code_tsv, summary (v2.5)
 -- v2.6: surprise_score, staleness_score, last_corroborated
 -- v3.1: namespace
+-- v3.8: context_signals (merged from contributing hot rows at consolidation time)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS warm_tier (
   id                          BIGSERIAL   PRIMARY KEY,
@@ -105,7 +108,9 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   embedding_model             TEXT,
   -- Originating hot-tier session for provenance (v3.5) — NULL = consolidated before
   -- per-session tracking, distinct from the literal 'default' session.
-  session_id                  TEXT
+  session_id                  TEXT,
+  -- Sentiment tagging (v3.8) — merged from contributing hot rows: urgency=max, others=majority
+  context_signals             JSONB       NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
@@ -668,6 +673,24 @@ CREATE INDEX IF NOT EXISTS anthropic_memory_stores_agent_ns_idx
   ON anthropic_memory_stores (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- sleep_phase_analytics (v3.8+) — per-phase telemetry for each sleep cycle run.
+-- The sleep cycle reads the last 3 records per (agent_id, phase) to decide
+-- whether to skip a phase that produced zero changes in every recent run.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sleep_phase_analytics (
+  id           BIGSERIAL   PRIMARY KEY,
+  agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  phase        TEXT        NOT NULL,
+  duration_ms  INTEGER     NOT NULL,
+  tokens_used  INTEGER     NOT NULL DEFAULT 0,
+  changes_made INTEGER     NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS sleep_phase_analytics_agent_idx
+  ON sleep_phase_analytics (agent_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).
@@ -832,6 +855,13 @@ CREATE POLICY dream_runs_agent_isolation ON dream_runs
 ALTER TABLE anthropic_memory_stores ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS anthropic_memory_stores_agent_isolation ON anthropic_memory_stores;
 CREATE POLICY anthropic_memory_stores_agent_isolation ON anthropic_memory_stores
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE sleep_phase_analytics ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sleep_phase_analytics_agent_isolation ON sleep_phase_analytics;
+CREATE POLICY sleep_phase_analytics_agent_isolation ON sleep_phase_analytics
   FOR ALL
   USING (agent_id = current_setting('app.current_agent_id', true))
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));

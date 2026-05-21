@@ -82,6 +82,10 @@ import type {
   AnthropicMemoryStoreLink,
   AnthropicSyncState,
   SyncStrategy,
+  ContextSignals,
+  UrgencyLevel,
+  SentimentTag,
+  SessionType,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -435,6 +439,54 @@ export class MemoryManager {
     );
   }
 
+  // ─── Feature 6: Context signal inference ─────────────────────────────────
+  //
+  // Infers urgency, sentiment, and session_type from raw content via keyword
+  // heuristics. Runs at add time (hot_tier) and results are merged into
+  // warm_tier during consolidation. Pure function — no DB access.
+
+  private inferContextSignals(content: string): ContextSignals {
+    const lower = content.toLowerCase();
+    const signals: ContextSignals = {};
+
+    // Urgency: pattern-matched in priority order (critical > high > low > medium)
+    if (/\b(urgent|asap|emergency|critical)\b/i.test(content)) {
+      signals.urgency = 'critical';
+    } else if (/\b(broken|fix|bug|error)\b/i.test(content)) {
+      signals.urgency = 'high';
+    } else if (/\b(planning|design|brainstorm)\b/i.test(content)) {
+      signals.urgency = 'low';
+    } else {
+      signals.urgency = 'medium';
+    }
+
+    // Sentiment: positive/negative word counts; ties default to neutral
+    const positiveWords = ['success', 'great', 'excellent', 'good', 'resolved', 'fixed', 'improved', 'working', 'completed', 'happy'];
+    const negativeWords = ['failed', 'broken', 'error', 'bug', 'crash', 'wrong', 'bad', 'issue', 'problem', 'regression'];
+    const posCount = positiveWords.filter((w) => lower.includes(w)).length;
+    const negCount = negativeWords.filter((w) => lower.includes(w)).length;
+    if (posCount > negCount) signals.sentiment = 'positive';
+    else if (negCount > posCount) signals.sentiment = 'negative';
+    else signals.sentiment = 'neutral';
+
+    // Session type: first matching pattern wins
+    if (/\b(debug|debugg|stack trace|stacktrace|error log)\b/i.test(content)) {
+      signals.session_type = 'debug';
+    } else if (/\b(planning|design|brainstorm|roadmap|proposal)\b/i.test(content)) {
+      signals.session_type = 'plan';
+    } else if (/\b(review|feedback|pr |pull request|code review)\b/i.test(content)) {
+      signals.session_type = 'review';
+    } else if (/\b(explore|research|investigate|spike|prototype)\b/i.test(content)) {
+      signals.session_type = 'explore';
+    } else if (/\b(build|implement|create|develop|feature)\b/i.test(content)) {
+      signals.session_type = 'build';
+    } else {
+      signals.session_type = 'unknown';
+    }
+
+    return signals;
+  }
+
   // ─── add ─────────────────────────────────────────────────────────────────
 
   async add(
@@ -500,11 +552,13 @@ export class MemoryManager {
       if (hints.supersedes) enrichedMetadata['_hint_supersedes'] = String(hints.supersedes);
     }
 
+    const contextSignals = this.inferContextSignals(content);
+
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals)],
     );
 
     const result = rows[0]!;
@@ -868,7 +922,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
               ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -907,7 +961,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -943,7 +997,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -982,7 +1036,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
               (1 - (embedding <=> $2::${await this.vcast()})) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -1273,8 +1327,9 @@ Ranking (numbers only):`;
             metadata: Record<string, unknown>;
             created_at: Date;
             session_id: string;
+            context_signals: ContextSignals;
           }>(
-            `SELECT id, content, metadata, created_at, session_id
+            `SELECT id, content, metadata, created_at, session_id, context_signals
              FROM hot_tier
              WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
@@ -1405,14 +1460,39 @@ Ranking (numbers only):`;
           // The hot rows are already SELECT-ordered ASC, so the last entry is newest.
           const latestSessionId = hotRows.rows[hotRows.rows.length - 1]?.session_id ?? null;
 
+          // Merge context_signals from all hot rows in this batch:
+          // urgency = highest observed, sentiment = majority vote, session_type = majority vote.
+          const mergedSignals: ContextSignals = (() => {
+            const urgencyOrder: UrgencyLevel[] = ['low', 'medium', 'high', 'critical'];
+            let maxUrgency: UrgencyLevel = 'medium';
+            const sentimentCounts: Record<string, number> = {};
+            const sessionTypeCounts: Record<string, number> = {};
+            for (const r of hotRows.rows) {
+              const sig: ContextSignals = r.context_signals ?? {};
+              if (sig.urgency) {
+                const idx = urgencyOrder.indexOf(sig.urgency);
+                if (idx > urgencyOrder.indexOf(maxUrgency)) maxUrgency = sig.urgency;
+              }
+              if (sig.sentiment) sentimentCounts[sig.sentiment] = (sentimentCounts[sig.sentiment] ?? 0) + 1;
+              if (sig.session_type) sessionTypeCounts[sig.session_type] = (sessionTypeCounts[sig.session_type] ?? 0) + 1;
+            }
+            const topSentiment = Object.entries(sentimentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as SentimentTag | undefined;
+            const topSessionType = Object.entries(sessionTypeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] as SessionType | undefined;
+            return {
+              urgency: maxUrgency,
+              sentiment: topSentiment ?? 'neutral',
+              session_type: topSessionType ?? 'unknown',
+            };
+          })();
+
           // Warm rows are written into targetNs (defaults to source namespace; set to
           // 'shared' or another value when WARM_CONSOLIDATION_TARGET is configured for
           // cross-project propagation).
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id)
-             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, context_signals)
+             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, $13)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals)],
           );
           const warmRowId = warmRow.rows[0]!.id;
 

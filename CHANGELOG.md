@@ -2,6 +2,43 @@
 
 All notable changes to MemForge are documented here.
 
+## [Unreleased] — Memory Sentiment Tagging + Adaptive Sleep Intelligence
+
+### Added
+
+- **Memory Sentiment Tagging (F6)** — pure keyword-heuristic inference of
+  `urgency` (`low | medium | high | critical`), `sentiment`
+  (`positive | negative | neutral`), and `session_type`
+  (`debug | plan | review | explore | build | unknown`) at write time.
+  Stored in the new `context_signals JSONB` column on both `hot_tier` and
+  `warm_tier`. During consolidation, signals from all contributing hot rows
+  are merged: urgency = maximum, sentiment = majority vote, session_type =
+  majority vote. The merged signals are returned in `query()` results as
+  `context_signals` on each `QueryResult`. No LLM call required; runs
+  synchronously inside `add()`. New types `UrgencyLevel`, `SentimentTag`,
+  `SessionType`, `ContextSignals` in `src/types.ts`.
+
+- **Adaptive Sleep Intelligence (F5) — analytics infrastructure** — new
+  `sleep_phase_analytics` table (`agent_id`, `phase`, `duration_ms`,
+  `tokens_used`, `changes_made`, `created_at`) and two new public methods
+  on `SleepCycleEngine`: `recordPhaseAnalytics()` (writes one telemetry
+  row per phase call) and `shouldSkipPhase()` (returns `true` when the
+  last 3 recorded runs for that phase all had `changes_made = 0`).
+  Index `sleep_phase_analytics_agent_idx` on
+  `(agent_id, created_at DESC)`. RLS agent isolation policy mirrors the
+  rest of the schema. **Wiring of these helpers into the `run()` loop is
+  deferred to a follow-up** — this PR ships the schema, helpers, and
+  unit-level test coverage so the wiring change has a stable target.
+
+### Migration
+
+- `schema/migration-v3.8.sql` — applies `sleep_phase_analytics` table,
+  `hot_tier.context_signals JSONB NOT NULL DEFAULT '{}'`, and
+  `warm_tier.context_signals JSONB NOT NULL DEFAULT '{}'`. Idempotent
+  (`IF NOT EXISTS` / `IF NOT EXISTS` on the `ADD COLUMN` statements).
+
+---
+
 ## [3.7.0] - 2026-05-21 — Claude Dreaming Layer 4: Anthropic Memory Store Bridge
 
 This is the first npm release since `3.0.0-beta.4`. It rolls up four
