@@ -2,7 +2,15 @@
 
 All notable changes to MemForge are documented here.
 
-## [Unreleased]
+## [3.7.0] - 2026-05-21 — Claude Dreaming Layer 4: Anthropic Memory Store Bridge
+
+This is the first npm release since `3.0.0-beta.4`. It rolls up four
+unreleased minor versions (3.4, 3.5, 3.6, 3.7); see the sections below
+for the granular history. Headline: end-to-end Claude Dreaming
+compatibility across four layers (Parity, Drop-in, Service, Bridge),
+multi-device shared memory for one agent identity, and the residual
+Phase 4 sleep-cycle features (selective forgetting, outcome-driven
+revision, reflection-driven revision, incremental embedding migration).
 
 ### Added
 
@@ -22,6 +30,40 @@ All notable changes to MemForge are documented here.
   `AnthropicBridge`. Tests in `tests/dreams-bridge.test.ts` cover
   push, pull-overwrite, and drift detection. Test concurrency forced
   to 1 to avoid cross-file pollution between fetch monkey-patches.
+
+### Distribution
+
+- **MCP registry manifests** (#128) — `smithery.yaml` (Smithery.ai
+  stdio config), `glama.json` (Glama.ai ownership claim), and
+  `server.json` (official MCP Registry manifest) ship in-repo so the
+  `memforge-mcp` binary surfaces in the major MCP discovery channels.
+  New `demo.sh` script exercises a sleep cycle interactively for
+  quick onboarding.
+- **FLOSS Fund portal** (#127) — fixes a `ZgotmplZ` template
+  rendering error in the funding portal entry. Cosmetic.
+
+### Security
+
+- **`npm audit` restored to clean** as part of the release cut.
+  Lockfile-only updates within existing semver ranges resolved
+  `protobufjs ≤7.5.5` code injection
+  ([GHSA-66ff-xgx4-vchm](https://github.com/advisories/GHSA-66ff-xgx4-vchm),
+  high; reached transitively via the optional
+  `@huggingface/transformers` peer dep) and `ip-address ≤10.1.0` XSS
+  ([GHSA-v2v4-37r5-5v8g](https://github.com/advisories/GHSA-v2v4-37r5-5v8g),
+  moderate; reached transitively via `express-rate-limit`). No
+  application source changes.
+
+---
+
+## [3.6.0] - 2026-05-07 — Claude Dreaming Layers 1–3 (Parity, Drop-in, Service)
+
+The first three layers of Claude Dreaming compatibility — async
+sleep-cycle jobs with the Anthropic-shaped run model, a drop-in
+`/v1/dreams` API, and optional service-layer delegation to Anthropic's
+Dreams API for the Phase 3.5 curation pass.
+
+### Added
 
 - **Claude Dreaming compatibility — Layer 3 (Service)** — when
   `DREAMS_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` are set, dream
@@ -85,6 +127,40 @@ All notable changes to MemForge are documented here.
   inside a running cycle exits at the next phase boundary via a new
   `DreamCancellationError`. `output_mode='new_namespace'` is rejected
   at the boundary pending namespace-scoped sleep phases (a follow-up).
+
+---
+
+## [3.5.0] - 2026-04-29 — Multi-Device Shared Memory
+
+One agent identity, many sessions. Adds `session_id` scoping across
+the hot and warm tiers so a single agent can be driven from multiple
+clients (mobile, desktop, web) without losing per-device context or
+collapsing devices into the same conversation.
+
+### Added
+
+- **Multi-device shared memory** (#121) — new `session_id TEXT NOT NULL
+  DEFAULT 'default'` column on `hot_tier` and `warm_tier`, plus
+  composite `(agent_id, session_id)` indexes. Ingest, query, timeline,
+  and consolidate paths accept an optional `session_id` argument; when
+  omitted the legacy `'default'` session preserves single-device
+  behavior. Consolidation collapses hot rows within a session; sleep
+  cycles remain agent-wide so cross-session learning still happens.
+  Migration `schema/migration-v3.5.sql`. Tests in
+  `tests/multi-device.test.ts`.
+
+---
+
+## [3.4.0] - 2026-04-24 — Phase 4 residuals: Selective Forgetting, Sleep-Cycle Revisions, Embedding Migration
+
+Closes the residual Phase 4 ROADMAP items. Sleep cycles gain three
+new revision-priority channels (outcome, reflection, deprecation),
+warm rows now carry their embedding provider identity for incremental
+re-embedding, and the local embedding provider migrates off the
+unmaintained `@xenova/transformers` to close a critical-severity CVE
+chain.
+
+### Added
 
 - **Selective forgetting (deprecated namespaces)** — closes the
   fourth and final residual Phase 4 item from the ROADMAP. Operators
