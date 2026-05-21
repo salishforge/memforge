@@ -11,6 +11,37 @@ export interface Agent {
   metadata: Record<string, unknown>;
 }
 
+// ─── Phase 5: Adaptive Sleep Intelligence ────────────────────────────────────
+
+/**
+ * Telemetry recorded after each phase of the sleep cycle. The engine reads the
+ * last 3 records per (agent_id, phase) to decide whether to skip phases that
+ * have produced zero changes in every recent run.
+ */
+export interface PhaseAnalytics {
+  phase: string;
+  duration_ms: number;
+  tokens_used: number;
+  changes_made: number;
+}
+
+// ─── Phase 5: Memory Sentiment Tagging ───────────────────────────────────────
+
+export type UrgencyLevel = 'low' | 'medium' | 'high' | 'critical';
+export type SentimentTag = 'positive' | 'negative' | 'neutral';
+export type SessionType = 'debug' | 'plan' | 'review' | 'explore' | 'build' | 'unknown';
+
+/**
+ * Signals inferred from memory content via keyword heuristics at write time.
+ * On hot_tier: per-event. On warm_tier: merged from contributing hot rows
+ * (urgency = max, sentiment = majority, session_type = majority).
+ */
+export interface ContextSignals {
+  urgency?: UrgencyLevel;
+  sentiment?: SentimentTag;
+  session_type?: SessionType;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
@@ -53,6 +84,8 @@ export interface WarmRow {
    * distinct from the literal 'default' session.
    */
   session_id: string | null;
+  /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
+  context_signals?: ContextSignals;
   /** Full-text search rank (present only in query results) */
   rank?: number;
 }
@@ -67,6 +100,8 @@ export interface QueryResult {
   time_start: Date | null;
   time_end: Date | null;
   rank: number;
+  /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
+  context_signals?: ContextSignals;
 }
 
 // ─── Query modes ─────────────────────────────────────────────────────────────

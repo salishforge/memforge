@@ -1405,6 +1405,46 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
 
     return true;
   }
+
+  // ─── Feature 5: Adaptive Sleep Intelligence helpers ───────────────────────
+  //
+  // Public infrastructure for analytics-driven sleep cadence. Helpers below
+  // are intentionally not yet invoked from `run()` — the wiring is tracked
+  // as a follow-up so this PR delivers a stable, tested API surface before
+  // the integration change lands. See follow-up task referenced in PR
+  // description.
+  //
+  // `recordPhaseAnalytics` writes one telemetry row per phase per run. Errors
+  // are swallowed with a log so a failing analytics write never aborts a cycle.
+  //
+  // `shouldSkipPhase` reads the last 3 analytics rows for the given phase. If
+  // all 3 recorded zero changes the phase did no useful work in recent runs and
+  // is safe to skip, reducing unnecessary I/O on idle agents.
+
+  async recordPhaseAnalytics(
+    agentId: string,
+    phase: string,
+    durationMs: number,
+    tokensUsed: number,
+    changesMade: number,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO sleep_phase_analytics (agent_id, phase, duration_ms, tokens_used, changes_made)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [agentId, phase, durationMs, tokensUsed, changesMade],
+    ).catch((err) => log.error({ err }, 'phase analytics recording failed'));
+  }
+
+  async shouldSkipPhase(agentId: string, phase: string): Promise<boolean> {
+    const { rows } = await this.pool.query<{ changes_made: number }>(
+      `SELECT changes_made FROM sleep_phase_analytics
+       WHERE agent_id = $1 AND phase = $2
+       ORDER BY created_at DESC LIMIT 3`,
+      [agentId, phase],
+    );
+    if (rows.length < 3) return false;
+    return rows.every((r) => r.changes_made === 0);
+  }
 }
 
 // ─── Shared Pool Sleep Cycle ─────────────────────────────────────────────────
