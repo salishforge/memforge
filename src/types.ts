@@ -11,6 +11,27 @@ export interface Agent {
   metadata: Record<string, unknown>;
 }
 
+// ─── Phase 5: Epistemic Confidence Model ─────────────────────────────────────
+
+/**
+ * Calibrated uncertainty level for a warm-tier memory.
+ * - established   — corroborated by multiple positive retrievals across sessions
+ * - provisional   — default; accepted but not yet confirmed
+ * - contested     — contradicted by a conflicting memory in the knowledge graph
+ * - inferred      — derived by the sleep cycle, not directly observed
+ * - deprecated    — superseded or stale; retained for audit purposes
+ */
+export type EpistemicStatus = 'established' | 'provisional' | 'contested' | 'deprecated' | 'inferred';
+
+/**
+ * Filter level for query results by epistemic confidence.
+ * - only_established   — only memories confirmed by multiple corroborating retrievals
+ * - include_provisional — established + provisional (default for most queries)
+ * - include_contested  — established + provisional + contested
+ * - all                — no filtering (includes deprecated and inferred)
+ */
+export type EpistemicFilter = 'only_established' | 'include_provisional' | 'include_contested' | 'all';
+
 // ─── Phase 5: Adaptive Sleep Intelligence ────────────────────────────────────
 
 /**
@@ -102,6 +123,10 @@ export interface QueryResult {
   rank: number;
   /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
   context_signals?: ContextSignals;
+  /** Calibrated uncertainty level for this memory (v3.9). */
+  epistemic_status?: EpistemicStatus;
+  /** Number of positive retrieval events corroborating this memory (v3.9). */
+  evidence_count?: number;
 }
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
@@ -126,6 +151,8 @@ export interface QueryOptions {
   maxTokens?: number;
   /** Namespace to search within (default: 'default') */
   namespace?: string;
+  /** Restrict results to a given epistemic confidence level (v3.9). */
+  epistemic?: EpistemicFilter;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -393,6 +420,8 @@ export interface SleepCycleResult {
   embeddings_migration_backlog?: number;
   /** Warm-tier rows in deprecated namespaces decayed by Phase 5.10 */
   deprecated_decayed?: number;
+  /** Warm-tier rows promoted from provisional to established by Phase 5.12 */
+  epistemic_promoted?: number;
 }
 
 export interface SleepCycleConfig {

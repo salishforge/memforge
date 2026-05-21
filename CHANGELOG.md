@@ -2,6 +2,46 @@
 
 All notable changes to MemForge are documented here.
 
+## [Unreleased] — Epistemic Confidence Model + Memory Sentiment Tagging + Adaptive Sleep Intelligence
+
+### Added (Epistemic Confidence Model — F1)
+
+- **Epistemic Confidence Model (F1)** — calibrated uncertainty levels on warm-tier
+  memories. New columns on `warm_tier`: `epistemic_status TEXT NOT NULL DEFAULT 'provisional'`,
+  `evidence_count INTEGER NOT NULL DEFAULT 1`, `last_corroborated_at TIMESTAMPTZ`.
+  Index `warm_tier_epistemic_idx` on `(agent_id, epistemic_status)`.
+  New types `EpistemicStatus` (`established | provisional | contested | deprecated | inferred`)
+  and `EpistemicFilter` (`only_established | include_provisional | include_contested | all`)
+  in `src/types.ts`. New Zod schema `EpistemicFilterSchema` in `src/schemas.ts`.
+
+- **`GET /memory/:id/epistemic`** — returns counts of warm-tier memories per
+  `epistemic_status`. All five values always present, defaulting to 0.
+  New `getEpistemicProfile(agentId)` method on `MemoryManager`.
+  Client SDK methods `epistemicProfile(agentId)` on `MemForgeClient` and
+  `ResilientMemForgeClient`. Python SDK `epistemic_profile(agent_id)` on
+  `MemForgeClient`. OpenAPI entry added.
+
+- **Epistemic query filter** — `query()` now accepts `epistemic?: EpistemicFilter`.
+  REST `GET /memory/:id/query` accepts `?epistemic=` query param validated against
+  `EpistemicFilterSchema`. `QueryResult` now carries `epistemic_status` and
+  `evidence_count` fields. TypeScript SDK `query()` accepts `epistemic` option.
+  Python SDK `query()` accepts `epistemic` kwarg.
+
+- **Sleep Phase 5.12: Epistemic Promotion** — new `phaseEpistemicPromotion(agentId)`
+  method on `SleepCycleEngine`, wired into `run()` between Phase 5.10 and Phase 5.8.
+  Promotes `provisional → established` when `evidence_count >= 3` AND the memory
+  has been retrieved positively from at least 2 distinct namespaces in `retrieval_log`.
+  Demotes `established → provisional` when `staleness_score > 0.7` and not accessed
+  in 30 days. Stamps `last_corroborated_at` on promotion. Return count exposed as
+  `epistemic_promoted` on `SleepCycleResult`.
+
+- **MCP tools** — `memforge_certainty` (query with epistemic filter) and
+  `memforge_epistemic_profile` (get status counts) added to `src/mcp.ts` and
+  `src/tool-definitions.ts`.
+
+- **Migration** — `schema/migration-v3.9.sql` (idempotent `IF NOT EXISTS`).
+  `schema/schema.sql` updated as canonical from-scratch schema.
+
 ## [Unreleased] — Memory Sentiment Tagging + Adaptive Sleep Intelligence
 
 ### Added

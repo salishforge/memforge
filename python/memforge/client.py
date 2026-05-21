@@ -126,8 +126,15 @@ class MemForgeClient:
         decay: float | None = None,
         max_tokens: int | None = None,
         namespace: str | None = None,
+        epistemic: str | None = None,
     ) -> list[QueryResult]:
-        """Search warm-tier memory."""
+        """Search warm-tier memory.
+
+        Args:
+            epistemic: Restrict results by calibrated uncertainty level.
+                One of 'only_established', 'include_provisional',
+                'include_contested', or 'all'. Defaults to no filter.
+        """
         params: dict[str, Any] = {"q": q, "limit": limit}
         if mode:
             params["mode"] = mode
@@ -141,6 +148,8 @@ class MemForgeClient:
             params["max_tokens"] = max_tokens
         if namespace:
             params["namespace"] = namespace
+        if epistemic:
+            params["epistemic"] = epistemic
         raw = await self._get(f"/memory/{agent_id}/query", params)
         return [QueryResult(**r) for r in raw] if isinstance(raw, list) else []
 
@@ -269,6 +278,17 @@ class MemForgeClient:
         """Get memory health metrics."""
         raw = await self._get(f"/memory/{agent_id}/health")
         return MemoryHealth(**raw)
+
+    # ── Epistemic Confidence Model (v3.9) ─────────────────────────────────
+
+    async def epistemic_profile(self, agent_id: str) -> dict[str, int]:
+        """Return the count of warm-tier memories per epistemic_status.
+
+        All five status values (established, provisional, contested,
+        deprecated, inferred) are always present, defaulting to 0.
+        """
+        raw = await self._get(f"/memory/{agent_id}/epistemic")
+        return raw if isinstance(raw, dict) else {}
 
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext:
         """Get session resumption context bundle."""

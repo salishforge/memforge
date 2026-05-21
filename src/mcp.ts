@@ -550,6 +550,32 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_certainty',
+    description: 'Query memories filtered by epistemic confidence level. Returns only results at or above the specified certainty threshold. Use only_established for the most reliable memories, include_provisional for most queries, include_contested to see what the agent is uncertain about, or all to see everything including deprecated/inferred.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        q: { type: 'string', description: 'Search query' },
+        epistemic: { type: 'string', enum: ['only_established', 'include_provisional', 'include_contested', 'all'], description: 'Epistemic filter level (default: include_provisional)' },
+        limit: { type: 'integer', description: 'Max results (default 10)', minimum: 1, maximum: 200 },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+      },
+      required: ['agent_id', 'q'],
+    },
+  },
+  {
+    name: 'memforge_epistemic_profile',
+    description: 'Return the count of warm-tier memories per epistemic_status for an agent. Useful for gauging how much of the knowledge base is well-corroborated (established) vs. newly accepted (provisional) vs. uncertain (contested/inferred/deprecated).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -794,6 +820,17 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_anthropic_sync_state':
       return client.anthropic.syncState(agentId, args['namespace'] as string | undefined);
+
+    case 'memforge_certainty':
+      return client.query(agentId, {
+        q: args['q'] as string,
+        limit: args['limit'] as number | undefined,
+        namespace: args['namespace'] as string | undefined,
+        epistemic: args['epistemic'] as 'only_established' | 'include_provisional' | 'include_contested' | 'all' | undefined,
+      });
+
+    case 'memforge_epistemic_profile':
+      return client.epistemicProfile(agentId);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

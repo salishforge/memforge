@@ -862,6 +862,26 @@ Ranking (numbers only):`;
       results = deduplicated;
     }
 
+    // Epistemic filtering — restrict results by confidence calibration level (v3.9)
+    if (opts.epistemic) {
+      switch (opts.epistemic) {
+        case 'only_established':
+          results = results.filter((r) => r.epistemic_status === 'established');
+          break;
+        case 'include_provisional':
+          results = results.filter((r) => r.epistemic_status === 'established' || r.epistemic_status === 'provisional');
+          break;
+        case 'include_contested':
+          results = results.filter((r) =>
+            r.epistemic_status === 'established' || r.epistemic_status === 'provisional' || r.epistemic_status === 'contested',
+          );
+          break;
+        case 'all':
+          // No filtering — include deprecated and inferred as well
+          break;
+      }
+    }
+
     // Minimum quality threshold — don't return results that barely match
     if (results.length > 1 && results[0]) {
       const topScore = results[0].rank;
@@ -923,6 +943,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+              epistemic_status, evidence_count,
               ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -962,6 +983,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+              epistemic_status, evidence_count,
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -998,6 +1020,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+              epistemic_status, evidence_count,
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -1037,6 +1060,7 @@ Ranking (numbers only):`;
 
     const { rows } = await this.pool.query<QueryResult>(
       `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+              epistemic_status, evidence_count,
               (1 - (embedding <=> $2::${await this.vcast()})) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
        WHERE agent_id = $1
@@ -4585,5 +4609,34 @@ Guidelines:
     } finally {
       client.release();
     }
+  }
+
+  // ─── Epistemic Confidence Model (v3.9) ─────────────────────────────────────
+
+  /**
+   * Returns the count of warm-tier memories per epistemic_status for an agent.
+   * All five status values are always present in the result, defaulting to 0
+   * when no rows exist for a given status.
+   */
+  async getEpistemicProfile(agentId: string): Promise<Record<string, number>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{ epistemic_status: string; count: string }>(
+      `SELECT epistemic_status, count(*)::text AS count
+       FROM warm_tier
+       WHERE agent_id = $1
+       GROUP BY epistemic_status`,
+      [agentId],
+    );
+    const profile: Record<string, number> = {
+      established: 0,
+      provisional: 0,
+      contested: 0,
+      deprecated: 0,
+      inferred: 0,
+    };
+    for (const row of rows) {
+      profile[row.epistemic_status] = parseInt(row.count, 10);
+    }
+    return profile;
   }
 }

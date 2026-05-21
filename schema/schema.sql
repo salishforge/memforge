@@ -63,6 +63,7 @@ CREATE INDEX IF NOT EXISTS hot_tier_session_idx      ON hot_tier (agent_id, name
 -- v2.6: surprise_score, staleness_score, last_corroborated
 -- v3.1: namespace
 -- v3.8: context_signals (merged from contributing hot rows at consolidation time)
+-- v3.9: epistemic_status, evidence_count, last_corroborated_at (epistemic confidence model)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS warm_tier (
   id                          BIGSERIAL   PRIMARY KEY,
@@ -110,7 +111,13 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   -- per-session tracking, distinct from the literal 'default' session.
   session_id                  TEXT,
   -- Sentiment tagging (v3.8) — merged from contributing hot rows: urgency=max, others=majority
-  context_signals             JSONB       NOT NULL DEFAULT '{}'
+  context_signals             JSONB       NOT NULL DEFAULT '{}',
+  -- Epistemic confidence model (v3.9) — calibrated uncertainty level for this memory
+  epistemic_status            TEXT        NOT NULL DEFAULT 'provisional',
+  -- Number of positive retrieval events corroborating this memory
+  evidence_count              INTEGER     NOT NULL DEFAULT 1,
+  -- Timestamp of the most recent promotion to 'established' by Phase 5.12
+  last_corroborated_at        TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
@@ -130,6 +137,7 @@ CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
 CREATE INDEX IF NOT EXISTS warm_tier_namespace_idx  ON warm_tier (agent_id, namespace);
 CREATE INDEX IF NOT EXISTS warm_tier_session_idx    ON warm_tier (agent_id, namespace, session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS warm_tier_epistemic_idx  ON warm_tier (agent_id, epistemic_status);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- cold_tier — archived / cleared memory (audit trail, never hard-deleted)
