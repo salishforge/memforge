@@ -228,6 +228,14 @@ export class SleepCycleEngine {
       log.error({ err, agentId }, 'deprecated namespace decay failed');
     }
 
+    // Phase 5.12: Epistemic Promotion — promote/demote memories based on evidence
+    let epistemicPromoted = 0;
+    try {
+      epistemicPromoted = await this.phaseEpistemicPromotion(agentId);
+    } catch (err) {
+      log.error({ err, agentId }, 'epistemic promotion failed');
+    }
+
     // Phase 5.8: Drift Snapshot — record drift signals for trend detection
     try {
       await this.phaseDriftSnapshot(agentId, temporalExpired);
@@ -281,6 +289,9 @@ export class SleepCycleEngine {
     }
     if (deprecatedDecayed > 0) {
       result.deprecated_decayed = deprecatedDecayed;
+    }
+    if (epistemicPromoted > 0) {
+      result.epistemic_promoted = epistemicPromoted;
     }
 
     return result;
@@ -1444,6 +1455,65 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     );
     if (rows.length < 3) return false;
     return rows.every((r) => r.changes_made === 0);
+  }
+
+  // ─── Phase 5.12: Epistemic Promotion ──────────────────────────────────────
+  //
+  // Promotes provisional → established when a warm-tier row has:
+  //   - evidence_count >= 3  (corroborated three or more times via feedback)
+  //   - positive retrievals from at least 2 distinct namespaces in retrieval_log
+  //
+  // Also demotes established → provisional when staleness_score > 0.7 and the
+  // row has not been accessed in 30 days — prevents stale memories from keeping
+  // the highest-confidence badge indefinitely.
+  //
+  // Returns the number of rows promoted this cycle (demotions are not counted
+  // separately; the caller can see the net change via getEpistemicProfile).
+
+  private async phaseEpistemicPromotion(agentId: string): Promise<number> {
+    // Promote provisional → established when sufficient evidence exists
+    const { rowCount: promoted } = await this.pool.query(
+      `UPDATE warm_tier
+          SET epistemic_status = 'established', last_corroborated_at = now()
+        WHERE agent_id = $1
+          AND epistemic_status = 'provisional'
+          AND evidence_count >= 3
+          AND id IN (
+            SELECT rl.warm_tier_id
+              FROM retrieval_log rl
+             WHERE rl.agent_id = $1 AND rl.outcome = 'positive'
+             GROUP BY rl.warm_tier_id
+            HAVING COUNT(DISTINCT rl.namespace) >= 2
+          )`,
+      [agentId],
+    );
+
+    // Demote established → provisional for stale, rarely-accessed memories
+    await this.pool.query(
+      `UPDATE warm_tier
+          SET epistemic_status = 'provisional'
+        WHERE agent_id = $1
+          AND epistemic_status = 'established'
+          AND staleness_score > 0.7
+          AND (last_accessed IS NULL OR last_accessed < now() - interval '30 days')`,
+      [agentId],
+    );
+
+    // Increment evidence_count for memories corroborated by recent positive retrievals
+    await this.pool.query(
+      `UPDATE warm_tier w
+          SET evidence_count = evidence_count + 1
+         FROM (
+           SELECT warm_tier_id
+             FROM retrieval_log
+            WHERE agent_id = $1 AND outcome = 'positive' AND created_at > now() - interval '24 hours'
+            GROUP BY warm_tier_id
+         ) recent
+        WHERE w.id = recent.warm_tier_id AND w.agent_id = $1`,
+      [agentId],
+    );
+
+    return promoted ?? 0;
   }
 }
 

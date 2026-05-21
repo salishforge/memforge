@@ -224,6 +224,22 @@ export const DeclareRoleSchema = z.object({
   description: z.string().max(1_000).optional(),
 });
 
+// ─── Epistemic Confidence Model (v3.9) ──────────────────────────────────────
+
+/**
+ * Restricts query results by calibrated uncertainty level.
+ *   only_established   — memories confirmed by multiple corroborating retrievals
+ *   include_provisional — established + provisional (broadest high-confidence set)
+ *   include_contested  — includes contested memories (contradicted by another)
+ *   all                — no filtering; includes deprecated and inferred
+ */
+export const EpistemicFilterSchema = z.enum([
+  'only_established',
+  'include_provisional',
+  'include_contested',
+  'all',
+]);
+
 // ─── LLM Response Schemas ───────────────────────────────────────────────────
 
 export const ConsolidationSummarySchema = z.object({

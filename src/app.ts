@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -432,7 +432,7 @@ export function createApp(deps: AppDependencies): express.Express {
   });
 
   /**
-   * GET /memory/:agentId/query?q=<text>[&limit=<n>][&mode=keyword|semantic|hybrid][&after=<iso>][&before=<iso>][&decay=<rate>]
+   * GET /memory/:agentId/query?q=<text>[&limit=<n>][&mode=keyword|semantic|hybrid][&after=<iso>][&before=<iso>][&decay=<rate>][&epistemic=only_established|include_provisional|include_contested|all]
    */
   app.get('/memory/:agentId/query', requireScope('memforge:read'), async (req: Request, res: Response) => {
     const q = qstr(req.query['q']);
@@ -443,6 +443,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const decay = qstr(req.query['decay']);
     const maxTokens = qstr(req.query['max_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
+    const rawEpistemic = qstr(req.query['epistemic']);
 
     if (!q) {
       fail(res, 400, '"q" query param (string) is required');
@@ -493,6 +494,16 @@ export function createApp(deps: AppDependencies): express.Express {
       namespace = nsResult.data;
     }
 
+    let epistemic: import('./types.js').EpistemicFilter | undefined;
+    if (rawEpistemic !== undefined) {
+      const epistemicResult = EpistemicFilterSchema.safeParse(rawEpistemic);
+      if (!epistemicResult.success) {
+        fail(res, 400, `Invalid epistemic filter: must be one of only_established, include_provisional, include_contested, all`);
+        return;
+      }
+      epistemic = epistemicResult.data;
+    }
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -501,8 +512,8 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    // Cache key includes all query parameters (including max_tokens to prevent budget mismatch)
-    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}:${namespace ?? ''}`;
+    // Cache key includes all query parameters (including epistemic filter to prevent result mismatch)
+    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}:${namespace ?? ''}:${epistemic ?? ''}`;
     const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
     const cached = await cacheGet(key);
     if (cached !== null) {
@@ -523,6 +534,7 @@ export function createApp(deps: AppDependencies): express.Express {
         decayRate,
         maxTokens: maxTokensNum,
         namespace,
+        epistemic,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
@@ -858,6 +870,29 @@ export function createApp(deps: AppDependencies): express.Express {
     try {
       const advisory = await manager.sleepAdvisory(getAgentId(req));
       ok(res, advisory);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Epistemic Confidence Model (v3.9) ──────────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/epistemic
+   *
+   * Returns counts of warm-tier memories by epistemic_status.
+   * All five status values (established, provisional, contested, deprecated,
+   * inferred) are always present, defaulting to 0 when empty.
+   */
+  app.get('/memory/:agentId/epistemic', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    try {
+      const profile = await manager.getEpistemicProfile(getAgentId(req));
+      ok(res, profile);
     } catch (err) {
       const e = err as Error;
       if (e instanceof TypeError) {
