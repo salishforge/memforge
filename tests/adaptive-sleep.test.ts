@@ -220,6 +220,21 @@ describe('shouldSkipPhase — skip logic', () => {
 });
 
 // ─── Integration tests — sleep cycle analytics ───────────────────────────────
+//
+// Skippable phases (per the wiring in src/sleep-cycle.ts run()) — these are
+// the cleanup / reflection tail that short-circuits when shouldSkipPhase()
+// returns true. The set must stay in sync with the {skippable: true} calls
+// in run().
+const SKIPPABLE_PHASES = [
+  'graph-maintenance',
+  'entity-dedup',
+  'reflection',
+  'schema-detection',
+  'temporal-validation',
+  'procedure-evolution',
+  'embedding-migration',
+  'deprecated-decay',
+] as const;
 
 describe('Adaptive Sleep Intelligence — integration', () => {
   before(async () => {
@@ -250,6 +265,111 @@ describe('Adaptive Sleep Intelligence — integration', () => {
     } finally {
       await pool.query(`DELETE FROM sleep_phase_analytics WHERE agent_id = $1`, [emptyAgent]);
       await pool.query(`DELETE FROM agents WHERE id = $1`, [emptyAgent]);
+    }
+  });
+
+  it('records one analytics row per phase that ran in a single cycle', async () => {
+    const agent = `${TEST_AGENT}-record-once`;
+    try {
+      await pool.query(`INSERT INTO agents (id) VALUES ($1) ON CONFLICT DO NOTHING`, [agent]);
+      await pool.query(`DELETE FROM sleep_phase_analytics WHERE agent_id = $1`, [agent]);
+
+      await engine.run(agent);
+
+      const { rows } = await pool.query<{ phase: string; count: string }>(
+        `SELECT phase, COUNT(*)::text AS count
+           FROM sleep_phase_analytics
+          WHERE agent_id = $1
+          GROUP BY phase`,
+        [agent],
+      );
+      assert.ok(rows.length > 0, 'at least one phase analytics row should be recorded');
+      for (const r of rows) {
+        assert.equal(
+          parseInt(r.count, 10),
+          1,
+          `phase ${r.phase} should record exactly one row per cycle, got ${r.count}`,
+        );
+      }
+
+      // Verify the core hot-path phases that always run are present.
+      const recorded = new Set(rows.map((r) => r.phase));
+      for (const required of ['weight-adaptation', 'scoring', 'triage', 'conflict-resolution']) {
+        assert.ok(
+          recorded.has(required),
+          `core phase ${required} must record an analytics row every cycle`,
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM sleep_phase_analytics WHERE agent_id = $1`, [agent]);
+      await pool.query(`DELETE FROM agents WHERE id = $1`, [agent]);
+    }
+  });
+
+  it('skips skippable phases on subsequent cycles when prior runs were idle', async () => {
+    const agent = `${TEST_AGENT}-skip`;
+    try {
+      await pool.query(`INSERT INTO agents (id) VALUES ($1) ON CONFLICT DO NOTHING`, [agent]);
+      await pool.query(`DELETE FROM sleep_phase_analytics WHERE agent_id = $1`, [agent]);
+
+      // Seed 3 zero-change history rows for every skippable phase so
+      // shouldSkipPhase() returns true on the very next cycle. This avoids
+      // depending on the agent staying actually-idle through three full
+      // cycles (faster, deterministic).
+      for (const phase of SKIPPABLE_PHASES) {
+        for (let i = 0; i < 3; i++) {
+          await engine.recordPhaseAnalytics(agent, phase, 1, 0, 0);
+        }
+      }
+
+      // Snapshot counts before running the cycle.
+      const before = await pool.query<{ phase: string; count: string }>(
+        `SELECT phase, COUNT(*)::text AS count
+           FROM sleep_phase_analytics
+          WHERE agent_id = $1 AND phase = ANY($2::text[])
+          GROUP BY phase`,
+        [agent, SKIPPABLE_PHASES as unknown as string[]],
+      );
+      const beforeMap = new Map(before.rows.map((r) => [r.phase, parseInt(r.count, 10)]));
+
+      await engine.run(agent);
+
+      // After the cycle, skippable phases must NOT have a new row — a skip
+      // is silent (no analytics write) so the zero history persists.
+      const after = await pool.query<{ phase: string; count: string }>(
+        `SELECT phase, COUNT(*)::text AS count
+           FROM sleep_phase_analytics
+          WHERE agent_id = $1 AND phase = ANY($2::text[])
+          GROUP BY phase`,
+        [agent, SKIPPABLE_PHASES as unknown as string[]],
+      );
+      const afterMap = new Map(after.rows.map((r) => [r.phase, parseInt(r.count, 10)]));
+
+      for (const phase of SKIPPABLE_PHASES) {
+        const b = beforeMap.get(phase) ?? 0;
+        const a = afterMap.get(phase) ?? 0;
+        assert.equal(
+          a,
+          b,
+          `skippable phase ${phase} should not record a new row when skipped (before=${b}, after=${a})`,
+        );
+      }
+
+      // Sanity: a non-skippable core phase still records a row.
+      const { rows: scoringRows } = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM sleep_phase_analytics
+          WHERE agent_id = $1 AND phase = 'scoring'`,
+        [agent],
+      );
+      assert.equal(
+        parseInt(scoringRows[0]?.count ?? '0', 10),
+        1,
+        'non-skippable scoring phase should record a row even when skippable phases skip',
+      );
+    } finally {
+      await pool.query(`DELETE FROM sleep_phase_analytics WHERE agent_id = $1`, [agent]);
+      await pool.query(`DELETE FROM agents WHERE id = $1`, [agent]);
     }
   });
 });

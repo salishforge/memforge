@@ -66,9 +66,24 @@ All notable changes to MemForge are documented here.
   last 3 recorded runs for that phase all had `changes_made = 0`).
   Index `sleep_phase_analytics_agent_idx` on
   `(agent_id, created_at DESC)`. RLS agent isolation policy mirrors the
-  rest of the schema. **Wiring of these helpers into the `run()` loop is
-  deferred to a follow-up** — this PR ships the schema, helpers, and
-  unit-level test coverage so the wiring change has a stable target.
+  rest of the schema.
+
+- **Adaptive Sleep Intelligence (F5) — run() wiring** — every top-level
+  phase invocation in `SleepCycleEngine.run()` is now wrapped with timing
+  and a `recordPhaseAnalytics()` write, populating `sleep_phase_analytics`
+  with one row per phase per cycle. Phase identifiers: `weight-adaptation`,
+  `scoring`, `triage`, `capacity-eviction`, `conflict-resolution`,
+  `revision`, `graph-maintenance`, `entity-dedup`, `reflection`,
+  `cold-purge`, `schema-detection`, `temporal-validation`,
+  `procedure-evolution`, `embedding-migration`, `deprecated-decay`,
+  `epistemic-promotion`, `drift-snapshot`, `audit-archive`. The cleanup /
+  reflection tail — `graph-maintenance`, `entity-dedup`, `reflection`,
+  `schema-detection`, `temporal-validation`, `procedure-evolution`,
+  `embedding-migration`, `deprecated-decay` — additionally consults
+  `shouldSkipPhase()` and short-circuits when the last 3 recorded runs
+  were idle, avoiding unnecessary I/O on quiet agents. Core hot-path
+  phases (weight adaptation, scoring, triage, capacity eviction, conflict
+  resolution, Phase 3 revision, Phase 6 audit archive) always run.
 
 ### Migration
 
