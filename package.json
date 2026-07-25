@@ -1,6 +1,6 @@
 {
   "name": "@salishforge/memforge",
-  "version": "3.2.0",
+  "version": "3.7.0",
   "description": "Neuroscience-inspired agent memory — sleep cycles, memory revision, knowledge graph, procedural learning, vector search, and MCP integration",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,8 +45,11 @@
     "test:dreams-compat": "node --import tsx/esm --test tests/dreams-compat.test.ts",
     "test:dreams-anthropic": "node --import tsx/esm --test tests/dreams-anthropic.test.ts",
     "test:dreams-bridge": "node --import tsx/esm --test tests/dreams-bridge.test.ts",
-    "test": "node --import tsx/esm --test --test-concurrency=1 tests/integration.test.ts tests/llm-paths.test.ts tests/http-api.test.ts tests/cache.test.ts tests/embedding-migration.test.ts tests/outcome-revision.test.ts tests/reflection-revision.test.ts tests/selective-forgetting.test.ts tests/multi-device.test.ts tests/dream-runs.test.ts tests/dreams-compat.test.ts tests/dreams-anthropic.test.ts tests/dreams-bridge.test.ts",
+    "test": "node --import tsx/esm --test --test-concurrency=1 tests/integration.test.ts tests/llm-paths.test.ts tests/http-api.test.ts tests/cache.test.ts tests/embedding-migration.test.ts tests/outcome-revision.test.ts tests/reflection-revision.test.ts tests/selective-forgetting.test.ts tests/multi-device.test.ts tests/dream-runs.test.ts tests/dreams-compat.test.ts tests/dreams-anthropic.test.ts tests/dreams-bridge.test.ts tests/sentiment-tagging.test.ts tests/adaptive-sleep.test.ts tests/epistemic-confidence.test.ts",
     "test:multi-device": "node --import tsx/esm --test tests/multi-device.test.ts",
+    "test:sentiment-tagging": "node --import tsx/esm --test tests/sentiment-tagging.test.ts",
+    "test:adaptive-sleep": "node --import tsx/esm --test tests/adaptive-sleep.test.ts",
+    "test:epistemic-confidence": "node --import tsx/esm --test tests/epistemic-confidence.test.ts",
     "benchmark:longmemeval": "node --import tsx/esm benchmarks/longmemeval/run.ts",
     "benchmark:download": "node --import tsx/esm benchmarks/longmemeval/download.ts",
     "benchmark:ingest": "node --import tsx/esm benchmarks/longmemeval/ingest.ts",
@@ -62,19 +65,19 @@
     "pg": "^8.13.3",
     "pino": "^10.3.1",
     "prom-client": "^15.1.3",
-    "redis": "^5.11.0",
+    "redis": "^6.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "@types/pino": "^7.0.5",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
     "eslint": "^10.2.1",
     "tsx": "^4.19.2",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=20"

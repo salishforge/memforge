@@ -238,6 +238,15 @@ export const PredictSchema = z.object({
   context: z.string().min(1).max(10_000),
 });
 
+// ─── Epistemic Confidence Model (v3.9) ──────────────────────────────────────
+
+/**
+ * Restricts query results by calibrated uncertainty level.
+ *   only_established   — memories confirmed by multiple corroborating retrievals
+ *   include_provisional — established + provisional (broadest high-confidence set)
+ *   include_contested  — includes contested memories (contradicted by another)
+ *   all                — no filtering; includes deprecated and inferred
+ */
 export const EpistemicFilterSchema = z.enum([
   'only_established',
   'include_provisional',

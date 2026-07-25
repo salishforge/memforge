@@ -120,6 +120,8 @@ export class MemForgeClient {
     before?: string;
     decay?: number;
     namespace?: string;
+    /** Restrict results by epistemic confidence level (v3.9). */
+    epistemic?: 'only_established' | 'include_provisional' | 'include_contested' | 'all';
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -128,6 +130,7 @@ export class MemForgeClient {
     if (options.before) params.set('before', options.before);
     if (options.decay !== undefined) params.set('decay', String(options.decay));
     if (options.namespace) params.set('namespace', options.namespace);
+    if (options.epistemic) params.set('epistemic', options.epistemic);
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 
@@ -361,6 +364,16 @@ export class MemForgeClient {
   /** Get memory health metrics. */
   async memoryHealth(agentId: string): Promise<MemoryHealth> {
     return this.get<MemoryHealth>(`/memory/${enc(agentId)}/health`);
+  }
+
+  // ─── Epistemic Confidence Model (v3.9) ───────────────────────────────────
+
+  /**
+   * Returns the count of warm-tier memories per epistemic_status.
+   * All five status values are always present, defaulting to 0 when empty.
+   */
+  async epistemicProfile(agentId: string): Promise<Record<string, number>> {
+    return this.get<Record<string, number>>(`/memory/${enc(agentId)}/epistemic`);
   }
 
   /** Generate a session resumption context for an agent. */
@@ -629,7 +642,7 @@ export class ResilientMemForgeClient {
     return this.safe('add', () => this.client.add(agentId, content, metadata, namespace, sessionId), null);
   }
 
-  async query(agentId: string, options: { q: string; limit?: number; mode?: QueryMode; after?: string; before?: string; decay?: number; namespace?: string }): Promise<QueryResult[]> {
+  async query(agentId: string, options: Parameters<MemForgeClient['query']>[1]): Promise<QueryResult[]> {
     return this.safe('query', () => this.client.query(agentId, options), []);
   }
 
@@ -675,6 +688,10 @@ export class ResilientMemForgeClient {
 
   async memoryHealth(agentId: string): Promise<MemoryHealth | null> {
     return this.safe('memoryHealth', () => this.client.memoryHealth(agentId), null);
+  }
+
+  async epistemicProfile(agentId: string): Promise<Record<string, number> | null> {
+    return this.safe('epistemicProfile', () => this.client.epistemicProfile(agentId), null);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

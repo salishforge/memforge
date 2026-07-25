@@ -14,7 +14,7 @@ The goal is a constant set of evolving agents developed and refined over years, 
 
 ---
 
-## Where We Are Today (v3.0.0-beta.4)
+## Where We Are Today (v3.7.0)
 
 MemForge has a production-grade foundation with CI fully green:
 

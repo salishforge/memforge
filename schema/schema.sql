@@ -33,17 +33,18 @@ CREATE TABLE IF NOT EXISTS agents (
 -- Added in v2.4: content_hash
 -- Added in v3.1: namespace
 -- Added in v3.5: session_id (per-device isolation; default 'default')
+-- Added in v3.8: context_signals (urgency/sentiment/session_type via keyword heuristics)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS hot_tier (
-  id           BIGSERIAL   PRIMARY KEY,
-  agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  content      TEXT        NOT NULL,
-  metadata     JSONB       NOT NULL DEFAULT '{}',
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  content_hash TEXT,
-  namespace    TEXT        NOT NULL DEFAULT 'default',
-  session_id   TEXT        NOT NULL DEFAULT 'default',
-  context_signals JSONB   NOT NULL DEFAULT '{}'
+  id              BIGSERIAL   PRIMARY KEY,
+  agent_id        TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  content         TEXT        NOT NULL,
+  metadata        JSONB       NOT NULL DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  content_hash    TEXT,
+  namespace       TEXT        NOT NULL DEFAULT 'default',
+  session_id      TEXT        NOT NULL DEFAULT 'default',
+  context_signals JSONB       NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
@@ -61,6 +62,8 @@ CREATE INDEX IF NOT EXISTS hot_tier_session_idx      ON hot_tier (agent_id, name
 --        content_code_tsv, summary (v2.5)
 -- v2.6: surprise_score, staleness_score, last_corroborated
 -- v3.1: namespace
+-- v3.8: context_signals (merged from contributing hot rows at consolidation time)
+-- v3.9: epistemic_status, evidence_count, last_corroborated_at (epistemic confidence model)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS warm_tier (
   id                          BIGSERIAL   PRIMARY KEY,
@@ -107,11 +110,14 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   -- Originating hot-tier session for provenance (v3.5) — NULL = consolidated before
   -- per-session tracking, distinct from the literal 'default' session.
   session_id                  TEXT,
-  -- Phase 5: Epistemic confidence model (v3.8)
+  -- Sentiment tagging (v3.8) — merged from contributing hot rows: urgency=max, others=majority
+  context_signals             JSONB       NOT NULL DEFAULT '{}',
+  -- Epistemic confidence model (v3.9) — calibrated uncertainty level for this memory
   epistemic_status            TEXT        NOT NULL DEFAULT 'provisional',
+  -- Number of positive retrieval events corroborating this memory
   evidence_count              INTEGER     NOT NULL DEFAULT 1,
-  -- Phase 5: Memory sentiment tagging (v3.8)
-  context_signals             JSONB       NOT NULL DEFAULT '{}'
+  -- Timestamp of the most recent promotion to 'established' by Phase 5.12
+  last_corroborated_at        TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS warm_tier_agent_id_idx      ON warm_tier (agent_id);
@@ -131,6 +137,7 @@ CREATE INDEX IF NOT EXISTS warm_tier_time_idx       ON warm_tier (agent_id, time
 CREATE INDEX IF NOT EXISTS warm_tier_importance_idx ON warm_tier (agent_id, importance DESC);
 CREATE INDEX IF NOT EXISTS warm_tier_namespace_idx  ON warm_tier (agent_id, namespace);
 CREATE INDEX IF NOT EXISTS warm_tier_session_idx    ON warm_tier (agent_id, namespace, session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS warm_tier_epistemic_idx  ON warm_tier (agent_id, epistemic_status);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- cold_tier — archived / cleared memory (audit trail, never hard-deleted)
@@ -674,7 +681,8 @@ CREATE INDEX IF NOT EXISTS anthropic_memory_stores_agent_ns_idx
   ON anthropic_memory_stores (agent_id, namespace);
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Phase 5: Causal Memory Graph (v3.8)
+-- causal_edges (v3.10) — Causal Memory Graph: inferred cause→effect edges
+-- mined from temporal sequences by Sleep Phase 6.1.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS causal_edges (
@@ -694,7 +702,8 @@ CREATE INDEX IF NOT EXISTS causal_edges_agent_cause_idx ON causal_edges (agent_i
 CREATE INDEX IF NOT EXISTS causal_edges_agent_effect_idx ON causal_edges (agent_id, effect_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Phase 5: Hierarchical Abstraction Engine (v3.8)
+-- abstractions (v3.10) — Hierarchical Abstraction Engine: cross-cutting
+-- principles extracted from meta-reflections by Sleep Phase 5.11.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS abstractions (
@@ -712,9 +721,10 @@ CREATE TABLE IF NOT EXISTS abstractions (
 CREATE INDEX IF NOT EXISTS abstractions_agent_level_idx ON abstractions (agent_id, level, active);
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Phase 5: Adaptive Sleep Intelligence (v3.8)
+-- sleep_phase_analytics (v3.8+) — per-phase telemetry for each sleep cycle run.
+-- The sleep cycle reads the last 3 records per (agent_id, phase) to decide
+-- whether to skip a phase that produced zero changes in every recent run.
 -- ─────────────────────────────────────────────────────────────────────────────
-
 CREATE TABLE IF NOT EXISTS sleep_phase_analytics (
   id           BIGSERIAL   PRIMARY KEY,
   agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -725,7 +735,8 @@ CREATE TABLE IF NOT EXISTS sleep_phase_analytics (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS sleep_phase_analytics_agent_idx ON sleep_phase_analytics (agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS sleep_phase_analytics_agent_idx
+  ON sleep_phase_analytics (agent_id, created_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)

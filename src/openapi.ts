@@ -778,6 +778,44 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/epistemic': {
+        get: {
+          summary: 'Get epistemic confidence profile — memory counts per uncertainty level',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Counts of warm-tier memories per epistemic_status. All five values are always present.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          established: { type: 'integer', description: 'Corroborated by multiple retrievals across sessions' },
+                          provisional: { type: 'integer', description: 'Accepted but not yet confirmed (default for new memories)' },
+                          contested: { type: 'integer', description: 'Contradicted by a conflicting memory' },
+                          deprecated: { type: 'integer', description: 'Superseded or stale; retained for audit' },
+                          inferred: { type: 'integer', description: 'Derived by the sleep cycle, not directly observed' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '401': { description: 'Unauthorized' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/pool/{poolId}/procedures/publish/{agentId}': {
         post: {
           summary: 'Publish agent procedures to a shared pool',

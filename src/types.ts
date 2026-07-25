@@ -11,6 +11,58 @@ export interface Agent {
   metadata: Record<string, unknown>;
 }
 
+// ─── Phase 5: Epistemic Confidence Model ─────────────────────────────────────
+
+/**
+ * Calibrated uncertainty level for a warm-tier memory.
+ * - established   — corroborated by multiple positive retrievals across sessions
+ * - provisional   — default; accepted but not yet confirmed
+ * - contested     — contradicted by a conflicting memory in the knowledge graph
+ * - inferred      — derived by the sleep cycle, not directly observed
+ * - deprecated    — superseded or stale; retained for audit purposes
+ */
+export type EpistemicStatus = 'established' | 'provisional' | 'contested' | 'deprecated' | 'inferred';
+
+/**
+ * Filter level for query results by epistemic confidence.
+ * - only_established   — only memories confirmed by multiple corroborating retrievals
+ * - include_provisional — established + provisional (default for most queries)
+ * - include_contested  — established + provisional + contested
+ * - all                — no filtering (includes deprecated and inferred)
+ */
+export type EpistemicFilter = 'only_established' | 'include_provisional' | 'include_contested' | 'all';
+
+// ─── Phase 5: Adaptive Sleep Intelligence ────────────────────────────────────
+
+/**
+ * Telemetry recorded after each phase of the sleep cycle. The engine reads the
+ * last 3 records per (agent_id, phase) to decide whether to skip phases that
+ * have produced zero changes in every recent run.
+ */
+export interface PhaseAnalytics {
+  phase: string;
+  duration_ms: number;
+  tokens_used: number;
+  changes_made: number;
+}
+
+// ─── Phase 5: Memory Sentiment Tagging ───────────────────────────────────────
+
+export type UrgencyLevel = 'low' | 'medium' | 'high' | 'critical';
+export type SentimentTag = 'positive' | 'negative' | 'neutral';
+export type SessionType = 'debug' | 'plan' | 'review' | 'explore' | 'build' | 'unknown';
+
+/**
+ * Signals inferred from memory content via keyword heuristics at write time.
+ * On hot_tier: per-event. On warm_tier: merged from contributing hot rows
+ * (urgency = max, sentiment = majority, session_type = majority).
+ */
+export interface ContextSignals {
+  urgency?: UrgencyLevel;
+  sentiment?: SentimentTag;
+  session_type?: SessionType;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
@@ -53,6 +105,8 @@ export interface WarmRow {
    * distinct from the literal 'default' session.
    */
   session_id: string | null;
+  /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
+  context_signals?: ContextSignals;
   /** Full-text search rank (present only in query results) */
   rank?: number;
 }
@@ -67,8 +121,13 @@ export interface QueryResult {
   time_start: Date | null;
   time_end: Date | null;
   rank: number;
+  /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
+  context_signals?: ContextSignals;
+  /** Calibrated uncertainty level for this memory (v3.9). */
   epistemic_status?: EpistemicStatus;
+  /** Number of positive retrieval events corroborating this memory (v3.9). */
   evidence_count?: number;
+  /** Per-result explanation factors — present when the query sets explain=true (v3.10). */
   explanation?: ExplanationFactor[];
 }
 
@@ -94,9 +153,9 @@ export interface QueryOptions {
   maxTokens?: number;
   /** Namespace to search within (default: 'default') */
   namespace?: string;
-  /** Epistemic filter — restrict results by confidence calibration level */
+  /** Restrict results to a given epistemic confidence level (v3.9). */
   epistemic?: EpistemicFilter;
-  /** When true, attach per-result explanation factors to the response */
+  /** When true, attach per-result explanation factors to the response (v3.10). */
   explain?: boolean;
 }
 
@@ -365,6 +424,8 @@ export interface SleepCycleResult {
   embeddings_migration_backlog?: number;
   /** Warm-tier rows in deprecated namespaces decayed by Phase 5.10 */
   deprecated_decayed?: number;
+  /** Warm-tier rows promoted from provisional to established by Phase 5.12 */
+  epistemic_promoted?: number;
 }
 
 export interface SleepCycleConfig {
@@ -829,12 +890,6 @@ export interface ResumeContext {
   };
 }
 
-// ─── Phase 5: Epistemic Confidence Model ────────────────────────────────────
-
-export type EpistemicStatus = 'established' | 'provisional' | 'contested' | 'deprecated' | 'inferred';
-
-export type EpistemicFilter = 'only_established' | 'include_provisional' | 'include_contested' | 'all';
-
 // ─── Phase 5: Explainable Memory Operations ─────────────────────────────────
 
 export interface ExplanationFactor {
@@ -889,27 +944,6 @@ export interface Abstraction {
   active: boolean;
   namespace: string;
   created_at: Date;
-}
-
-// ─── Phase 5: Adaptive Sleep Intelligence ───────────────────────────────────
-
-export interface PhaseAnalytics {
-  phase: string;
-  duration_ms: number;
-  tokens_used: number;
-  changes_made: number;
-}
-
-// ─── Phase 5: Memory Sentiment Tagging ──────────────────────────────────────
-
-export type UrgencyLevel = 'low' | 'medium' | 'high' | 'critical';
-export type SentimentTag = 'positive' | 'negative' | 'neutral';
-export type SessionType = 'debug' | 'plan' | 'review' | 'explore' | 'build' | 'unknown';
-
-export interface ContextSignals {
-  urgency?: UrgencyLevel;
-  sentiment?: SentimentTag;
-  session_type?: SessionType;
 }
 
 // ─── Phase 5: Cross-Agent Transfer Learning ─────────────────────────────────

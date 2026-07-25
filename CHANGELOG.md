@@ -2,7 +2,107 @@
 
 All notable changes to MemForge are documented here.
 
-## [Unreleased]
+## [Unreleased] — Epistemic Confidence Model + Memory Sentiment Tagging + Adaptive Sleep Intelligence
+
+### Added (Epistemic Confidence Model — F1)
+
+- **Epistemic Confidence Model (F1)** — calibrated uncertainty levels on warm-tier
+  memories. New columns on `warm_tier`: `epistemic_status TEXT NOT NULL DEFAULT 'provisional'`,
+  `evidence_count INTEGER NOT NULL DEFAULT 1`, `last_corroborated_at TIMESTAMPTZ`.
+  Index `warm_tier_epistemic_idx` on `(agent_id, epistemic_status)`.
+  New types `EpistemicStatus` (`established | provisional | contested | deprecated | inferred`)
+  and `EpistemicFilter` (`only_established | include_provisional | include_contested | all`)
+  in `src/types.ts`. New Zod schema `EpistemicFilterSchema` in `src/schemas.ts`.
+
+- **`GET /memory/:id/epistemic`** — returns counts of warm-tier memories per
+  `epistemic_status`. All five values always present, defaulting to 0.
+  New `getEpistemicProfile(agentId)` method on `MemoryManager`.
+  Client SDK methods `epistemicProfile(agentId)` on `MemForgeClient` and
+  `ResilientMemForgeClient`. Python SDK `epistemic_profile(agent_id)` on
+  `MemForgeClient`. OpenAPI entry added.
+
+- **Epistemic query filter** — `query()` now accepts `epistemic?: EpistemicFilter`.
+  REST `GET /memory/:id/query` accepts `?epistemic=` query param validated against
+  `EpistemicFilterSchema`. `QueryResult` now carries `epistemic_status` and
+  `evidence_count` fields. TypeScript SDK `query()` accepts `epistemic` option.
+  Python SDK `query()` accepts `epistemic` kwarg.
+
+- **Sleep Phase 5.12: Epistemic Promotion** — new `phaseEpistemicPromotion(agentId)`
+  method on `SleepCycleEngine`, wired into `run()` between Phase 5.10 and Phase 5.8.
+  Promotes `provisional → established` when `evidence_count >= 3` AND the memory
+  has been retrieved positively from at least 2 distinct namespaces in `retrieval_log`.
+  Demotes `established → provisional` when `staleness_score > 0.7` and not accessed
+  in 30 days. Stamps `last_corroborated_at` on promotion. Return count exposed as
+  `epistemic_promoted` on `SleepCycleResult`.
+
+- **MCP tools** — `memforge_certainty` (query with epistemic filter) and
+  `memforge_epistemic_profile` (get status counts) added to `src/mcp.ts` and
+  `src/tool-definitions.ts`.
+
+- **Migration** — `schema/migration-v3.9.sql` (idempotent `IF NOT EXISTS`).
+  `schema/schema.sql` updated as canonical from-scratch schema.
+
+## [Unreleased] — Memory Sentiment Tagging + Adaptive Sleep Intelligence
+
+### Added
+
+- **Memory Sentiment Tagging (F6)** — pure keyword-heuristic inference of
+  `urgency` (`low | medium | high | critical`), `sentiment`
+  (`positive | negative | neutral`), and `session_type`
+  (`debug | plan | review | explore | build | unknown`) at write time.
+  Stored in the new `context_signals JSONB` column on both `hot_tier` and
+  `warm_tier`. During consolidation, signals from all contributing hot rows
+  are merged: urgency = maximum, sentiment = majority vote, session_type =
+  majority vote. The merged signals are returned in `query()` results as
+  `context_signals` on each `QueryResult`. No LLM call required; runs
+  synchronously inside `add()`. New types `UrgencyLevel`, `SentimentTag`,
+  `SessionType`, `ContextSignals` in `src/types.ts`.
+
+- **Adaptive Sleep Intelligence (F5) — analytics infrastructure** — new
+  `sleep_phase_analytics` table (`agent_id`, `phase`, `duration_ms`,
+  `tokens_used`, `changes_made`, `created_at`) and two new public methods
+  on `SleepCycleEngine`: `recordPhaseAnalytics()` (writes one telemetry
+  row per phase call) and `shouldSkipPhase()` (returns `true` when the
+  last 3 recorded runs for that phase all had `changes_made = 0`).
+  Index `sleep_phase_analytics_agent_idx` on
+  `(agent_id, created_at DESC)`. RLS agent isolation policy mirrors the
+  rest of the schema.
+
+- **Adaptive Sleep Intelligence (F5) — run() wiring** — every top-level
+  phase invocation in `SleepCycleEngine.run()` is now wrapped with timing
+  and a `recordPhaseAnalytics()` write, populating `sleep_phase_analytics`
+  with one row per phase per cycle. Phase identifiers: `weight-adaptation`,
+  `scoring`, `triage`, `capacity-eviction`, `conflict-resolution`,
+  `revision`, `graph-maintenance`, `entity-dedup`, `reflection`,
+  `cold-purge`, `schema-detection`, `temporal-validation`,
+  `procedure-evolution`, `embedding-migration`, `deprecated-decay`,
+  `epistemic-promotion`, `drift-snapshot`, `audit-archive`. The cleanup /
+  reflection tail — `graph-maintenance`, `entity-dedup`, `reflection`,
+  `schema-detection`, `temporal-validation`, `procedure-evolution`,
+  `embedding-migration`, `deprecated-decay` — additionally consults
+  `shouldSkipPhase()` and short-circuits when the last 3 recorded runs
+  were idle, avoiding unnecessary I/O on quiet agents. Core hot-path
+  phases (weight adaptation, scoring, triage, capacity eviction, conflict
+  resolution, Phase 3 revision, Phase 6 audit archive) always run.
+
+### Migration
+
+- `schema/migration-v3.8.sql` — applies `sleep_phase_analytics` table,
+  `hot_tier.context_signals JSONB NOT NULL DEFAULT '{}'`, and
+  `warm_tier.context_signals JSONB NOT NULL DEFAULT '{}'`. Idempotent
+  (`IF NOT EXISTS` / `IF NOT EXISTS` on the `ADD COLUMN` statements).
+
+---
+
+## [3.7.0] - 2026-05-21 — Claude Dreaming Layer 4: Anthropic Memory Store Bridge
+
+This is the first npm release since `3.0.0-beta.4`. It rolls up four
+unreleased minor versions (3.4, 3.5, 3.6, 3.7); see the sections below
+for the granular history. Headline: end-to-end Claude Dreaming
+compatibility across four layers (Parity, Drop-in, Service, Bridge),
+multi-device shared memory for one agent identity, and the residual
+Phase 4 sleep-cycle features (selective forgetting, outcome-driven
+revision, reflection-driven revision, incremental embedding migration).
 
 ### Added
 
@@ -22,6 +122,40 @@ All notable changes to MemForge are documented here.
   `AnthropicBridge`. Tests in `tests/dreams-bridge.test.ts` cover
   push, pull-overwrite, and drift detection. Test concurrency forced
   to 1 to avoid cross-file pollution between fetch monkey-patches.
+
+### Distribution
+
+- **MCP registry manifests** (#128) — `smithery.yaml` (Smithery.ai
+  stdio config), `glama.json` (Glama.ai ownership claim), and
+  `server.json` (official MCP Registry manifest) ship in-repo so the
+  `memforge-mcp` binary surfaces in the major MCP discovery channels.
+  New `demo.sh` script exercises a sleep cycle interactively for
+  quick onboarding.
+- **FLOSS Fund portal** (#127) — fixes a `ZgotmplZ` template
+  rendering error in the funding portal entry. Cosmetic.
+
+### Security
+
+- **`npm audit` restored to clean** as part of the release cut.
+  Lockfile-only updates within existing semver ranges resolved
+  `protobufjs ≤7.5.5` code injection
+  ([GHSA-66ff-xgx4-vchm](https://github.com/advisories/GHSA-66ff-xgx4-vchm),
+  high; reached transitively via the optional
+  `@huggingface/transformers` peer dep) and `ip-address ≤10.1.0` XSS
+  ([GHSA-v2v4-37r5-5v8g](https://github.com/advisories/GHSA-v2v4-37r5-5v8g),
+  moderate; reached transitively via `express-rate-limit`). No
+  application source changes.
+
+---
+
+## [3.6.0] - 2026-05-07 — Claude Dreaming Layers 1–3 (Parity, Drop-in, Service)
+
+The first three layers of Claude Dreaming compatibility — async
+sleep-cycle jobs with the Anthropic-shaped run model, a drop-in
+`/v1/dreams` API, and optional service-layer delegation to Anthropic's
+Dreams API for the Phase 3.5 curation pass.
+
+### Added
 
 - **Claude Dreaming compatibility — Layer 3 (Service)** — when
   `DREAMS_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` are set, dream
@@ -85,6 +219,40 @@ All notable changes to MemForge are documented here.
   inside a running cycle exits at the next phase boundary via a new
   `DreamCancellationError`. `output_mode='new_namespace'` is rejected
   at the boundary pending namespace-scoped sleep phases (a follow-up).
+
+---
+
+## [3.5.0] - 2026-04-29 — Multi-Device Shared Memory
+
+One agent identity, many sessions. Adds `session_id` scoping across
+the hot and warm tiers so a single agent can be driven from multiple
+clients (mobile, desktop, web) without losing per-device context or
+collapsing devices into the same conversation.
+
+### Added
+
+- **Multi-device shared memory** (#121) — new `session_id TEXT NOT NULL
+  DEFAULT 'default'` column on `hot_tier` and `warm_tier`, plus
+  composite `(agent_id, session_id)` indexes. Ingest, query, timeline,
+  and consolidate paths accept an optional `session_id` argument; when
+  omitted the legacy `'default'` session preserves single-device
+  behavior. Consolidation collapses hot rows within a session; sleep
+  cycles remain agent-wide so cross-session learning still happens.
+  Migration `schema/migration-v3.5.sql`. Tests in
+  `tests/multi-device.test.ts`.
+
+---
+
+## [3.4.0] - 2026-04-24 — Phase 4 residuals: Selective Forgetting, Sleep-Cycle Revisions, Embedding Migration
+
+Closes the residual Phase 4 ROADMAP items. Sleep cycles gain three
+new revision-priority channels (outcome, reflection, deprecation),
+warm rows now carry their embedding provider identity for incremental
+re-embedding, and the local embedding provider migrates off the
+unmaintained `@xenova/transformers` to close a critical-severity CVE
+chain.
+
+### Added
 
 - **Selective forgetting (deprecated namespaces)** — closes the
   fourth and final residual Phase 4 item from the ROADMAP. Operators

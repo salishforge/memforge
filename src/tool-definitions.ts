@@ -473,6 +473,32 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_certainty',
+    description: 'Query memories filtered by epistemic confidence level. Returns only results at or above the specified certainty threshold. Use only_established for the most reliable memories, include_provisional for most queries, include_contested to see what is uncertain, or all for everything including deprecated and inferred.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        q: { type: 'string', description: 'Natural language search query' },
+        epistemic: { type: 'string', enum: ['only_established', 'include_provisional', 'include_contested', 'all'], description: 'Epistemic filter level (default: include_provisional)' },
+        limit: { type: 'integer', description: 'Max results (default 10)', minimum: 1, maximum: 200 },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id', 'q'],
+    },
+  },
+  {
+    name: 'memforge_epistemic_profile',
+    description: 'Return the count of warm-tier memories per epistemic_status for an agent. Useful for gauging how much of the knowledge base is well-corroborated (established) vs. newly accepted (provisional) vs. contested or deprecated.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */
