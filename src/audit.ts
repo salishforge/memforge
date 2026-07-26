@@ -20,7 +20,7 @@ type QueryExecutor = Pick<Pool, 'query'>;
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
 export type AuditOperation = 'create' | 'update' | 'delete' | 'revise' | 'merge' | 'evict' | 'score' | 'feedback';
-export type AuditTrigger = 'api' | 'sleep_cycle' | 'consolidation' | 'reflection' | 'dedup' | 'feedback';
+export type AuditTrigger = 'api' | 'sleep_cycle' | 'consolidation' | 'reflection' | 'dedup' | 'feedback' | 'bootstrap';
 
 export interface AuditEntry {
   id: bigint;

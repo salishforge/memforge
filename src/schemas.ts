@@ -232,6 +232,14 @@ export const PredictSchema = z.object({
   namespace: NamespaceSchema.optional(),
 });
 
+export const BootstrapSchema = z.object({
+  source_agent_id: z.string().min(1).max(256).regex(/^[\w.@:=-]+$/, 'source_agent_id must match /^[\\w.@:=-]+$/'),
+  namespace: NamespaceSchema.optional(),
+  max_memories: z.number().int().min(0).max(1000).optional(),
+  max_procedures: z.number().int().min(0).max(100).optional(),
+  max_principles: z.number().int().min(0).max(100).optional(),
+});
+
 // ─── Phase 5: Hierarchical Abstraction ──────────────────────────────────────
 
 /** Abstraction hierarchy level filter for abstraction reads (v3.11). */

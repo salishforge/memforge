@@ -372,7 +372,7 @@ CREATE TABLE IF NOT EXISTS audit_chain (
   chain_hash     TEXT        NOT NULL,  -- HMAC-SHA256(previous_hash + content_hash + operation + valid_from)
 
   -- Context
-  triggered_by   TEXT        NOT NULL DEFAULT 'api',  -- 'api', 'sleep_cycle', 'consolidation', 'reflection', 'dedup', 'feedback'
+  triggered_by   TEXT        NOT NULL DEFAULT 'api',  -- 'api', 'sleep_cycle', 'consolidation', 'reflection', 'dedup', 'feedback', 'bootstrap'
   model_used     TEXT,        -- LLM model if this was an AI-driven change
 
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()

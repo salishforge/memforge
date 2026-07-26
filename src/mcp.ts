@@ -640,14 +640,30 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_bootstrap',
+    description: 'Bootstrap a new agent from an experienced one: copies established memories, active procedures, and active principles at half confidence. Memories and procedures are marked _transferred_from (principles carry no marker — no metadata column). Idempotent — knowledge the target already carries is skipped. Both agents must live in this deployment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_agent_id: { type: 'string', description: 'Agent to copy knowledge from' },
+        target_agent_id: { type: 'string', description: 'Agent to bootstrap' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        max_memories: { type: 'integer', description: 'Max memories to transfer (default 100, max 1000)', minimum: 0, maximum: 1000 },
+        max_procedures: { type: 'integer', description: 'Max procedures to transfer (default 20, max 100)', minimum: 0, maximum: 100 },
+        max_principles: { type: 'integer', description: 'Max principles to transfer (default 10, max 100)', minimum: 0, maximum: 100 },
+      },
+      required: ['source_agent_id', 'target_agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
 
 const AGENT_ID_RE = /^[\w.@:=-]+$/;
 
-// Tools that use pool_id as primary key instead of agent_id
-const POOL_ONLY_TOOLS = new Set(['memforge_shared_procedures', 'memforge_expertise']);
+// Tools that use pool_id or their own agent pair instead of a generic agent_id
+const POOL_ONLY_TOOLS = new Set(['memforge_shared_procedures', 'memforge_expertise', 'memforge_bootstrap']);
 
 function validateToolArgs(name: string, args: Record<string, unknown>): void {
   // agent_id: required for agent-scoped tools
@@ -715,6 +731,19 @@ function validateToolArgs(name: string, args: Record<string, unknown>): void {
     const limit = args['limit'];
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50) {
       throw new Error('limit must be an integer between 1 and 50');
+    }
+  }
+
+  // memforge_bootstrap: validates its own agent pair (POOL_ONLY skips the generic agent_id rule)
+  if (name === 'memforge_bootstrap') {
+    for (const key of ['source_agent_id', 'target_agent_id'] as const) {
+      const value = args[key];
+      if (typeof value !== 'string' || value.length < 1 || value.length > 256 || !AGENT_ID_RE.test(value)) {
+        throw new Error(`${key} must be a string of 1-256 characters matching /^[\\w.@:=-]+$/`);
+      }
+    }
+    if (args['source_agent_id'] === args['target_agent_id']) {
+      throw new Error('source_agent_id and target_agent_id must be different');
     }
   }
 
@@ -953,6 +982,15 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_mental_models':
       return client.getAbstractions(agentId, 'mental_model', args['namespace'] as string | undefined);
+
+    case 'memforge_bootstrap':
+      return client.bootstrapAgent(args['target_agent_id'] as string, {
+        sourceAgentId: args['source_agent_id'] as string,
+        namespace: args['namespace'] as string | undefined,
+        maxMemories: args['max_memories'] as number | undefined,
+        maxProcedures: args['max_procedures'] as number | undefined,
+        maxPrinciples: args['max_principles'] as number | undefined,
+      });
 
     default:
       throw new Error(`Unknown tool: ${name}`);

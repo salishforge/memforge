@@ -1717,12 +1717,16 @@ Extract the cross-cutting principles.`;
   // separately; the caller can see the net change via getEpistemicProfile).
 
   private async phaseEpistemicPromotion(agentId: string): Promise<number> {
-    // Promote provisional → established when sufficient evidence exists
+    // Promote provisional → established when sufficient evidence exists.
+    // 'inferred' rows (sleep-cycle derivations and bootstrapped transfers,
+    // v3.12) earn promotion by the same evidence bar — without this they
+    // would be terminally second-class: excluded by every epistemic filter
+    // except 'all' with no path out regardless of corroboration.
     const { rowCount: promoted } = await this.pool.query(
       `UPDATE warm_tier
           SET epistemic_status = 'established', last_corroborated_at = now()
         WHERE agent_id = $1
-          AND epistemic_status = 'provisional'
+          AND epistemic_status IN ('provisional', 'inferred')
           AND evidence_count >= 3
           AND id IN (
             SELECT rl.warm_tier_id

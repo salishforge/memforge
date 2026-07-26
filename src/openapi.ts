@@ -1035,6 +1035,62 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/bootstrap': {
+        post: {
+          summary: 'Bootstrap this agent from an experienced source agent (transfer learning)',
+          description: 'Copies established memories, active procedures, and active principles from the source agent at half confidence; memories and procedures are marked _transferred_from (principles carry no marker). Memories arrive as epistemic_status "inferred": FTS-searchable immediately, semantically searchable after sleep cycles backfill embeddings, and visible under epistemic filters once corroboration promotes them (or with epistemic=all). Idempotent: knowledge the target already carries is skipped and counts report only rows actually written. Reads the source agent\'s memory — both agents share this deployment\'s token scope.',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' }, description: 'Target agent to bootstrap' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['source_agent_id'],
+                  properties: {
+                    source_agent_id: { type: 'string', minLength: 1, maxLength: 256, pattern: '^[\\w.@:=-]+$', description: 'Agent to copy knowledge from (must differ from the target)' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
+                    max_memories: { type: 'integer', minimum: 0, maximum: 1000, default: 100 },
+                    max_procedures: { type: 'integer', minimum: 0, maximum: 100, default: 20 },
+                    max_principles: { type: 'integer', minimum: 0, maximum: 100, default: 10 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Transfer counts — rows actually written this call.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          memories_transferred: { type: 'integer' },
+                          procedures_transferred: { type: 'integer' },
+                          principles_transferred: { type: 'integer' },
+                          source_agent_id: { type: 'string' },
+                          target_agent_id: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/pool/{poolId}/procedures/publish/{agentId}': {
         post: {
           summary: 'Publish agent procedures to a shared pool',

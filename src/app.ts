@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema, AbstractionLevelSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema, AbstractionLevelSchema, BootstrapSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -748,6 +748,51 @@ export function createApp(deps: AppDependencies): express.Express {
       ok(res, abstractions);
     } catch (err) {
       fail(res, 500, (err as Error).message);
+    }
+  });
+
+  // ─── Phase 5: Cross-Agent Transfer Learning ──────────────────────────────
+
+  /**
+   * POST /memory/:agentId/bootstrap
+   * Body: { source_agent_id, namespace?, max_memories?, max_procedures?, max_principles? }
+   *
+   * The path agent is the TARGET; the body names the source. Reads the source
+   * agent's memory — both agents share this deployment's token scope, so this
+   * is an intra-trust-domain operation by design.
+   */
+  app.post('/memory/:agentId/bootstrap', requireScope('memforge:write'), async (req: Request, res: Response) => {
+    const parsed = BootstrapSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue ? `${issue.path.join('.')}: ${issue.message}` : '"source_agent_id" (string) is required');
+      return;
+    }
+
+    let targetAgentId: string;
+    try {
+      targetAgentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const result = await manager.bootstrapAgent({
+        sourceAgentId: parsed.data.source_agent_id,
+        targetAgentId,
+        namespace: parsed.data.namespace,
+        maxMemories: parsed.data.max_memories,
+        maxProcedures: parsed.data.max_procedures,
+        maxPrinciples: parsed.data.max_principles,
+      });
+      ok(res, result);
+    } catch (err) {
+      if (err instanceof TypeError) {
+        fail(res, 400, err.message);
+      } else {
+        fail(res, 500, (err as Error).message);
+      }
     }
   });
 
