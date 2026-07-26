@@ -132,6 +132,25 @@ export function searchKey(agentId: string, q: string, limit: number): string {
   return `memforge:${agentId}:q:${queryHash(q, limit)}`;
 }
 
+/** Every /query parameter that changes the response must participate in the
+ * cache key — a missing one serves mismatched cached results (e.g. explain
+ * factors leaking into non-explain responses). */
+export interface QueryKeyParams {
+  mode?: string;
+  after?: string;
+  before?: string;
+  decay?: string;
+  maxTokens?: number;
+  namespace?: string;
+  epistemic?: string;
+  explain?: boolean;
+}
+
+export function queryKey(agentId: string, q: string, limit: number, p: QueryKeyParams): string {
+  const suffix = `${p.mode ?? 'auto'}:${p.after ?? ''}:${p.before ?? ''}:${p.decay ?? ''}:${p.maxTokens ?? ''}:${p.namespace ?? ''}:${p.epistemic ?? ''}:${p.explain ?? false}`;
+  return searchKey(agentId, `${q}:${suffix}`, limit);
+}
+
 export function timelineKey(agentId: string, from?: string, to?: string, limit = 50): string {
   const hash = createHash('sha256')
     .update(`${from ?? ''}::${to ?? ''}::${limit}`)

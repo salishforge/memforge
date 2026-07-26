@@ -10,7 +10,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { MemoryManager } from './memory-manager.js';
 import type { AuditChain } from './audit.js';
 import type { ClassifierRegistry } from './classifier.js';
-import type { QueryMode, ConsolidationMode, FeedbackOutcome } from './types.js';
+import type { QueryMode, ConsolidationMode, FeedbackOutcome, AbstractionLevel } from './types.js';
 import { getLogger, requestIdMiddleware, requestLogMiddleware } from './logger.js';
 import {
   registry,
@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema, AbstractionLevelSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -26,7 +26,7 @@ import {
   invalidateAgent,
   flushCache,
   statsKey,
-  searchKey,
+  queryKey,
   timelineKey,
   getLocalStats,
   getRedisStats,
@@ -444,6 +444,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const maxTokens = qstr(req.query['max_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
     const rawEpistemic = qstr(req.query['epistemic']);
+    const rawExplain = qstr(req.query['explain']);
 
     if (!q) {
       fail(res, 400, '"q" query param (string) is required');
@@ -504,6 +505,8 @@ export function createApp(deps: AppDependencies): express.Express {
       epistemic = epistemicResult.data;
     }
 
+    const explain = rawExplain === 'true';
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -512,9 +515,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    // Cache key includes all query parameters (including epistemic filter to prevent result mismatch)
-    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}:${namespace ?? ''}:${epistemic ?? ''}`;
-    const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
+    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, namespace, epistemic, explain });
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -535,9 +536,216 @@ export function createApp(deps: AppDependencies): express.Express {
         maxTokens: maxTokensNum,
         namespace,
         epistemic,
+        explain,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  // ─── Phase 5: Explainable Memory Operations ──────────────────────────────
+
+  /**
+   * GET /memory/:agentId/explain?warm_id=<id>
+   */
+  app.get('/memory/:agentId/explain', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const warmId = qstr(req.query['warm_id']);
+
+    // warm_tier.id is BIGSERIAL — values beyond int8 range can never exist, and
+    // passing them through would surface as a Postgres 22003 cast error (500).
+    if (!warmId || !/^\d+$/.test(warmId) || BigInt(warmId) > 9223372036854775807n) {
+      fail(res, 400, '"warm_id" query param (numeric string within int8 range) is required');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const result = await manager.explainMemory(agentId, BigInt(warmId));
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === 'NOT_FOUND') {
+        fail(res, 404, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Phase 5: Causal Memory Graph ────────────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/causal?memory_id=<id>&direction=causes|effects[&depth=<n>]
+   *
+   * A memory with no causal edges (or a nonexistent id) yields 200 with []
+   * — the traversal has no way to distinguish the two, so no 404.
+   */
+  app.get('/memory/:agentId/causal', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const memoryId = qstr(req.query['memory_id']);
+    const direction = qstr(req.query['direction']);
+    const depth = qstr(req.query['depth']);
+
+    // warm_tier.id is BIGSERIAL — values beyond int8 range can never exist, and
+    // passing them through would surface as a Postgres 22003 cast error (500).
+    if (!memoryId || !/^\d+$/.test(memoryId) || BigInt(memoryId) > 9223372036854775807n) {
+      fail(res, 400, '"memory_id" query param (numeric string within int8 range) is required');
+      return;
+    }
+    if (direction !== 'causes' && direction !== 'effects') {
+      fail(res, 400, '"direction" query param must be "causes" or "effects"');
+      return;
+    }
+    const depthNum = depth !== undefined ? parseInt(depth, 10) : 3;
+    if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
+      fail(res, 400, '"depth" must be an integer between 1 and 10');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const chain = await manager.getCausalChain(agentId, BigInt(memoryId), direction, depthNum);
+      ok(res, chain);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * POST /memory/:agentId/predict
+   * Body: { context, namespace? }
+   */
+  app.post('/memory/:agentId/predict', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const parsed = PredictSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? '"context" (string) is required');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const predictions = await manager.predict(agentId, parsed.data.context, parsed.data.namespace);
+      ok(res, predictions);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/principles?[namespace=<ns>][&limit=<n>]
+   *
+   * Active principle-level abstractions, ordered by confidence then recency.
+   * The manager caps results at 50; limit (1-50) trims further.
+   */
+  app.get('/memory/:agentId/principles', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawNamespace = qstr(req.query['namespace']);
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    const rawLimit = qstr(req.query['limit']);
+    let limit: number | undefined;
+    if (rawLimit !== undefined) {
+      limit = qnum(req.query['limit']);
+      if (limit === undefined || limit < 1 || limit > 50) {
+        fail(res, 400, '"limit" must be an integer between 1 and 50');
+        return;
+      }
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const principles = await manager.getPrinciples(agentId, namespace);
+      ok(res, limit !== undefined ? principles.slice(0, limit) : principles);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * GET /memory/:agentId/abstractions?[level=<level>][&namespace=<ns>]
+   *
+   * Active abstractions at any level, ordered by confidence then recency,
+   * capped at 50. Sleep Phase 5.11 currently writes only 'principle' rows;
+   * 'strategy' and 'mental_model' return [] until something writes them.
+   */
+  app.get('/memory/:agentId/abstractions', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawLevel = qstr(req.query['level']);
+    let level: AbstractionLevel | undefined;
+    if (rawLevel !== undefined) {
+      const levelResult = AbstractionLevelSchema.safeParse(rawLevel);
+      if (!levelResult.success) {
+        fail(res, 400, '"level" must be one of: principle, strategy, mental_model');
+        return;
+      }
+      level = levelResult.data;
+    }
+
+    const rawNamespace = qstr(req.query['namespace']);
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const abstractions = await manager.getAbstractions(agentId, level, namespace);
+      ok(res, abstractions);
     } catch (err) {
       fail(res, 500, (err as Error).message);
     }

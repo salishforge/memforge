@@ -576,6 +576,70 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_explain',
+    description: "Explain a warm-tier memory's current state — scores, epistemic status, access patterns, and its standing against the sleep-cycle score thresholds (eviction and low-confidence revision channels).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id to explain (numeric string, int8 range)' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
+  {
+    name: 'memforge_causal_chain',
+    description: 'Traverse causal relationships from a warm-tier memory. Returns a chain of cause/effect memories with edge strength and confidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        memory_id: { type: 'string', description: 'Starting warm_tier row id (numeric string, int8 range)' },
+        direction: { type: 'string', enum: ['causes', 'effects'], description: "'effects' walks downstream (what this memory led to), 'causes' upstream (what led to it)" },
+        depth: { type: 'integer', description: 'Max traversal depth (default 3)', minimum: 1, maximum: 10 },
+      },
+      required: ['agent_id', 'memory_id', 'direction'],
+    },
+  },
+  {
+    name: 'memforge_predict',
+    description: 'Predict probable next events for a context, based on causal edges mined from memory sequences. Probability is a relative ranking signal (confidence-scaled, monotonic in edge strength), not a calibrated probability.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        context: { type: 'string', description: 'Current situation description (max 10000 chars)' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+      },
+      required: ['agent_id', 'context'],
+    },
+  },
+  {
+    name: 'memforge_principles',
+    description: "Retrieve an agent's active principles — cross-cutting rules distilled from meta-reflections by the sleep cycle. Ordered by confidence then recency, capped at 50.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 50 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_mental_models',
+    description: "Return an agent's stored mental_model-level abstractions. Sleep Phase 5.11 currently auto-extracts only the 'principle' level, so this is empty until a future phase (or a direct database write) creates mental_model rows.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -613,6 +677,44 @@ function validateToolArgs(name: string, args: Record<string, unknown>): void {
   if ('content' in args && args['content'] !== undefined) {
     if (typeof args['content'] !== 'string' || args['content'].length > 100000) {
       throw new Error('content must be a string of at most 100000 characters');
+    }
+  }
+
+  // memforge_explain warm_id: numeric string within int8 range (warm_tier.id is BIGSERIAL)
+  if (name === 'memforge_explain') {
+    const warmId = args['warm_id'];
+    if (typeof warmId !== 'string' || !/^\d+$/.test(warmId) || BigInt(warmId) > 9223372036854775807n) {
+      throw new Error('warm_id must be a numeric string within int8 range');
+    }
+  }
+
+  // memforge_causal_chain: memory_id numeric string within int8 range
+  // (warm_tier.id is BIGSERIAL); direction must be the validated enum
+  if (name === 'memforge_causal_chain') {
+    const memoryId = args['memory_id'];
+    if (typeof memoryId !== 'string' || !/^\d+$/.test(memoryId) || BigInt(memoryId) > 9223372036854775807n) {
+      throw new Error('memory_id must be a numeric string within int8 range');
+    }
+    const direction = args['direction'];
+    if (direction !== 'causes' && direction !== 'effects') {
+      throw new Error("direction must be 'causes' or 'effects'");
+    }
+  }
+
+  // memforge_predict context: non-empty string, max 10000 chars
+  if (name === 'memforge_predict') {
+    const context = args['context'];
+    if (typeof context !== 'string' || context.length < 1 || context.length > 10000) {
+      throw new Error('context must be a non-empty string of at most 10000 characters');
+    }
+  }
+
+  // memforge_principles limit: the REST route rejects limit > 50, tighter
+  // than the generic 1-200 rule above
+  if (name === 'memforge_principles' && 'limit' in args && args['limit'] !== undefined) {
+    const limit = args['limit'];
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new Error('limit must be an integer between 1 and 50');
     }
   }
 
@@ -831,6 +933,26 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_epistemic_profile':
       return client.epistemicProfile(agentId);
+
+    case 'memforge_explain':
+      return client.explainMemory(agentId, args['warm_id'] as string);
+
+    case 'memforge_causal_chain':
+      return client.getCausalChain(
+        agentId,
+        args['memory_id'] as string,
+        args['direction'] as 'causes' | 'effects',
+        args['depth'] as number | undefined,
+      );
+
+    case 'memforge_predict':
+      return client.predict(agentId, args['context'] as string, args['namespace'] as string | undefined);
+
+    case 'memforge_principles':
+      return client.getPrinciples(agentId, args['namespace'] as string | undefined, args['limit'] as number | undefined);
+
+    case 'memforge_mental_models':
+      return client.getAbstractions(agentId, 'mental_model', args['namespace'] as string | undefined);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

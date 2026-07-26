@@ -86,6 +86,11 @@ import type {
   UrgencyLevel,
   SentimentTag,
   SessionType,
+  ExplanationFactor,
+  CausalChainNode,
+  PredictionResult,
+  Abstraction,
+  AbstractionLevel,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -889,6 +894,24 @@ Ranking (numbers only):`;
         // Drop results scoring less than 10% of the top result
         results = results.filter((r) => r.rank >= topScore * 0.1);
       }
+    }
+
+    // Explainable Memory Operations — attach explanation factors when requested (v3.10)
+    if (opts.explain) {
+      results = results.map((r) => {
+        const factors: ExplanationFactor[] = [];
+        factors.push({ name: 'rank_score', weight: r.rank, detail: `Final composite score after fusion and boosts` });
+        if (r.epistemic_status) {
+          const epistemicWeight = r.epistemic_status === 'established' ? 1.0 : r.epistemic_status === 'provisional' ? 0.5 : 0.2;
+          factors.push({ name: 'epistemic_status', weight: epistemicWeight, detail: `Status: ${r.epistemic_status}, evidence count: ${r.evidence_count ?? 0}` });
+        }
+        factors.push({ name: 'search_mode', weight: 0, detail: `Query mode: ${mode}` });
+        if (decayRate > 0) {
+          const ageHours = (Date.now() - new Date(r.consolidated_at).getTime()) / (1000 * 60 * 60);
+          factors.push({ name: 'temporal_decay', weight: Math.exp(-decayRate * ageHours), detail: `Age: ${ageHours.toFixed(1)}h, decay rate: ${decayRate}` });
+        }
+        return { ...r, explanation: factors };
+      });
     }
 
     // Track zero-result queries as knowledge gaps; deduplicated and capped at 1000/agent
@@ -4638,5 +4661,215 @@ Guidelines:
       profile[row.epistemic_status] = parseInt(row.count, 10);
     }
     return profile;
+  }
+
+  // ─── Phase 5: Explainable Memory Operations ────────────────────────────────
+
+  /**
+   * Reports the current state of a single warm-tier memory — scores, epistemic
+   * status, access patterns — plus its standing against the sleep cycle's
+   * score thresholds. The outlook flags cover the score-threshold channels
+   * only: capacity eviction (WARM_TIER_MAX_PER_AGENT, which does not exempt
+   * graduated rows) and outcome/contradiction-driven revision flagging depend
+   * on live cross-table state and are not predicted here.
+   */
+  async explainMemory(agentId: string, warmTierId: bigint): Promise<Record<string, unknown>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{
+      id: bigint; content: string; importance: number; confidence: number;
+      epistemic_status: string; evidence_count: number;
+      access_count: number; last_accessed: Date | null;
+      staleness_score: number; revision_count: number;
+      consolidated_at: Date; graduated: boolean;
+    }>(
+      `SELECT id, content, importance, confidence, epistemic_status, evidence_count,
+              access_count, last_accessed, staleness_score, revision_count,
+              consolidated_at, graduated
+       FROM warm_tier WHERE id = $1 AND agent_id = $2`,
+      [warmTierId, agentId],
+    );
+    if (rows.length === 0) {
+      throw Object.assign(
+        new Error(`warm_tier row ${warmTierId} not found for agent ${agentId}`),
+        { code: 'NOT_FOUND' },
+      );
+    }
+    const row = rows[0]!;
+    const evictionThreshold = this.config.sleepCycle.evictionThreshold;
+    const revisionThreshold = this.config.sleepCycle.revisionThreshold;
+    return {
+      id: row.id,
+      content_preview: row.content.slice(0, 200),
+      importance: row.importance,
+      confidence: row.confidence,
+      epistemic_status: row.epistemic_status,
+      evidence_count: row.evidence_count,
+      access_count: row.access_count,
+      last_accessed: row.last_accessed,
+      staleness_score: row.staleness_score,
+      revision_count: row.revision_count,
+      consolidated_at: row.consolidated_at,
+      graduated: row.graduated,
+      thresholds: {
+        eviction: evictionThreshold,
+        revision: revisionThreshold,
+        would_evict_by_threshold: row.importance < evictionThreshold && !row.graduated,
+        would_flag_low_confidence: row.confidence < revisionThreshold,
+      },
+    };
+  }
+
+  // ─── Phase 5: Causal Memory Graph ──────────────────────────────────────────
+
+  /**
+   * Traverses causal_edges from a warm-tier memory in one direction (v3.10).
+   * direction='effects' walks downstream (what this memory led to),
+   * direction='causes' walks upstream (what led to this memory). Depth is
+   * clamped to [1,10]; results are capped at 50 nodes, breadth-first by
+   * depth then edge strength.
+   */
+  async getCausalChain(
+    agentId: string,
+    memoryId: bigint,
+    direction: 'causes' | 'effects',
+    depth: number = 3,
+  ): Promise<CausalChainNode[]> {
+    this.assertAgentId(agentId);
+    const safeDepth = Math.min(Math.max(1, depth), 10);
+
+    // Recursive CTE traversing causal_edges in the requested direction.
+    // Column identifiers below derive only from the validated
+    // 'causes'|'effects' enum — never raw input; all values are parameterized.
+    const isEffects = direction === 'effects';
+    const startCol = isEffects ? 'cause_id' : 'effect_id';
+    const nextCol = isEffects ? 'effect_id' : 'cause_id';
+    const joinCol = isEffects ? 'cause_id' : 'effect_id';
+    const directionLabel = isEffects ? 'effect' : 'cause';
+
+    const { rows } = await this.pool.query<CausalChainNode>(
+      `WITH RECURSIVE chain AS (
+         SELECT ce.${nextCol} AS memory_id, ce.strength AS edge_strength, ce.confidence AS edge_confidence, 1 AS depth
+         FROM causal_edges ce
+         WHERE ce.agent_id = $1 AND ce.${startCol} = $2
+       UNION ALL
+         SELECT ce.${nextCol}, ce.strength, ce.confidence, c.depth + 1
+         FROM causal_edges ce
+         JOIN chain c ON ce.${joinCol} = c.memory_id AND ce.agent_id = $1
+         WHERE c.depth < $3
+       )
+       SELECT c.memory_id, w.content, $4::text AS direction,
+              c.edge_strength, c.edge_confidence, c.depth
+       FROM chain c
+       JOIN warm_tier w ON w.id = c.memory_id AND w.agent_id = $1
+       ORDER BY c.depth ASC, c.edge_strength DESC
+       LIMIT 50`,
+      [agentId, memoryId, safeDepth, directionLabel],
+    );
+    return rows;
+  }
+
+  /**
+   * Predicts probable next events for a context (v3.10). Retrieves the top 5
+   * warm memories matching the context in the given namespace, then follows
+   * outgoing causal edges to their effects, ranked by strength × confidence.
+   * Returns at most 10 predictions; empty when the context matches nothing.
+   */
+  async predict(
+    agentId: string,
+    context: string,
+    namespace: string = DEFAULT_NAMESPACE,
+  ): Promise<PredictionResult> {
+    this.assertAgentId(agentId);
+    if (!context || typeof context !== 'string') {
+      throw new TypeError('context must be a non-empty string');
+    }
+
+    // Find warm-tier memories matching the context
+    const contextResults = await this.query(agentId, {
+      q: context,
+      limit: 5,
+      namespace,
+    });
+
+    // Shared-pool results live in the shared_memories id space, not warm_tier —
+    // feeding their ids into the warm_tier-keyed causal_edges lookup would
+    // attribute predictions to whatever unrelated warm row shares the number.
+    const matchIds = contextResults
+      .filter((r) => !(r.metadata && r.metadata['_from_pool'] !== undefined))
+      .map((r) => r.id);
+
+    if (matchIds.length === 0) {
+      return { predicted_events: [] };
+    }
+
+    // Follow causal_edges from matched memories to find probable effects.
+    // The effect row must sit in the requested namespace — edges may span
+    // namespaces (sequence links are namespace-blind), and predict promises
+    // namespace-confined results like every other namespaced read path.
+    const { rows } = await this.pool.query<{
+      content: string; memory_id: bigint; strength: number;
+      confidence: number; avg_lag_seconds: number | null;
+    }>(
+      `SELECT w.content, ce.effect_id AS memory_id, ce.strength, ce.confidence, ce.avg_lag_seconds
+       FROM causal_edges ce
+       JOIN warm_tier w ON w.id = ce.effect_id AND w.agent_id = $1 AND w.namespace = $3
+       WHERE ce.agent_id = $1 AND ce.cause_id = ANY($2)
+       ORDER BY ce.confidence * (1 - exp(-ce.strength / 30.0)) DESC
+       LIMIT 10`,
+      [agentId, matchIds, namespace],
+    );
+
+    // Mined strengths land in [3, 100] (count × inverse-cv, cv floored at
+    // 0.1), so a raw strength × confidence product saturates at the 1.0 cap
+    // for virtually every real edge. The exponential squash keeps probability
+    // in (0, confidence), monotonic in strength, and never saturated — it is
+    // a relative ranking signal, not a calibrated probability.
+    return {
+      predicted_events: rows.map((r) => ({
+        content: r.content,
+        memory_id: r.memory_id,
+        probability: r.confidence * (1 - Math.exp(-r.strength / 30)),
+        avg_lag_seconds: r.avg_lag_seconds,
+      })),
+    };
+  }
+
+  // ─── Phase 5: Hierarchical Abstraction ─────────────────────────────────────
+
+  /**
+   * Lists an agent's abstractions (v3.11), optionally filtered by level.
+   * Only active rows are returned, ordered by confidence then recency,
+   * capped at 50.
+   */
+  async getAbstractions(
+    agentId: string,
+    level?: AbstractionLevel,
+    namespace?: string,
+  ): Promise<Abstraction[]> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+    const params: SqlParam[] = [agentId, ns];
+    let levelFilter = '';
+    if (level) {
+      params.push(level);
+      levelFilter = `AND level = $${params.length}`;
+    }
+    params.push(50); // result cap
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<Abstraction>(
+      `SELECT id, agent_id, level, content, source_reflection_ids, confidence, active, namespace, created_at
+       FROM abstractions
+       WHERE agent_id = $1 AND namespace = $2 AND active = true ${levelFilter}
+       ORDER BY confidence DESC, created_at DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows;
+  }
+
+  /** Active principle-level abstractions (v3.11) — getAbstractions() with level 'principle'. */
+  async getPrinciples(agentId: string, namespace?: string): Promise<Abstraction[]> {
+    return this.getAbstractions(agentId, 'principle', namespace);
   }
 }

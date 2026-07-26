@@ -63,6 +63,90 @@ export interface ContextSignals {
   session_type?: SessionType;
 }
 
+// ─── Phase 5: Explainable Memory Operations ──────────────────────────────────
+
+/** One contributing factor behind a query result's rank or a memory's current state. */
+export interface ExplanationFactor {
+  name: string;
+  weight: number;
+  detail: string;
+}
+
+// ─── Phase 5: Causal Memory Graph ────────────────────────────────────────────
+
+/**
+ * One inferred cause→effect link between two warm-tier memories (v3.10).
+ * Mined by Sleep Phase 6.1 from memory_sequences: content-level A→B patterns
+ * observed >= 3 times become one edge each, anchored to the pattern's earliest
+ * surviving row pair, with strength = occurrence count weighted by the
+ * temporal consistency of the gap. This is correlation evidence from observed
+ * sequences, not proven causation.
+ */
+export interface CausalEdge {
+  id: bigint;
+  agent_id: string;
+  cause_id: bigint;
+  effect_id: bigint;
+  strength: number;
+  observation_count: number;
+  avg_lag_seconds: number | null;
+  confidence: number;
+  created_at: Date;
+}
+
+/** One node in a causal-chain traversal returned by getCausalChain() (v3.10). */
+export interface CausalChainNode {
+  memory_id: bigint;
+  content: string;
+  /** 'effect' when traversing downstream (causes→effects), 'cause' upstream. */
+  direction: 'cause' | 'effect';
+  edge_strength: number;
+  edge_confidence: number;
+  depth: number;
+}
+
+/**
+ * Result of predict() (v3.10) — probable next events for a given context.
+ * `probability` is confidence × (1 − e^(−strength/30)): monotonic in edge
+ * strength, bounded by edge confidence, never saturated at 1. It is a
+ * relative ranking signal derived from observed sequence statistics, not a
+ * calibrated probability of occurrence.
+ */
+export interface PredictionResult {
+  predicted_events: Array<{
+    content: string;
+    memory_id: bigint;
+    probability: number;
+    avg_lag_seconds: number | null;
+  }>;
+}
+
+// ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────────
+
+/**
+ * Abstraction hierarchy level (v3.11). The schema admits all three levels;
+ * Sleep Phase 5.11 currently writes only 'principle' rows.
+ */
+export type AbstractionLevel = 'principle' | 'strategy' | 'mental_model';
+
+/**
+ * One cross-cutting abstraction distilled from meta-reflections (v3.11).
+ * Written by Sleep Phase 5.11 (principle extraction), deduplicated on a
+ * stored md5(content) hash per (agent_id, level, namespace); read by
+ * getAbstractions()/getPrinciples().
+ */
+export interface Abstraction {
+  id: bigint;
+  agent_id: string;
+  level: AbstractionLevel;
+  content: string;
+  source_reflection_ids: bigint[];
+  confidence: number;
+  active: boolean;
+  namespace: string;
+  created_at: Date;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
@@ -127,6 +211,8 @@ export interface QueryResult {
   epistemic_status?: EpistemicStatus;
   /** Number of positive retrieval events corroborating this memory (v3.9). */
   evidence_count?: number;
+  /** Per-result explanation factors — present when query sets explain=true (v3.10). */
+  explanation?: ExplanationFactor[];
 }
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
@@ -153,6 +239,8 @@ export interface QueryOptions {
   namespace?: string;
   /** Restrict results to a given epistemic confidence level (v3.9). */
   epistemic?: EpistemicFilter;
+  /** Attach per-result explanation factors to each QueryResult (v3.10). */
+  explain?: boolean;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -422,6 +510,10 @@ export interface SleepCycleResult {
   deprecated_decayed?: number;
   /** Warm-tier rows promoted from provisional to established by Phase 5.12 */
   epistemic_promoted?: number;
+  /** Causal edges upserted or pruned by Phase 6.1 (v3.10) */
+  causal_edges_updated?: number;
+  /** Principles created or deactivated by Phase 5.11 (v3.11) */
+  principles_extracted?: number;
 }
 
 export interface SleepCycleConfig {

@@ -58,6 +58,10 @@ import type {
   AnthropicMemoryStoreLink,
   AnthropicSyncState,
   SyncStrategy,
+  CausalChainNode,
+  PredictionResult,
+  Abstraction,
+  AbstractionLevel,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -122,6 +126,8 @@ export class MemForgeClient {
     namespace?: string;
     /** Restrict results by epistemic confidence level (v3.9). */
     epistemic?: 'only_established' | 'include_provisional' | 'include_contested' | 'all';
+    /** Attach per-result explanation factors (v3.10). */
+    explain?: boolean;
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -131,6 +137,7 @@ export class MemForgeClient {
     if (options.decay !== undefined) params.set('decay', String(options.decay));
     if (options.namespace) params.set('namespace', options.namespace);
     if (options.epistemic) params.set('epistemic', options.epistemic);
+    if (options.explain) params.set('explain', 'true');
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 
@@ -374,6 +381,62 @@ export class MemForgeClient {
    */
   async epistemicProfile(agentId: string): Promise<Record<string, number>> {
     return this.get<Record<string, number>>(`/memory/${enc(agentId)}/epistemic`);
+  }
+
+  // ─── Phase 5: Explainable Memory Operations ──────────────────────────────
+
+  /** Explain a single warm-tier memory's current state — scores, epistemic
+   * status, access patterns, and its standing against the sleep-cycle score
+   * thresholds (eviction and low-confidence revision channels). */
+  async explainMemory(agentId: string, warmId: string | bigint): Promise<Record<string, unknown>> {
+    return this.get<Record<string, unknown>>(`/memory/${enc(agentId)}/explain?warm_id=${enc(String(warmId))}`);
+  }
+
+  // ─── Phase 5: Causal Memory Graph ────────────────────────────────────────
+
+  /** Traverse causal edges from a warm-tier memory (v3.10).
+   * direction='effects' walks downstream (what this memory led to),
+   * 'causes' upstream (what led to it). depth 1-10, default 3. */
+  async getCausalChain(agentId: string, memoryId: string | bigint, direction: 'causes' | 'effects', depth?: number): Promise<CausalChainNode[]> {
+    const params = new URLSearchParams({ memory_id: String(memoryId), direction });
+    if (depth !== undefined) params.set('depth', String(depth));
+    return this.get<CausalChainNode[]>(`/memory/${enc(agentId)}/causal?${params}`);
+  }
+
+  /** Predict probable next events for a context from learned causal edges
+   * (v3.10). `probability` is a relative ranking signal (strength ×
+   * confidence), not a calibrated probability of occurrence. */
+  async predict(agentId: string, context: string, namespace?: string): Promise<PredictionResult> {
+    return this.post<PredictionResult>(`/memory/${enc(agentId)}/predict`, {
+      context,
+      ...(namespace ? { namespace } : {}),
+    });
+  }
+
+  // ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────
+
+  /** Active principle-level abstractions (v3.11) — cross-cutting principles
+   * distilled from meta-reflections by Sleep Phase 5.11, ordered by
+   * confidence then recency. The server caps results at 50; limit (1-50)
+   * trims further. */
+  async getPrinciples(agentId: string, namespace?: string, limit?: number): Promise<Abstraction[]> {
+    const params = new URLSearchParams();
+    if (namespace) params.set('namespace', namespace);
+    if (limit !== undefined) params.set('limit', String(limit));
+    const qs = params.toString();
+    return this.get<Abstraction[]>(`/memory/${enc(agentId)}/principles${qs ? '?' + qs : ''}`);
+  }
+
+  /** Active abstractions (v3.11), optionally filtered by level, ordered by
+   * confidence then recency, capped at 50. Sleep Phase 5.11 currently writes
+   * only 'principle' rows; 'strategy' and 'mental_model' return [] until
+   * something writes them. */
+  async getAbstractions(agentId: string, level?: AbstractionLevel, namespace?: string): Promise<Abstraction[]> {
+    const params = new URLSearchParams();
+    if (level) params.set('level', level);
+    if (namespace) params.set('namespace', namespace);
+    const qs = params.toString();
+    return this.get<Abstraction[]>(`/memory/${enc(agentId)}/abstractions${qs ? '?' + qs : ''}`);
   }
 
   /** Generate a session resumption context for an agent. */
@@ -692,6 +755,26 @@ export class ResilientMemForgeClient {
 
   async epistemicProfile(agentId: string): Promise<Record<string, number> | null> {
     return this.safe('epistemicProfile', () => this.client.epistemicProfile(agentId), null);
+  }
+
+  async explainMemory(agentId: string, warmId: string | bigint): Promise<Record<string, unknown> | null> {
+    return this.safe('explainMemory', () => this.client.explainMemory(agentId, warmId), null);
+  }
+
+  async getCausalChain(agentId: string, memoryId: string | bigint, direction: 'causes' | 'effects', depth?: number): Promise<CausalChainNode[]> {
+    return this.safe('getCausalChain', () => this.client.getCausalChain(agentId, memoryId, direction, depth), []);
+  }
+
+  async predict(agentId: string, context: string, namespace?: string): Promise<PredictionResult | null> {
+    return this.safe('predict', () => this.client.predict(agentId, context, namespace), null);
+  }
+
+  async getPrinciples(agentId: string, namespace?: string, limit?: number): Promise<Abstraction[]> {
+    return this.safe('getPrinciples', () => this.client.getPrinciples(agentId, namespace, limit), []);
+  }
+
+  async getAbstractions(agentId: string, level?: AbstractionLevel, namespace?: string): Promise<Abstraction[]> {
+    return this.safe('getAbstractions', () => this.client.getAbstractions(agentId, level, namespace), []);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

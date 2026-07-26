@@ -499,6 +499,70 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_explain',
+    description: "Explain a warm-tier memory's current state — scores, epistemic status, access patterns, and its standing against the sleep-cycle score thresholds (eviction and low-confidence revision channels).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id to explain (numeric string, int8 range)' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
+  {
+    name: 'memforge_causal_chain',
+    description: 'Traverse causal relationships from a warm-tier memory. Returns a chain of cause/effect memories with edge strength and confidence.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        memory_id: { type: 'string', description: 'Starting warm_tier row id (numeric string, int8 range)' },
+        direction: { type: 'string', enum: ['causes', 'effects'], description: "'effects' walks downstream (what this memory led to), 'causes' upstream (what led to it)" },
+        depth: { type: 'integer', description: 'Max traversal depth (default 3)', minimum: 1, maximum: 10 },
+      },
+      required: ['agent_id', 'memory_id', 'direction'],
+    },
+  },
+  {
+    name: 'memforge_predict',
+    description: 'Predict probable next events for a context, based on causal edges mined from memory sequences. Probability is a relative ranking signal (confidence-scaled, monotonic in edge strength), not a calibrated probability.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        context: { type: 'string', description: 'Current situation description (max 10000 chars)' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id', 'context'],
+    },
+  },
+  {
+    name: 'memforge_principles',
+    description: "Retrieve an agent's active principles — cross-cutting rules distilled from meta-reflections by the sleep cycle. Ordered by confidence then recency, capped at 50.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 50 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_mental_models',
+    description: "Return an agent's stored mental_model-level abstractions. Sleep Phase 5.11 currently auto-extracts only the 'principle' level, so this is empty until a future phase (or a direct database write) creates mental_model rows.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */
