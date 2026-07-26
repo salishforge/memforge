@@ -538,6 +538,31 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id', 'context'],
     },
   },
+  {
+    name: 'memforge_principles',
+    description: "Retrieve an agent's active principles — cross-cutting rules distilled from meta-reflections by the sleep cycle. Ordered by confidence then recency, capped at 50.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 50 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_mental_models',
+    description: "Return an agent's stored mental_model-level abstractions. Sleep Phase 5.11 currently auto-extracts only the 'principle' level, so this is empty until a future phase (or a direct database write) creates mental_model rows.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

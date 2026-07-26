@@ -89,6 +89,8 @@ import type {
   ExplanationFactor,
   CausalChainNode,
   PredictionResult,
+  Abstraction,
+  AbstractionLevel,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -4830,5 +4832,44 @@ Guidelines:
         avg_lag_seconds: r.avg_lag_seconds,
       })),
     };
+  }
+
+  // ─── Phase 5: Hierarchical Abstraction ─────────────────────────────────────
+
+  /**
+   * Lists an agent's abstractions (v3.11), optionally filtered by level.
+   * Only active rows are returned, ordered by confidence then recency,
+   * capped at 50.
+   */
+  async getAbstractions(
+    agentId: string,
+    level?: AbstractionLevel,
+    namespace?: string,
+  ): Promise<Abstraction[]> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+    const params: SqlParam[] = [agentId, ns];
+    let levelFilter = '';
+    if (level) {
+      params.push(level);
+      levelFilter = `AND level = $${params.length}`;
+    }
+    params.push(50); // result cap
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<Abstraction>(
+      `SELECT id, agent_id, level, content, source_reflection_ids, confidence, active, namespace, created_at
+       FROM abstractions
+       WHERE agent_id = $1 AND namespace = $2 AND active = true ${levelFilter}
+       ORDER BY confidence DESC, created_at DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows;
+  }
+
+  /** Active principle-level abstractions (v3.11) — getAbstractions() with level 'principle'. */
+  async getPrinciples(agentId: string, namespace?: string): Promise<Abstraction[]> {
+    return this.getAbstractions(agentId, 'principle', namespace);
   }
 }

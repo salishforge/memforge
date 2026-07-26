@@ -166,6 +166,20 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
+    async def get_principles(self, agent_id: str, namespace: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        try:
+            return await self._client.get_principles(agent_id, namespace, limit)
+        except Exception as e:
+            self._handle(e)
+            return []
+
+    async def get_abstractions(self, agent_id: str, level: str | None = None, namespace: str | None = None) -> list[dict[str, Any]]:
+        try:
+            return await self._client.get_abstractions(agent_id, level, namespace)
+        except Exception as e:
+            self._handle(e)
+            return []
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext | None:
         try:
             return await self._client.resume(agent_id, limit, namespace)

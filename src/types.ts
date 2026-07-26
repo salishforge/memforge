@@ -121,6 +121,32 @@ export interface PredictionResult {
   }>;
 }
 
+// ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────────
+
+/**
+ * Abstraction hierarchy level (v3.11). The schema admits all three levels;
+ * Sleep Phase 5.11 currently writes only 'principle' rows.
+ */
+export type AbstractionLevel = 'principle' | 'strategy' | 'mental_model';
+
+/**
+ * One cross-cutting abstraction distilled from meta-reflections (v3.11).
+ * Written by Sleep Phase 5.11 (principle extraction), deduplicated on a
+ * stored md5(content) hash per (agent_id, level, namespace); read by
+ * getAbstractions()/getPrinciples().
+ */
+export interface Abstraction {
+  id: bigint;
+  agent_id: string;
+  level: AbstractionLevel;
+  content: string;
+  source_reflection_ids: bigint[];
+  confidence: number;
+  active: boolean;
+  namespace: string;
+  created_at: Date;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
@@ -486,6 +512,8 @@ export interface SleepCycleResult {
   epistemic_promoted?: number;
   /** Causal edges upserted or pruned by Phase 6.1 (v3.10) */
   causal_edges_updated?: number;
+  /** Principles created or deactivated by Phase 5.11 (v3.11) */
+  principles_extracted?: number;
 }
 
 export interface SleepCycleConfig {

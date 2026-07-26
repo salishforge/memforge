@@ -975,6 +975,66 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/principles': {
+        get: {
+          summary: 'List active principle-level abstractions',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 50 }, description: 'Trim the result set; the server caps results at 50 regardless' },
+          ],
+          responses: {
+            '200': {
+              description: 'Active principles ordered by confidence then recency, capped at 50. Written by Sleep Phase 5.11 (principle extraction from meta-reflections).',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: { type: 'array', items: { '$ref': '#/components/schemas/Abstraction' } },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/abstractions': {
+        get: {
+          summary: 'List active abstractions, optionally filtered by level',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'level', in: 'query', schema: { type: 'string', enum: ['principle', 'strategy', 'mental_model'] }, description: "Filter to one abstraction level. Sleep Phase 5.11 currently writes only 'principle' rows; 'strategy' and 'mental_model' return [] until something writes them." },
+            { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
+          ],
+          responses: {
+            '200': {
+              description: 'Active abstractions ordered by confidence then recency, capped at 50.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: { type: 'array', items: { '$ref': '#/components/schemas/Abstraction' } },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/pool/{poolId}/procedures/publish/{agentId}': {
         post: {
           summary: 'Publish agent procedures to a shared pool',
@@ -1260,6 +1320,21 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           properties: {
             ok: { type: 'boolean', example: false },
             error: { type: 'string' },
+          },
+        },
+        Abstraction: {
+          type: 'object',
+          description: 'Cross-cutting abstraction distilled from meta-reflections by Sleep Phase 5.11 (v3.11)',
+          properties: {
+            id: { type: 'string', description: 'abstractions row id (int8, serialized as a JSON string)' },
+            agent_id: { type: 'string' },
+            level: { type: 'string', enum: ['principle', 'strategy', 'mental_model'] },
+            content: { type: 'string' },
+            source_reflection_ids: { type: 'array', items: { type: 'string' }, description: 'reflections row ids this abstraction was distilled from (int8 values, serialized as JSON strings)' },
+            confidence: { type: 'number' },
+            active: { type: 'boolean', description: 'Always true on read paths — only active rows are returned' },
+            namespace: { type: 'string' },
+            created_at: { type: 'string', format: 'date-time' },
           },
         },
       },

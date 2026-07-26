@@ -723,6 +723,30 @@ CREATE INDEX IF NOT EXISTS causal_edges_agent_effect_idx
   ON causal_edges (agent_id, effect_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- abstractions (v3.11+) — cross-cutting principles distilled from
+-- meta-reflections by Sleep Phase 5.11. content_hash is a stored md5(content);
+-- with UNIQUE (agent_id, level, namespace, content_hash) it makes per-cycle
+-- re-extraction of the same principle an insert no-op instead of a duplicate
+-- row. Read via getAbstractions()/getPrinciples().
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS abstractions (
+  id                    BIGSERIAL   PRIMARY KEY,
+  agent_id              TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  level                 TEXT        NOT NULL CHECK (level IN ('principle', 'strategy', 'mental_model')),
+  content               TEXT        NOT NULL,
+  content_hash          TEXT        GENERATED ALWAYS AS (md5(content)) STORED,
+  source_reflection_ids BIGINT[]    NOT NULL DEFAULT '{}',
+  confidence            REAL        NOT NULL DEFAULT 0.5,
+  active                BOOLEAN     NOT NULL DEFAULT true,
+  namespace             TEXT        NOT NULL DEFAULT 'default',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (agent_id, level, namespace, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS abstractions_agent_level_idx
+  ON abstractions (agent_id, level, active);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).
@@ -901,6 +925,13 @@ CREATE POLICY sleep_phase_analytics_agent_isolation ON sleep_phase_analytics
 ALTER TABLE causal_edges ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS causal_edges_agent_isolation ON causal_edges;
 CREATE POLICY causal_edges_agent_isolation ON causal_edges
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE abstractions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS abstractions_agent_isolation ON abstractions;
+CREATE POLICY abstractions_agent_isolation ON abstractions
   FOR ALL
   USING (agent_id = current_setting('app.current_agent_id', true))
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
