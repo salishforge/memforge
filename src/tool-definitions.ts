@@ -499,6 +499,18 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_explain',
+    description: "Explain a warm-tier memory's current state — scores, epistemic status, access patterns, and its standing against the sleep-cycle score thresholds (eviction and low-confidence revision channels).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id to explain (numeric string, int8 range)' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

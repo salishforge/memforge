@@ -63,6 +63,15 @@ export interface ContextSignals {
   session_type?: SessionType;
 }
 
+// ─── Phase 5: Explainable Memory Operations ──────────────────────────────────
+
+/** One contributing factor behind a query result's rank or a memory's current state. */
+export interface ExplanationFactor {
+  name: string;
+  weight: number;
+  detail: string;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
@@ -127,6 +136,8 @@ export interface QueryResult {
   epistemic_status?: EpistemicStatus;
   /** Number of positive retrieval events corroborating this memory (v3.9). */
   evidence_count?: number;
+  /** Per-result explanation factors — present when query sets explain=true (v3.10). */
+  explanation?: ExplanationFactor[];
 }
 
 // ─── Query modes ─────────────────────────────────────────────────────────────
@@ -153,6 +164,8 @@ export interface QueryOptions {
   namespace?: string;
   /** Restrict results to a given epistemic confidence level (v3.9). */
   epistemic?: EpistemicFilter;
+  /** Attach per-result explanation factors to each QueryResult (v3.10). */
+  explain?: boolean;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

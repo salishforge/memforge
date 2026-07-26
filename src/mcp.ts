@@ -576,6 +576,18 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_explain',
+    description: "Explain a warm-tier memory's current state — scores, epistemic status, access patterns, and its standing against the sleep-cycle score thresholds (eviction and low-confidence revision channels).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        warm_id: { type: 'string', description: 'warm_tier row id to explain (numeric string, int8 range)' },
+      },
+      required: ['agent_id', 'warm_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -613,6 +625,14 @@ function validateToolArgs(name: string, args: Record<string, unknown>): void {
   if ('content' in args && args['content'] !== undefined) {
     if (typeof args['content'] !== 'string' || args['content'].length > 100000) {
       throw new Error('content must be a string of at most 100000 characters');
+    }
+  }
+
+  // memforge_explain warm_id: numeric string within int8 range (warm_tier.id is BIGSERIAL)
+  if (name === 'memforge_explain') {
+    const warmId = args['warm_id'];
+    if (typeof warmId !== 'string' || !/^\d+$/.test(warmId) || BigInt(warmId) > 9223372036854775807n) {
+      throw new Error('warm_id must be a numeric string within int8 range');
     }
   }
 
@@ -831,6 +851,9 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_epistemic_profile':
       return client.epistemicProfile(agentId);
+
+    case 'memforge_explain':
+      return client.explainMemory(agentId, args['warm_id'] as string);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

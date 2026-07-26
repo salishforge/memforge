@@ -86,6 +86,7 @@ import type {
   UrgencyLevel,
   SentimentTag,
   SessionType,
+  ExplanationFactor,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -889,6 +890,24 @@ Ranking (numbers only):`;
         // Drop results scoring less than 10% of the top result
         results = results.filter((r) => r.rank >= topScore * 0.1);
       }
+    }
+
+    // Explainable Memory Operations — attach explanation factors when requested (v3.10)
+    if (opts.explain) {
+      results = results.map((r) => {
+        const factors: ExplanationFactor[] = [];
+        factors.push({ name: 'rank_score', weight: r.rank, detail: `Final composite score after fusion and boosts` });
+        if (r.epistemic_status) {
+          const epistemicWeight = r.epistemic_status === 'established' ? 1.0 : r.epistemic_status === 'provisional' ? 0.5 : 0.2;
+          factors.push({ name: 'epistemic_status', weight: epistemicWeight, detail: `Status: ${r.epistemic_status}, evidence count: ${r.evidence_count ?? 0}` });
+        }
+        factors.push({ name: 'search_mode', weight: 0, detail: `Query mode: ${mode}` });
+        if (decayRate > 0) {
+          const ageHours = (Date.now() - new Date(r.consolidated_at).getTime()) / (1000 * 60 * 60);
+          factors.push({ name: 'temporal_decay', weight: Math.exp(-decayRate * ageHours), detail: `Age: ${ageHours.toFixed(1)}h, decay rate: ${decayRate}` });
+        }
+        return { ...r, explanation: factors };
+      });
     }
 
     // Track zero-result queries as knowledge gaps; deduplicated and capped at 1000/agent
@@ -4638,5 +4657,61 @@ Guidelines:
       profile[row.epistemic_status] = parseInt(row.count, 10);
     }
     return profile;
+  }
+
+  // ─── Phase 5: Explainable Memory Operations ────────────────────────────────
+
+  /**
+   * Reports the current state of a single warm-tier memory — scores, epistemic
+   * status, access patterns — plus its standing against the sleep cycle's
+   * score thresholds. The outlook flags cover the score-threshold channels
+   * only: capacity eviction (WARM_TIER_MAX_PER_AGENT, which does not exempt
+   * graduated rows) and outcome/contradiction-driven revision flagging depend
+   * on live cross-table state and are not predicted here.
+   */
+  async explainMemory(agentId: string, warmTierId: bigint): Promise<Record<string, unknown>> {
+    this.assertAgentId(agentId);
+    const { rows } = await this.pool.query<{
+      id: bigint; content: string; importance: number; confidence: number;
+      epistemic_status: string; evidence_count: number;
+      access_count: number; last_accessed: Date | null;
+      staleness_score: number; revision_count: number;
+      consolidated_at: Date; graduated: boolean;
+    }>(
+      `SELECT id, content, importance, confidence, epistemic_status, evidence_count,
+              access_count, last_accessed, staleness_score, revision_count,
+              consolidated_at, graduated
+       FROM warm_tier WHERE id = $1 AND agent_id = $2`,
+      [warmTierId, agentId],
+    );
+    if (rows.length === 0) {
+      throw Object.assign(
+        new Error(`warm_tier row ${warmTierId} not found for agent ${agentId}`),
+        { code: 'NOT_FOUND' },
+      );
+    }
+    const row = rows[0]!;
+    const evictionThreshold = this.config.sleepCycle.evictionThreshold;
+    const revisionThreshold = this.config.sleepCycle.revisionThreshold;
+    return {
+      id: row.id,
+      content_preview: row.content.slice(0, 200),
+      importance: row.importance,
+      confidence: row.confidence,
+      epistemic_status: row.epistemic_status,
+      evidence_count: row.evidence_count,
+      access_count: row.access_count,
+      last_accessed: row.last_accessed,
+      staleness_score: row.staleness_score,
+      revision_count: row.revision_count,
+      consolidated_at: row.consolidated_at,
+      graduated: row.graduated,
+      thresholds: {
+        eviction: evictionThreshold,
+        revision: revisionThreshold,
+        would_evict_by_threshold: row.importance < evictionThreshold && !row.graduated,
+        would_flag_low_confidence: row.confidence < revisionThreshold,
+      },
+    };
   }
 }

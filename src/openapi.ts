@@ -105,6 +105,7 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'before', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Only return memories before this timestamp' },
             { name: 'decay', in: 'query', schema: { type: 'number', minimum: 0 }, description: 'Temporal decay rate per hour (0 = no decay)' },
             { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
+            { name: 'explain', in: 'query', schema: { type: 'string', enum: ['true', 'false'] }, description: 'When "true", attach per-result explanation factors (rank_score, epistemic_status, search_mode, temporal_decay)' },
           ],
           responses: {
             '200': { description: 'Search results with rank scores', content: { 'application/json': { schema: { '$ref': '#/components/schemas/OkResponse' } } } },
@@ -812,6 +813,61 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             },
             '400': { '$ref': '#/components/responses/BadRequest' },
             '401': { description: 'Unauthorized' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/explain': {
+        get: {
+          summary: "Explain a warm-tier memory's current state and sleep-cycle outlook",
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'warm_id', in: 'query', required: true, schema: { type: 'string', pattern: '^\\d{1,19}$' }, description: 'warm_tier row id to explain (int8 range)' },
+          ],
+          responses: {
+            '200': {
+              description: 'Memory state report: scores, epistemic status, access patterns, and its standing against the sleep-cycle score thresholds. Outlook flags cover the score-threshold channels only — capacity eviction and outcome/contradiction-driven revision flagging are not predicted.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'string' },
+                          content_preview: { type: 'string', description: 'First 200 characters of the memory content' },
+                          importance: { type: 'number' },
+                          confidence: { type: 'number' },
+                          epistemic_status: { type: 'string' },
+                          evidence_count: { type: 'integer' },
+                          access_count: { type: 'integer' },
+                          last_accessed: { type: 'string', format: 'date-time', nullable: true },
+                          staleness_score: { type: 'number' },
+                          revision_count: { type: 'integer' },
+                          consolidated_at: { type: 'string', format: 'date-time' },
+                          graduated: { type: 'boolean' },
+                          thresholds: {
+                            type: 'object',
+                            properties: {
+                              eviction: { type: 'number' },
+                              revision: { type: 'number' },
+                              would_evict_by_threshold: { type: 'boolean', description: 'importance below eviction threshold and not graduated (threshold channel only)' },
+                              would_flag_low_confidence: { type: 'boolean', description: 'confidence below revision threshold (one of three revision-flagging channels)' },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '404': { description: 'No warm-tier row with that id for this agent' },
             '500': { '$ref': '#/components/responses/InternalError' },
           },
         },

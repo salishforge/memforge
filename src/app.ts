@@ -26,7 +26,7 @@ import {
   invalidateAgent,
   flushCache,
   statsKey,
-  searchKey,
+  queryKey,
   timelineKey,
   getLocalStats,
   getRedisStats,
@@ -444,6 +444,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const maxTokens = qstr(req.query['max_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
     const rawEpistemic = qstr(req.query['epistemic']);
+    const rawExplain = qstr(req.query['explain']);
 
     if (!q) {
       fail(res, 400, '"q" query param (string) is required');
@@ -504,6 +505,8 @@ export function createApp(deps: AppDependencies): express.Express {
       epistemic = epistemicResult.data;
     }
 
+    const explain = rawExplain === 'true';
+
     let agentId: string;
     try {
       agentId = getAgentId(req);
@@ -512,9 +515,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    // Cache key includes all query parameters (including epistemic filter to prevent result mismatch)
-    const cacheKeySuffix = `${mode ?? 'auto'}:${after ?? ''}:${before ?? ''}:${decay ?? ''}:${maxTokensNum ?? ''}:${namespace ?? ''}:${epistemic ?? ''}`;
-    const key = searchKey(agentId, `${q}:${cacheKeySuffix}`, limitNum);
+    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, namespace, epistemic, explain });
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -535,11 +536,48 @@ export function createApp(deps: AppDependencies): express.Express {
         maxTokens: maxTokensNum,
         namespace,
         epistemic,
+        explain,
       });
       void cacheSet(key, results, 'search');
       ok(res, results);
     } catch (err) {
       fail(res, 500, (err as Error).message);
+    }
+  });
+
+  // ─── Phase 5: Explainable Memory Operations ──────────────────────────────
+
+  /**
+   * GET /memory/:agentId/explain?warm_id=<id>
+   */
+  app.get('/memory/:agentId/explain', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const warmId = qstr(req.query['warm_id']);
+
+    // warm_tier.id is BIGSERIAL — values beyond int8 range can never exist, and
+    // passing them through would surface as a Postgres 22003 cast error (500).
+    if (!warmId || !/^\d+$/.test(warmId) || BigInt(warmId) > 9223372036854775807n) {
+      fail(res, 400, '"warm_id" query param (numeric string within int8 range) is required');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const result = await manager.explainMemory(agentId, BigInt(warmId));
+      ok(res, result);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === 'NOT_FOUND') {
+        fail(res, 404, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
     }
   });
 

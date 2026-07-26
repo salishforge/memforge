@@ -122,6 +122,8 @@ export class MemForgeClient {
     namespace?: string;
     /** Restrict results by epistemic confidence level (v3.9). */
     epistemic?: 'only_established' | 'include_provisional' | 'include_contested' | 'all';
+    /** Attach per-result explanation factors (v3.10). */
+    explain?: boolean;
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -131,6 +133,7 @@ export class MemForgeClient {
     if (options.decay !== undefined) params.set('decay', String(options.decay));
     if (options.namespace) params.set('namespace', options.namespace);
     if (options.epistemic) params.set('epistemic', options.epistemic);
+    if (options.explain) params.set('explain', 'true');
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 
@@ -374,6 +377,15 @@ export class MemForgeClient {
    */
   async epistemicProfile(agentId: string): Promise<Record<string, number>> {
     return this.get<Record<string, number>>(`/memory/${enc(agentId)}/epistemic`);
+  }
+
+  // ─── Phase 5: Explainable Memory Operations ──────────────────────────────
+
+  /** Explain a single warm-tier memory's current state — scores, epistemic
+   * status, access patterns, and its standing against the sleep-cycle score
+   * thresholds (eviction and low-confidence revision channels). */
+  async explainMemory(agentId: string, warmId: string | bigint): Promise<Record<string, unknown>> {
+    return this.get<Record<string, unknown>>(`/memory/${enc(agentId)}/explain?warm_id=${enc(String(warmId))}`);
   }
 
   /** Generate a session resumption context for an agent. */
@@ -692,6 +704,10 @@ export class ResilientMemForgeClient {
 
   async epistemicProfile(agentId: string): Promise<Record<string, number> | null> {
     return this.safe('epistemicProfile', () => this.client.epistemicProfile(agentId), null);
+  }
+
+  async explainMemory(agentId: string, warmId: string | bigint): Promise<Record<string, unknown> | null> {
+    return this.safe('explainMemory', () => this.client.explainMemory(agentId, warmId), null);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

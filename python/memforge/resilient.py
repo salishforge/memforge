@@ -145,6 +145,13 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
+    async def explain_memory(self, agent_id: str, warm_id: str | int) -> dict[str, Any] | None:
+        try:
+            return await self._client.explain_memory(agent_id, warm_id)
+        except Exception as e:
+            self._handle(e)
+            return None
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext | None:
         try:
             return await self._client.resume(agent_id, limit, namespace)

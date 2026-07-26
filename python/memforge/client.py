@@ -127,6 +127,7 @@ class MemForgeClient:
         max_tokens: int | None = None,
         namespace: str | None = None,
         epistemic: str | None = None,
+        explain: bool = False,
     ) -> list[QueryResult]:
         """Search warm-tier memory.
 
@@ -134,6 +135,7 @@ class MemForgeClient:
             epistemic: Restrict results by calibrated uncertainty level.
                 One of 'only_established', 'include_provisional',
                 'include_contested', or 'all'. Defaults to no filter.
+            explain: Attach per-result explanation factors (v3.10).
         """
         params: dict[str, Any] = {"q": q, "limit": limit}
         if mode:
@@ -150,6 +152,8 @@ class MemForgeClient:
             params["namespace"] = namespace
         if epistemic:
             params["epistemic"] = epistemic
+        if explain:
+            params["explain"] = "true"
         raw = await self._get(f"/memory/{agent_id}/query", params)
         return [QueryResult(**r) for r in raw] if isinstance(raw, list) else []
 
@@ -288,6 +292,17 @@ class MemForgeClient:
         deprecated, inferred) are always present, defaulting to 0.
         """
         raw = await self._get(f"/memory/{agent_id}/epistemic")
+        return raw if isinstance(raw, dict) else {}
+
+    # ── Explainable Memory Operations (v3.10) ─────────────────────────────
+
+    async def explain_memory(self, agent_id: str, warm_id: str | int) -> dict[str, Any]:
+        """Explain a single warm-tier memory's current state — scores,
+        epistemic status, access patterns, and its standing against the
+        sleep-cycle score thresholds (eviction and low-confidence revision
+        channels).
+        """
+        raw = await self._get(f"/memory/{agent_id}/explain", {"warm_id": str(warm_id)})
         return raw if isinstance(raw, dict) else {}
 
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext:
