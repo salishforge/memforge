@@ -342,6 +342,21 @@ export class SleepCycleEngine {
       log.error({ err, agentId }, 'drift snapshot failed');
     }
 
+    // Phase 6.1: Causal Inference — discover A→B patterns from temporal sequences.
+    // Deliberately NOT skippable: the phase's input (memory_sequences patterns)
+    // accumulates independently of its own change history, so three quiet
+    // cycles on a young agent would otherwise disable mining permanently —
+    // right before the agent has enough sequences to mine.
+    let causalEdgesUpdated = 0;
+    try {
+      causalEdgesUpdated = await runPhase(
+        'causal-inference',
+        () => this.phaseCausalInference(agentId),
+      );
+    } catch (err) {
+      log.error({ err, agentId }, 'causal inference failed');
+    }
+
     // Phase 6: Archive expired audit records
     let auditArchived = 0;
     if (this.audit) {
@@ -394,6 +409,9 @@ export class SleepCycleEngine {
     }
     if (epistemicPromoted > 0) {
       result.epistemic_promoted = epistemicPromoted;
+    }
+    if (causalEdgesUpdated > 0) {
+      result.causal_edges_updated = causalEdgesUpdated;
     }
 
     return result;
@@ -1616,6 +1634,86 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
     );
 
     return promoted ?? 0;
+  }
+
+  // ─── Phase 6.1: Causal Inference (v3.10) ──────────────────────────────────
+  //
+  // Mines memory_sequences for repeated A→B *content patterns* (>= 3
+  // occurrences) and upserts one causal edge per pattern, anchored to the
+  // EARLIEST surviving pair (min sequence id). The early anchor is stable as
+  // new occurrences arrive — later cycles hit the same (cause, effect)
+  // conflict key and update in place instead of scattering duplicate edges —
+  // and it self-heals: if the anchor rows are evicted, the FK cascade removes
+  // the edge and the next cycle re-anchors on the next-earliest pair.
+  // Grouping is by content-prefix hash — the same technique as Phase 5.5
+  // schema detection — because memory_sequences is UNIQUE on
+  // (agent_id, predecessor_id, successor_id): the same row pair can never
+  // recur, only the same *kind* of transition can, across distinct row pairs.
+  // strength = occurrence count weighted by temporal consistency of the gap
+  // (inverse coefficient of variation, capped at 100). confidence starts at
+  // 0.5 + 0.1 per observation and gains +0.1 each cycle the pattern
+  // re-confirms (both capped at 1.0). Edges whose strength has fallen below
+  // 0.1 are pruned. Returns edges upserted + pruned.
+
+  private async phaseCausalInference(agentId: string): Promise<number> {
+    const { rows: patterns } = await this.pool.query<{
+      pred_id: bigint; succ_id: bigint; occurrence_count: string;
+      avg_gap: number; stddev_gap: number;
+    }>(
+      `WITH pattern_groups AS (
+         SELECT
+           md5(
+             (SELECT LEFT(content, 50) FROM warm_tier WHERE id = ms.predecessor_id) ||
+             '→' ||
+             (SELECT LEFT(content, 50) FROM warm_tier WHERE id = ms.successor_id)
+           ) AS pattern_hash,
+           count(*)::text AS occurrence_count,
+           avg(ms.gap_seconds)::real AS avg_gap,
+           COALESCE(stddev(ms.gap_seconds), 0)::real AS stddev_gap,
+           min(ms.id) AS anchor_seq_id
+         FROM memory_sequences ms
+         WHERE ms.agent_id = $1
+         GROUP BY pattern_hash
+         HAVING count(*) >= 3
+         LIMIT 50
+       )
+       SELECT ms.predecessor_id AS pred_id, ms.successor_id AS succ_id,
+              pg.occurrence_count, pg.avg_gap, pg.stddev_gap
+       FROM pattern_groups pg
+       JOIN memory_sequences ms ON ms.id = pg.anchor_seq_id`,
+      [agentId],
+    );
+
+    let upserted = 0;
+    for (const p of patterns) {
+      const count = parseInt(p.occurrence_count, 10);
+      // coefficient of variation = stddev / mean (lower = more consistent)
+      const cv = p.avg_gap > 0 ? p.stddev_gap / p.avg_gap : 1;
+      const strength = count * (1 / Math.max(cv, 0.1));
+
+      if (strength < 0.1) continue; // too weak
+
+      await this.pool.query(
+        `INSERT INTO causal_edges (agent_id, cause_id, effect_id, strength, observation_count, avg_lag_seconds, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (agent_id, cause_id, effect_id)
+         DO UPDATE SET
+           strength = $4,
+           observation_count = $5,
+           avg_lag_seconds = $6,
+           confidence = LEAST(1.0, causal_edges.confidence + 0.1)`,
+        [agentId, p.pred_id, p.succ_id, Math.min(strength, 100), count, p.avg_gap, Math.min(1.0, 0.5 + count * 0.1)],
+      );
+      upserted++;
+    }
+
+    // Prune edges with strength < 0.1
+    const { rowCount: pruned } = await this.pool.query(
+      `DELETE FROM causal_edges WHERE agent_id = $1 AND strength < 0.1`,
+      [agentId],
+    );
+
+    return upserted + (pruned ?? 0);
   }
 }
 

@@ -699,6 +699,30 @@ CREATE INDEX IF NOT EXISTS sleep_phase_analytics_agent_idx
   ON sleep_phase_analytics (agent_id, created_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- causal_edges (v3.10+) — inferred cause→effect links between warm-tier rows.
+-- Sleep Phase 6.1 mines memory_sequences for A→B pairs observed >= 3 times,
+-- scoring strength by occurrence count weighted by the temporal consistency
+-- of the gap. Traversed by getCausalChain() and predict().
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS causal_edges (
+  id                BIGSERIAL   PRIMARY KEY,
+  agent_id          TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  cause_id          BIGINT      NOT NULL REFERENCES warm_tier(id) ON DELETE CASCADE,
+  effect_id         BIGINT      NOT NULL REFERENCES warm_tier(id) ON DELETE CASCADE,
+  strength          REAL        NOT NULL DEFAULT 0.0,
+  observation_count INTEGER     NOT NULL DEFAULT 1,
+  avg_lag_seconds   REAL,
+  confidence        REAL        NOT NULL DEFAULT 0.5,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (agent_id, cause_id, effect_id)
+);
+
+CREATE INDEX IF NOT EXISTS causal_edges_agent_cause_idx
+  ON causal_edges (agent_id, cause_id);
+CREATE INDEX IF NOT EXISTS causal_edges_agent_effect_idx
+  ON causal_edges (agent_id, effect_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (v3.0+ fresh installs — backported from migration-v2.3)
 -- FORCE ROW LEVEL SECURITY is intentionally omitted on all tables.
 -- RLS applies only to non-owner roles (e.g., read-only analyst access).
@@ -870,6 +894,13 @@ CREATE POLICY anthropic_memory_stores_agent_isolation ON anthropic_memory_stores
 ALTER TABLE sleep_phase_analytics ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS sleep_phase_analytics_agent_isolation ON sleep_phase_analytics;
 CREATE POLICY sleep_phase_analytics_agent_isolation ON sleep_phase_analytics
+  FOR ALL
+  USING (agent_id = current_setting('app.current_agent_id', true))
+  WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
+
+ALTER TABLE causal_edges ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS causal_edges_agent_isolation ON causal_edges;
+CREATE POLICY causal_edges_agent_isolation ON causal_edges
   FOR ALL
   USING (agent_id = current_setting('app.current_agent_id', true))
   WITH CHECK (agent_id = current_setting('app.current_agent_id', true));

@@ -872,6 +872,109 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/memory/{agentId}/causal': {
+        get: {
+          summary: 'Traverse the causal graph from a warm-tier memory',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'memory_id', in: 'query', required: true, schema: { type: 'string', pattern: '^\\d{1,19}$' }, description: 'Starting warm_tier row id (int8 range)' },
+            { name: 'direction', in: 'query', required: true, schema: { type: 'string', enum: ['causes', 'effects'] }, description: "'effects' walks downstream (what this memory led to), 'causes' upstream (what led to it)" },
+            { name: 'depth', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 10, default: 3 }, description: 'Max traversal depth' },
+          ],
+          responses: {
+            '200': {
+              description: 'Chain nodes ordered by depth then edge strength, capped at 50. Empty array when the memory has no edges in that direction or does not exist (the traversal cannot distinguish the two — no 404).',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            memory_id: { type: 'string', description: 'warm_tier row id of the linked memory' },
+                            content: { type: 'string' },
+                            direction: { type: 'string', enum: ['cause', 'effect'], description: "'effect' when traversing direction=effects, 'cause' when traversing direction=causes" },
+                            edge_strength: { type: 'number' },
+                            edge_confidence: { type: 'number' },
+                            depth: { type: 'integer', description: 'Hops from the starting memory (1-based)' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
+      '/memory/{agentId}/predict': {
+        post: {
+          summary: 'Predict probable next events for a context from learned causal edges',
+          tags: ['Memory'],
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['context'],
+                  properties: {
+                    context: { type: 'string', minLength: 1, maxLength: 10000, description: 'Current situation description' },
+                    namespace: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'Memory namespace (default: "default")' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Up to 10 predicted events ranked by edge strength and confidence. Empty predicted_events when the context matches no memories or the matches have no outgoing causal edges.',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ok: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          predicted_events: {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                content: { type: 'string' },
+                                memory_id: { type: 'string' },
+                                probability: { type: 'number', description: 'confidence × (1 − e^(−strength/30)) — monotonic in edge strength, bounded by confidence; a relative ranking signal, not a calibrated probability' },
+                                avg_lag_seconds: { type: 'number', nullable: true, description: 'Mean observed cause→effect lag; null when never measured' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { '$ref': '#/components/responses/BadRequest' },
+            '500': { '$ref': '#/components/responses/InternalError' },
+          },
+        },
+      },
       '/pool/{poolId}/procedures/publish/{agentId}': {
         post: {
           summary: 'Publish agent procedures to a shared pool',

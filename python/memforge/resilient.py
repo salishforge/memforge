@@ -152,6 +152,20 @@ class ResilientMemForgeClient:
             self._handle(e)
             return None
 
+    async def get_causal_chain(self, agent_id: str, memory_id: str | int, direction: str, depth: int = 3) -> list[dict[str, Any]]:
+        try:
+            return await self._client.get_causal_chain(agent_id, memory_id, direction, depth)
+        except Exception as e:
+            self._handle(e)
+            return []
+
+    async def predict(self, agent_id: str, context: str, namespace: str | None = None) -> dict[str, Any] | None:
+        try:
+            return await self._client.predict(agent_id, context, namespace)
+        except Exception as e:
+            self._handle(e)
+            return None
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext | None:
         try:
             return await self._client.resume(agent_id, limit, namespace)

@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -575,6 +575,84 @@ export function createApp(deps: AppDependencies): express.Express {
       const e = err as Error & { code?: string };
       if (e.code === 'NOT_FOUND') {
         fail(res, 404, e.message);
+      } else {
+        fail(res, 500, e.message);
+      }
+    }
+  });
+
+  // ─── Phase 5: Causal Memory Graph ────────────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/causal?memory_id=<id>&direction=causes|effects[&depth=<n>]
+   *
+   * A memory with no causal edges (or a nonexistent id) yields 200 with []
+   * — the traversal has no way to distinguish the two, so no 404.
+   */
+  app.get('/memory/:agentId/causal', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const memoryId = qstr(req.query['memory_id']);
+    const direction = qstr(req.query['direction']);
+    const depth = qstr(req.query['depth']);
+
+    // warm_tier.id is BIGSERIAL — values beyond int8 range can never exist, and
+    // passing them through would surface as a Postgres 22003 cast error (500).
+    if (!memoryId || !/^\d+$/.test(memoryId) || BigInt(memoryId) > 9223372036854775807n) {
+      fail(res, 400, '"memory_id" query param (numeric string within int8 range) is required');
+      return;
+    }
+    if (direction !== 'causes' && direction !== 'effects') {
+      fail(res, 400, '"direction" query param must be "causes" or "effects"');
+      return;
+    }
+    const depthNum = depth !== undefined ? parseInt(depth, 10) : 3;
+    if (isNaN(depthNum) || depthNum < 1 || depthNum > 10) {
+      fail(res, 400, '"depth" must be an integer between 1 and 10');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const chain = await manager.getCausalChain(agentId, BigInt(memoryId), direction, depthNum);
+      ok(res, chain);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * POST /memory/:agentId/predict
+   * Body: { context, namespace? }
+   */
+  app.post('/memory/:agentId/predict', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const parsed = PredictSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      fail(res, 400, issue?.message ?? '"context" (string) is required');
+      return;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const predictions = await manager.predict(agentId, parsed.data.context, parsed.data.namespace);
+      ok(res, predictions);
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof TypeError) {
+        fail(res, 400, e.message);
       } else {
         fail(res, 500, e.message);
       }

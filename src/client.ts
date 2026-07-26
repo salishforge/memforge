@@ -58,6 +58,8 @@ import type {
   AnthropicMemoryStoreLink,
   AnthropicSyncState,
   SyncStrategy,
+  CausalChainNode,
+  PredictionResult,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -388,6 +390,27 @@ export class MemForgeClient {
     return this.get<Record<string, unknown>>(`/memory/${enc(agentId)}/explain?warm_id=${enc(String(warmId))}`);
   }
 
+  // ─── Phase 5: Causal Memory Graph ────────────────────────────────────────
+
+  /** Traverse causal edges from a warm-tier memory (v3.10).
+   * direction='effects' walks downstream (what this memory led to),
+   * 'causes' upstream (what led to it). depth 1-10, default 3. */
+  async getCausalChain(agentId: string, memoryId: string | bigint, direction: 'causes' | 'effects', depth?: number): Promise<CausalChainNode[]> {
+    const params = new URLSearchParams({ memory_id: String(memoryId), direction });
+    if (depth !== undefined) params.set('depth', String(depth));
+    return this.get<CausalChainNode[]>(`/memory/${enc(agentId)}/causal?${params}`);
+  }
+
+  /** Predict probable next events for a context from learned causal edges
+   * (v3.10). `probability` is a relative ranking signal (strength ×
+   * confidence), not a calibrated probability of occurrence. */
+  async predict(agentId: string, context: string, namespace?: string): Promise<PredictionResult> {
+    return this.post<PredictionResult>(`/memory/${enc(agentId)}/predict`, {
+      context,
+      ...(namespace ? { namespace } : {}),
+    });
+  }
+
   /** Generate a session resumption context for an agent. */
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext> {
     const params = new URLSearchParams();
@@ -708,6 +731,14 @@ export class ResilientMemForgeClient {
 
   async explainMemory(agentId: string, warmId: string | bigint): Promise<Record<string, unknown> | null> {
     return this.safe('explainMemory', () => this.client.explainMemory(agentId, warmId), null);
+  }
+
+  async getCausalChain(agentId: string, memoryId: string | bigint, direction: 'causes' | 'effects', depth?: number): Promise<CausalChainNode[]> {
+    return this.safe('getCausalChain', () => this.client.getCausalChain(agentId, memoryId, direction, depth), []);
+  }
+
+  async predict(agentId: string, context: string, namespace?: string): Promise<PredictionResult | null> {
+    return this.safe('predict', () => this.client.predict(agentId, context, namespace), null);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

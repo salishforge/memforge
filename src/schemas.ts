@@ -224,6 +224,14 @@ export const DeclareRoleSchema = z.object({
   description: z.string().max(1_000).optional(),
 });
 
+// ─── Phase 5: Causal Memory Graph ───────────────────────────────────────────
+
+/** Request body for POST /memory/:agentId/predict (v3.10). */
+export const PredictSchema = z.object({
+  context: z.string().min(1).max(10_000),
+  namespace: NamespaceSchema.optional(),
+});
+
 // ─── Epistemic Confidence Model (v3.9) ──────────────────────────────────────
 
 /**
