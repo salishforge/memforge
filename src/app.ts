@@ -10,7 +10,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { MemoryManager } from './memory-manager.js';
 import type { AuditChain } from './audit.js';
 import type { ClassifierRegistry } from './classifier.js';
-import type { QueryMode, ConsolidationMode, FeedbackOutcome } from './types.js';
+import type { QueryMode, ConsolidationMode, FeedbackOutcome, AbstractionLevel } from './types.js';
 import { getLogger, requestIdMiddleware, requestLogMiddleware } from './logger.js';
 import {
   registry,
@@ -18,7 +18,7 @@ import {
   httpRequestDurationSeconds,
 } from './metrics.js';
 import { bearerAuth, requireScope, getClientId } from './auth.js';
-import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema } from './schemas.js';
+import { NamespaceSchema, AddMemorySchema, ConsolidateSchema, SleepSchema, ColdTierSearchSchema, ColdTierRestoreSchema, ConfigReloadSchema, CreateDreamRunSchema, ListDreamRunsQuerySchema, AnthropicDreamCreateSchema, AnthropicPushSchema, AnthropicPullSchema, EpistemicFilterSchema, PredictSchema, AbstractionLevelSchema } from './schemas.js';
 import { reloadConfig } from './config.js';
 import {
   cacheGet,
@@ -656,6 +656,98 @@ export function createApp(deps: AppDependencies): express.Express {
       } else {
         fail(res, 500, e.message);
       }
+    }
+  });
+
+  // ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────
+
+  /**
+   * GET /memory/:agentId/principles?[namespace=<ns>][&limit=<n>]
+   *
+   * Active principle-level abstractions, ordered by confidence then recency.
+   * The manager caps results at 50; limit (1-50) trims further.
+   */
+  app.get('/memory/:agentId/principles', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawNamespace = qstr(req.query['namespace']);
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    const rawLimit = qstr(req.query['limit']);
+    let limit: number | undefined;
+    if (rawLimit !== undefined) {
+      limit = qnum(req.query['limit']);
+      if (limit === undefined || limit < 1 || limit > 50) {
+        fail(res, 400, '"limit" must be an integer between 1 and 50');
+        return;
+      }
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const principles = await manager.getPrinciples(agentId, namespace);
+      ok(res, limit !== undefined ? principles.slice(0, limit) : principles);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
+    }
+  });
+
+  /**
+   * GET /memory/:agentId/abstractions?[level=<level>][&namespace=<ns>]
+   *
+   * Active abstractions at any level, ordered by confidence then recency,
+   * capped at 50. Sleep Phase 5.11 currently writes only 'principle' rows;
+   * 'strategy' and 'mental_model' return [] until something writes them.
+   */
+  app.get('/memory/:agentId/abstractions', requireScope('memforge:read'), async (req: Request, res: Response) => {
+    const rawLevel = qstr(req.query['level']);
+    let level: AbstractionLevel | undefined;
+    if (rawLevel !== undefined) {
+      const levelResult = AbstractionLevelSchema.safeParse(rawLevel);
+      if (!levelResult.success) {
+        fail(res, 400, '"level" must be one of: principle, strategy, mental_model');
+        return;
+      }
+      level = levelResult.data;
+    }
+
+    const rawNamespace = qstr(req.query['namespace']);
+    let namespace: string | undefined;
+    if (rawNamespace !== undefined) {
+      const nsResult = NamespaceSchema.safeParse(rawNamespace);
+      if (!nsResult.success) {
+        fail(res, 400, `Invalid namespace: ${nsResult.error.issues[0]?.message ?? 'validation failed'}`);
+        return;
+      }
+      namespace = nsResult.data;
+    }
+
+    let agentId: string;
+    try {
+      agentId = getAgentId(req);
+    } catch (err) {
+      fail(res, 400, (err as Error).message);
+      return;
+    }
+
+    try {
+      const abstractions = await manager.getAbstractions(agentId, level, namespace);
+      ok(res, abstractions);
+    } catch (err) {
+      fail(res, 500, (err as Error).message);
     }
   });
 

@@ -60,6 +60,8 @@ import type {
   SyncStrategy,
   CausalChainNode,
   PredictionResult,
+  Abstraction,
+  AbstractionLevel,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -411,6 +413,32 @@ export class MemForgeClient {
     });
   }
 
+  // ─── Phase 5: Hierarchical Abstraction ───────────────────────────────────
+
+  /** Active principle-level abstractions (v3.11) — cross-cutting principles
+   * distilled from meta-reflections by Sleep Phase 5.11, ordered by
+   * confidence then recency. The server caps results at 50; limit (1-50)
+   * trims further. */
+  async getPrinciples(agentId: string, namespace?: string, limit?: number): Promise<Abstraction[]> {
+    const params = new URLSearchParams();
+    if (namespace) params.set('namespace', namespace);
+    if (limit !== undefined) params.set('limit', String(limit));
+    const qs = params.toString();
+    return this.get<Abstraction[]>(`/memory/${enc(agentId)}/principles${qs ? '?' + qs : ''}`);
+  }
+
+  /** Active abstractions (v3.11), optionally filtered by level, ordered by
+   * confidence then recency, capped at 50. Sleep Phase 5.11 currently writes
+   * only 'principle' rows; 'strategy' and 'mental_model' return [] until
+   * something writes them. */
+  async getAbstractions(agentId: string, level?: AbstractionLevel, namespace?: string): Promise<Abstraction[]> {
+    const params = new URLSearchParams();
+    if (level) params.set('level', level);
+    if (namespace) params.set('namespace', namespace);
+    const qs = params.toString();
+    return this.get<Abstraction[]>(`/memory/${enc(agentId)}/abstractions${qs ? '?' + qs : ''}`);
+  }
+
   /** Generate a session resumption context for an agent. */
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext> {
     const params = new URLSearchParams();
@@ -739,6 +767,14 @@ export class ResilientMemForgeClient {
 
   async predict(agentId: string, context: string, namespace?: string): Promise<PredictionResult | null> {
     return this.safe('predict', () => this.client.predict(agentId, context, namespace), null);
+  }
+
+  async getPrinciples(agentId: string, namespace?: string, limit?: number): Promise<Abstraction[]> {
+    return this.safe('getPrinciples', () => this.client.getPrinciples(agentId, namespace, limit), []);
+  }
+
+  async getAbstractions(agentId: string, level?: AbstractionLevel, namespace?: string): Promise<Abstraction[]> {
+    return this.safe('getAbstractions', () => this.client.getAbstractions(agentId, level, namespace), []);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

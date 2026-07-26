@@ -615,6 +615,31 @@ const TOOLS: MCPToolDefinition[] = [
       required: ['agent_id', 'context'],
     },
   },
+  {
+    name: 'memforge_principles',
+    description: "Retrieve an agent's active principles — cross-cutting rules distilled from meta-reflections by the sleep cycle. Ordered by confidence then recency, capped at 50.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        limit: { type: 'integer', description: 'Max results (default 50)', minimum: 1, maximum: 50 },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'memforge_mental_models',
+    description: "Return an agent's stored mental_model-level abstractions. Sleep Phase 5.11 currently auto-extracts only the 'principle' level, so this is empty until a future phase (or a direct database write) creates mental_model rows.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Agent/session identifier' },
+        namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ];
 
 // ─── Input Validation ────────────────────────────────────────────────────────
@@ -681,6 +706,15 @@ function validateToolArgs(name: string, args: Record<string, unknown>): void {
     const context = args['context'];
     if (typeof context !== 'string' || context.length < 1 || context.length > 10000) {
       throw new Error('context must be a non-empty string of at most 10000 characters');
+    }
+  }
+
+  // memforge_principles limit: the REST route rejects limit > 50, tighter
+  // than the generic 1-200 rule above
+  if (name === 'memforge_principles' && 'limit' in args && args['limit'] !== undefined) {
+    const limit = args['limit'];
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new Error('limit must be an integer between 1 and 50');
     }
   }
 
@@ -913,6 +947,12 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
 
     case 'memforge_predict':
       return client.predict(agentId, args['context'] as string, args['namespace'] as string | undefined);
+
+    case 'memforge_principles':
+      return client.getPrinciples(agentId, args['namespace'] as string | undefined, args['limit'] as number | undefined);
+
+    case 'memforge_mental_models':
+      return client.getAbstractions(agentId, 'mental_model', args['namespace'] as string | undefined);
 
     default:
       throw new Error(`Unknown tool: ${name}`);

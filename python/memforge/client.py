@@ -342,6 +342,41 @@ class MemForgeClient:
             body["namespace"] = namespace
         return await self._post(f"/memory/{agent_id}/predict", body)
 
+    # ── Hierarchical Abstraction (v3.11) ──────────────────────────────────
+
+    async def get_principles(
+        self,
+        agent_id: str,
+        namespace: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Active principle-level abstractions (v3.11).
+
+        Cross-cutting principles distilled from meta-reflections by
+        Sleep Phase 5.11, ordered by confidence then recency. The server
+        caps results at 50; limit (1-50) trims further.
+        """
+        params: dict[str, Any] = {"namespace": namespace, "limit": limit}
+        raw = await self._get(f"/memory/{agent_id}/principles", params)
+        return raw if isinstance(raw, list) else []
+
+    async def get_abstractions(
+        self,
+        agent_id: str,
+        level: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Active abstractions (v3.11), optionally filtered by level.
+
+        level is 'principle', 'strategy', or 'mental_model'. Ordered by
+        confidence then recency, capped at 50. Sleep Phase 5.11 currently
+        writes only 'principle' rows; 'strategy' and 'mental_model' return
+        [] until something writes them.
+        """
+        params: dict[str, Any] = {"level": level, "namespace": namespace}
+        raw = await self._get(f"/memory/{agent_id}/abstractions", params)
+        return raw if isinstance(raw, list) else []
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext:
         """Get session resumption context bundle."""
         params: dict[str, Any] = {"limit": limit}
