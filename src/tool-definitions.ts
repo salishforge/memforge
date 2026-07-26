@@ -563,6 +563,22 @@ export const tools: ToolDefinition[] = [
       required: ['agent_id'],
     },
   },
+  {
+    name: 'memforge_bootstrap',
+    description: 'Bootstrap a new agent from an experienced one: copies established memories, active procedures, and active principles at half confidence. Memories and procedures are marked _transferred_from (principles carry no marker — no metadata column). Idempotent — knowledge the target already carries is skipped. Both agents must live in this deployment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        source_agent_id: { type: 'string', description: 'Agent to copy knowledge from' },
+        target_agent_id: { type: 'string', description: 'Agent to bootstrap' },
+        namespace: { type: 'string', description: 'Memory namespace; defaults to "default"' },
+        max_memories: { type: 'integer', description: 'Max memories to transfer (default 100)', minimum: 0, maximum: 1000 },
+        max_procedures: { type: 'integer', description: 'Max procedures to transfer (default 20)', minimum: 0, maximum: 100 },
+        max_principles: { type: 'integer', description: 'Max principles to transfer (default 10)', minimum: 0, maximum: 100 },
+      },
+      required: ['source_agent_id', 'target_agent_id'],
+    },
+  },
 ];
 
 /** Convert MemForge tool definitions to OpenAI function calling format. */

@@ -91,6 +91,8 @@ import type {
   PredictionResult,
   Abstraction,
   AbstractionLevel,
+  BootstrapOptions,
+  BootstrapResult,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -4871,5 +4873,167 @@ Guidelines:
   /** Active principle-level abstractions (v3.11) — getAbstractions() with level 'principle'. */
   async getPrinciples(agentId: string, namespace?: string): Promise<Abstraction[]> {
     return this.getAbstractions(agentId, 'principle', namespace);
+  }
+
+  // ─── Phase 5: Cross-Agent Transfer Learning ────────────────────────────────
+
+  /**
+   * Bootstraps a target agent from an experienced source agent (v3.12):
+   * copies established warm memories, active procedures, and active
+   * principles with confidence/importance discounted to 0.5× and a
+   * `_transferred_from` metadata marker. Transferred memories arrive as
+   * epistemic_status 'inferred' — the target has not observed them itself.
+   *
+   * Idempotent: knowledge the target already carries is skipped (memories by
+   * exact content — organic rows hash content differently, so equality is the
+   * only honest check; procedures by condition+action+namespace; principles
+   * by the abstractions hash constraint), so counts report only rows actually
+   * written. All three transfers commit atomically.
+   *
+   * Trust note: this reads the source agent's memory. Both agents live in the
+   * same deployment and token scope — cross-deployment transfer is not a
+   * supported path.
+   *
+   * Availability: transferred memories are FTS-searchable immediately;
+   * semantic search sees them after subsequent sleep cycles backfill their
+   * embeddings (Phase 5.9). They surface under epistemic filters once
+   * corroborated retrievals promote them via Phase 5.12 (or immediately with
+   * epistemic=all). Principles carry no _transferred_from marker — the
+   * abstractions table has no metadata column.
+   */
+  async bootstrapAgent(options: BootstrapOptions): Promise<BootstrapResult> {
+    this.assertAgentId(options.sourceAgentId);
+    this.assertAgentId(options.targetAgentId);
+    if (options.sourceAgentId === options.targetAgentId) {
+      throw new TypeError('source and target agent must be different');
+    }
+
+    const ns = resolveNamespace(options.namespace);
+    const maxMemories = options.maxMemories ?? 100;
+    const maxProcedures = options.maxProcedures ?? 20;
+    const maxPrinciples = options.maxPrinciples ?? 10;
+
+    let memoriesTransferred = 0;
+    let proceduresTransferred = 0;
+    let principlesTransferred = 0;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      if (this.config.autoRegisterAgents) {
+        await client.query(
+          `INSERT INTO agents (id) VALUES ($1) ON CONFLICT DO NOTHING`,
+          [options.targetAgentId],
+        );
+      }
+
+      if (maxMemories > 0) {
+        // Dedup is namespace-scoped: a copy the target holds only in another
+        // namespace would never surface in this namespace's queries, so it
+        // must not suppress the transfer.
+        const { rows: createdMemories } = await client.query<{ id: bigint; content: string }>(
+          `INSERT INTO warm_tier (agent_id, content, content_hash, metadata, importance, confidence, namespace, epistemic_status)
+           SELECT $1, w.content, md5(w.content),
+                  w.metadata || jsonb_build_object('_transferred_from', $2::text),
+                  w.importance * 0.5, w.confidence * 0.5, w.namespace, 'inferred'
+           FROM warm_tier w
+           WHERE w.agent_id = $2 AND w.namespace = $3 AND w.epistemic_status = 'established'
+             AND NOT EXISTS (
+               SELECT 1 FROM warm_tier t
+               WHERE t.agent_id = $1 AND t.namespace = w.namespace AND t.content = w.content
+             )
+           ORDER BY w.importance DESC
+           LIMIT $4
+           RETURNING id, content`,
+          [options.targetAgentId, options.sourceAgentId, ns, maxMemories],
+        );
+        memoriesTransferred = createdMemories.length;
+
+        // Warm-tier creates carry hash-chained audit records everywhere else
+        // (consolidation, cold restore) — a cross-agent bulk write is the last
+        // path that should be exempt. The chain hash replaces the md5
+        // placeholder in content_hash, matching the organic convention.
+        if (this.audit) {
+          for (const row of createdMemories) {
+            const cHash = await this.audit.record(
+              options.targetAgentId, 'warm_tier', row.id, 'create',
+              null, row.content,
+              { transferred_from: options.sourceAgentId },
+              'bootstrap', null, client,
+            );
+            await client.query(`UPDATE warm_tier SET content_hash = $2 WHERE id = $1`, [row.id, cHash]);
+          }
+        }
+      }
+
+      if (maxProcedures > 0) {
+        // procedures has no unique constraint, so dedup is the NOT EXISTS —
+        // an ON CONFLICT here would be a silent no-op.
+        const { rowCount } = await client.query(
+          `INSERT INTO procedures (agent_id, condition, action, confidence, namespace, metadata)
+           SELECT $1, p.condition, p.action, p.confidence * 0.5, p.namespace,
+                  p.metadata || jsonb_build_object('_transferred_from', $2::text)
+           FROM procedures p
+           WHERE p.agent_id = $2 AND p.namespace = $3 AND p.active = true
+             AND NOT EXISTS (
+               SELECT 1 FROM procedures t
+               WHERE t.agent_id = $1 AND t.condition = p.condition
+                 AND t.action = p.action AND t.namespace = p.namespace
+             )
+           ORDER BY p.confidence DESC
+           LIMIT $4`,
+          [options.targetAgentId, options.sourceAgentId, ns, maxProcedures],
+        );
+        proceduresTransferred = rowCount ?? 0;
+      }
+
+      if (maxPrinciples > 0) {
+        // source_reflection_ids stays empty: the source's reflection ids are
+        // meaningless (and FK-invalid provenance) in the target's memory.
+        // Dedup runs BEFORE the LIMIT so already-carried principles free
+        // their cap slot for the next candidate (like the two statements
+        // above); ON CONFLICT remains only as a concurrent-writer guard.
+        const { rowCount } = await client.query(
+          `INSERT INTO abstractions (agent_id, level, content, source_reflection_ids, confidence, namespace)
+           SELECT $1, a.level, a.content, '{}', a.confidence * 0.5, a.namespace
+           FROM abstractions a
+           WHERE a.agent_id = $2 AND a.namespace = $3 AND a.active = true AND a.level = 'principle'
+             AND NOT EXISTS (
+               SELECT 1 FROM abstractions t
+               WHERE t.agent_id = $1 AND t.level = a.level AND t.namespace = a.namespace
+                 AND t.content_hash = md5(a.content)
+             )
+           ORDER BY a.confidence DESC
+           LIMIT $4
+           ON CONFLICT (agent_id, level, namespace, content_hash) DO NOTHING`,
+          [options.targetAgentId, options.sourceAgentId, ns, maxPrinciples],
+        );
+        principlesTransferred = rowCount ?? 0;
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    log.info({
+      sourceAgentId: options.sourceAgentId,
+      targetAgentId: options.targetAgentId,
+      memoriesTransferred,
+      proceduresTransferred,
+      principlesTransferred,
+    }, 'agent bootstrap complete');
+
+    return {
+      memories_transferred: memoriesTransferred,
+      procedures_transferred: proceduresTransferred,
+      principles_transferred: principlesTransferred,
+      source_agent_id: options.sourceAgentId,
+      target_agent_id: options.targetAgentId,
+    };
   }
 }

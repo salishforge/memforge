@@ -180,6 +180,13 @@ class ResilientMemForgeClient:
             self._handle(e)
             return []
 
+    async def bootstrap_agent(self, agent_id: str, source_agent_id: str, **kwargs: Any) -> dict[str, Any] | None:
+        try:
+            return await self._client.bootstrap_agent(agent_id, source_agent_id, **kwargs)
+        except Exception as e:
+            self._handle(e)
+            return None
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext | None:
         try:
             return await self._client.resume(agent_id, limit, namespace)

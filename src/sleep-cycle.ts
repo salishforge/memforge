@@ -1041,27 +1041,61 @@ ${wrapUserContent('related_memories', relatedList || 'None')}`;
         }
       }
 
-      const winnerId = scoreA >= scoreB ? a.id : b.id;
-      const strategy = scoreA >= scoreB
-        ? `multi_factor(A=${scoreA},B=${scoreB})`
-        : `multi_factor(A=${scoreA},B=${scoreB})`;
+      // Epistemic honesty on close calls: a gap of at most one point — one
+      // factor's worth of noise on this small integer scale — must not pick a
+      // winner. Mark both memories 'contested' instead. The threshold is an
+      // ABSOLUTE delta, not a ratio: ratios invert on quantized scores (a
+      // pure-noise 1-vs-0 reads as 100% while a well-evidenced 6-vs-5 reads
+      // as 17%) and are distorted by the mutual +100 supersession offset.
+      // Superseded rows never contest — supersession is an absolute signal
+      // and marking stale facts 'contested' would resurface them as live
+      // disputes. Contested is not terminal: Phase 5.12 promotes contested
+      // rows that later earn the corroboration bar, and a decisive
+      // re-resolution below clears the winner.
+      const scoreDelta = Math.abs(scoreA - scoreB);
+      const aSuperseded = Boolean((a.metadata as Record<string, unknown>)?.['_superseded']);
+      const bSuperseded = Boolean((b.metadata as Record<string, unknown>)?.['_superseded']);
 
-      const loserId = winnerId === a.id ? b.id : a.id;
+      if (scoreDelta <= 1 && !aSuperseded && !bSuperseded) {
+        await this.pool.query(
+          `UPDATE memory_conflicts SET resolved = true, resolution_strategy = $2, resolved_at = now()
+           WHERE id = $1`,
+          [conflict.id, `contested(A=${scoreA},B=${scoreB},delta=${scoreDelta})`],
+        );
+        await this.pool.query(
+          `UPDATE warm_tier SET epistemic_status = 'contested'
+           WHERE id = ANY($1) AND agent_id = $2`,
+          [[a.id, b.id], agentId],
+        );
+      } else {
+        const winnerId = scoreA >= scoreB ? a.id : b.id;
+        const strategy = `multi_factor(A=${scoreA},B=${scoreB})`;
+        const loserId = winnerId === a.id ? b.id : a.id;
 
-      // Mark conflict resolved
-      await this.pool.query(
-        `UPDATE memory_conflicts SET resolved = true, winner_id = $2, resolution_strategy = $3, resolved_at = now()
-         WHERE id = $1`,
-        [conflict.id, winnerId, strategy],
-      );
+        // Mark conflict resolved
+        await this.pool.query(
+          `UPDATE memory_conflicts SET resolved = true, winner_id = $2, resolution_strategy = $3, resolved_at = now()
+           WHERE id = $1`,
+          [conflict.id, winnerId, strategy],
+        );
 
-      // Reduce loser's confidence (agent-scoped for defense-in-depth)
-      await this.pool.query(
-        `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
-           metadata = metadata || '{"_conflict_loser": true}'::jsonb
-         WHERE id = $1 AND agent_id = $2`,
-        [loserId, agentId],
-      );
+        // Reduce loser's confidence (agent-scoped for defense-in-depth)
+        await this.pool.query(
+          `UPDATE warm_tier SET confidence = LEAST(confidence, 0.2),
+             metadata = metadata || '{"_conflict_loser": true}'::jsonb
+           WHERE id = $1 AND agent_id = $2`,
+          [loserId, agentId],
+        );
+
+        // A decisive win over a previously-contested dispute clears the
+        // winner's contested badge (back to provisional — winning one
+        // adjudication is not the corroboration bar for 'established').
+        await this.pool.query(
+          `UPDATE warm_tier SET epistemic_status = 'provisional'
+           WHERE id = $1 AND agent_id = $2 AND epistemic_status = 'contested'`,
+          [winnerId, agentId],
+        );
+      }
 
       resolved++;
     }
@@ -1717,12 +1751,17 @@ Extract the cross-cutting principles.`;
   // separately; the caller can see the net change via getEpistemicProfile).
 
   private async phaseEpistemicPromotion(agentId: string): Promise<number> {
-    // Promote provisional → established when sufficient evidence exists
+    // Promote provisional → established when sufficient evidence exists.
+    // 'inferred' rows (sleep-cycle derivations and bootstrapped transfers,
+    // v3.12) and 'contested' rows (close-call conflict resolutions) earn
+    // promotion by the same evidence bar — without an exit path either
+    // status is terminally second-class: excluded by the default epistemic
+    // filters with no way out regardless of corroboration.
     const { rowCount: promoted } = await this.pool.query(
       `UPDATE warm_tier
           SET epistemic_status = 'established', last_corroborated_at = now()
         WHERE agent_id = $1
-          AND epistemic_status = 'provisional'
+          AND epistemic_status IN ('provisional', 'inferred', 'contested')
           AND evidence_count >= 3
           AND id IN (
             SELECT rl.warm_tier_id

@@ -412,17 +412,18 @@ describe('Phase 5.12 — epistemic promotion', () => {
     assert.equal(after[0]?.epistemic_status, 'established', 'established row must remain established');
   });
 
-  it('does not touch contested rows during promotion pass', async () => {
+  it('promotes corroborated contested rows — contested is not terminal (v3.12)', async () => {
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
-       VALUES ($1, 'Contested memory that should stay contested', 'ep-promo-5', 'contested', 5, 0.8)
+       VALUES ($1, 'Contested memory that earns its way out', 'ep-promo-5', 'contested', 5, 0.8)
        RETURNING id`,
       [PROMO_AGENT],
     );
     const warmId = rows[0]?.id;
     assert.ok(warmId);
 
-    // Multi-namespace positive retrievals (would promote provisional but NOT contested)
+    // Multi-namespace positive retrievals — the same evidence bar that
+    // promotes provisional and inferred rows clears the contested badge.
     await pool.query(
       `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
        VALUES
@@ -437,7 +438,26 @@ describe('Phase 5.12 — epistemic promotion', () => {
       `SELECT epistemic_status FROM warm_tier WHERE id = $1`,
       [warmId],
     );
-    assert.equal(after[0]?.epistemic_status, 'contested', 'contested row must remain contested');
+    assert.equal(after[0]?.epistemic_status, 'established', 'corroborated contested rows must be promoted');
+  });
+
+  it('does not promote contested rows lacking the evidence bar', async () => {
+    const { rows } = await pool.query<{ id: bigint }>(
+      `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
+       VALUES ($1, 'Contested memory without corroboration', 'ep-promo-7', 'contested', 1, 0.8)
+       RETURNING id`,
+      [PROMO_AGENT],
+    );
+    const warmId = rows[0]?.id;
+    assert.ok(warmId);
+
+    await engine.run(PROMO_AGENT);
+
+    const { rows: after } = await pool.query<{ epistemic_status: string }>(
+      `SELECT epistemic_status FROM warm_tier WHERE id = $1`,
+      [warmId],
+    );
+    assert.equal(after[0]?.epistemic_status, 'contested', 'uncorroborated contested rows stay contested');
   });
 
   it('sets last_corroborated_at when a row is promoted', async () => {

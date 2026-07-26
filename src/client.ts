@@ -62,6 +62,7 @@ import type {
   PredictionResult,
   Abstraction,
   AbstractionLevel,
+  BootstrapResult,
 } from './types.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -439,6 +440,28 @@ export class MemForgeClient {
     return this.get<Abstraction[]>(`/memory/${enc(agentId)}/abstractions${qs ? '?' + qs : ''}`);
   }
 
+  // ─── Phase 5: Cross-Agent Transfer Learning ──────────────────────────────
+
+  /** Bootstrap the given (target) agent from an experienced source agent
+   * (v3.12): copies established memories, active procedures, and active
+   * principles at 0.5× confidence. Idempotent — already-carried knowledge is
+   * skipped and counts report only rows actually written. */
+  async bootstrapAgent(agentId: string, options: {
+    sourceAgentId: string;
+    namespace?: string;
+    maxMemories?: number;
+    maxProcedures?: number;
+    maxPrinciples?: number;
+  }): Promise<BootstrapResult> {
+    return this.post<BootstrapResult>(`/memory/${enc(agentId)}/bootstrap`, {
+      source_agent_id: options.sourceAgentId,
+      namespace: options.namespace,
+      max_memories: options.maxMemories,
+      max_procedures: options.maxProcedures,
+      max_principles: options.maxPrinciples,
+    });
+  }
+
   /** Generate a session resumption context for an agent. */
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext> {
     const params = new URLSearchParams();
@@ -775,6 +798,16 @@ export class ResilientMemForgeClient {
 
   async getAbstractions(agentId: string, level?: AbstractionLevel, namespace?: string): Promise<Abstraction[]> {
     return this.safe('getAbstractions', () => this.client.getAbstractions(agentId, level, namespace), []);
+  }
+
+  async bootstrapAgent(agentId: string, options: {
+    sourceAgentId: string;
+    namespace?: string;
+    maxMemories?: number;
+    maxProcedures?: number;
+    maxPrinciples?: number;
+  }): Promise<BootstrapResult | null> {
+    return this.safe('bootstrapAgent', () => this.client.bootstrapAgent(agentId, options), null);
   }
 
   async resume(agentId: string, limit?: number, namespace?: string): Promise<ResumeContext | null> {

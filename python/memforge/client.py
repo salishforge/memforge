@@ -377,6 +377,35 @@ class MemForgeClient:
         raw = await self._get(f"/memory/{agent_id}/abstractions", params)
         return raw if isinstance(raw, list) else []
 
+    # ── Cross-Agent Transfer Learning (v3.12) ─────────────────────────────
+
+    async def bootstrap_agent(
+        self,
+        agent_id: str,
+        source_agent_id: str,
+        namespace: str | None = None,
+        max_memories: int | None = None,
+        max_procedures: int | None = None,
+        max_principles: int | None = None,
+    ) -> dict[str, Any]:
+        """Bootstrap ``agent_id`` (the target) from an experienced source
+        agent (v3.12): copies established memories, active procedures, and
+        active principles at half confidence. Idempotent — knowledge the
+        target already carries is skipped and counts report only rows
+        actually written.
+        """
+        body: dict[str, Any] = {"source_agent_id": source_agent_id}
+        if namespace is not None:
+            body["namespace"] = namespace
+        if max_memories is not None:
+            body["max_memories"] = max_memories
+        if max_procedures is not None:
+            body["max_procedures"] = max_procedures
+        if max_principles is not None:
+            body["max_principles"] = max_principles
+        raw = await self._post(f"/memory/{agent_id}/bootstrap", body)
+        return raw if isinstance(raw, dict) else {}
+
     async def resume(self, agent_id: str, limit: int = 5, namespace: str | None = None) -> ResumeContext:
         """Get session resumption context bundle."""
         params: dict[str, Any] = {"limit": limit}

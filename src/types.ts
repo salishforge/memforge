@@ -147,6 +147,34 @@ export interface Abstraction {
   created_at: Date;
 }
 
+// ─── Phase 5: Cross-Agent Transfer Learning ──────────────────────────────────
+
+/** Options for bootstrapAgent() (v3.12). Limits are enforced by the request
+ * schemas at the REST/MCP boundary (0-1000 memories, 0-100 procedures and
+ * principles). */
+export interface BootstrapOptions {
+  sourceAgentId: string;
+  targetAgentId: string;
+  namespace?: string;
+  maxMemories?: number;
+  maxProcedures?: number;
+  maxPrinciples?: number;
+}
+
+/**
+ * Result of bootstrapAgent() (v3.12). Counts reflect rows actually written —
+ * knowledge the target already carries (by exact content / condition+action /
+ * principle hash) is skipped, so re-running a bootstrap is idempotent and
+ * reports zeros.
+ */
+export interface BootstrapResult {
+  memories_transferred: number;
+  procedures_transferred: number;
+  principles_transferred: number;
+  source_agent_id: string;
+  target_agent_id: string;
+}
+
 // ─── Hot tier ────────────────────────────────────────────────────────────────
 
 export interface HotRow {
