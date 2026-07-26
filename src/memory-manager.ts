@@ -87,6 +87,10 @@ import type {
   SentimentTag,
   SessionType,
   ExplanationFactor,
+  CausalChainNode,
+  PredictionResult,
+  Abstraction,
+  AbstractionLevel,
 } from './types.js';
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_SESSION_ID = 'default';
@@ -4713,5 +4717,159 @@ Guidelines:
         would_flag_low_confidence: row.confidence < revisionThreshold,
       },
     };
+  }
+
+  // ─── Phase 5: Causal Memory Graph ──────────────────────────────────────────
+
+  /**
+   * Traverses causal_edges from a warm-tier memory in one direction (v3.10).
+   * direction='effects' walks downstream (what this memory led to),
+   * direction='causes' walks upstream (what led to this memory). Depth is
+   * clamped to [1,10]; results are capped at 50 nodes, breadth-first by
+   * depth then edge strength.
+   */
+  async getCausalChain(
+    agentId: string,
+    memoryId: bigint,
+    direction: 'causes' | 'effects',
+    depth: number = 3,
+  ): Promise<CausalChainNode[]> {
+    this.assertAgentId(agentId);
+    const safeDepth = Math.min(Math.max(1, depth), 10);
+
+    // Recursive CTE traversing causal_edges in the requested direction.
+    // Column identifiers below derive only from the validated
+    // 'causes'|'effects' enum — never raw input; all values are parameterized.
+    const isEffects = direction === 'effects';
+    const startCol = isEffects ? 'cause_id' : 'effect_id';
+    const nextCol = isEffects ? 'effect_id' : 'cause_id';
+    const joinCol = isEffects ? 'cause_id' : 'effect_id';
+    const directionLabel = isEffects ? 'effect' : 'cause';
+
+    const { rows } = await this.pool.query<CausalChainNode>(
+      `WITH RECURSIVE chain AS (
+         SELECT ce.${nextCol} AS memory_id, ce.strength AS edge_strength, ce.confidence AS edge_confidence, 1 AS depth
+         FROM causal_edges ce
+         WHERE ce.agent_id = $1 AND ce.${startCol} = $2
+       UNION ALL
+         SELECT ce.${nextCol}, ce.strength, ce.confidence, c.depth + 1
+         FROM causal_edges ce
+         JOIN chain c ON ce.${joinCol} = c.memory_id AND ce.agent_id = $1
+         WHERE c.depth < $3
+       )
+       SELECT c.memory_id, w.content, $4::text AS direction,
+              c.edge_strength, c.edge_confidence, c.depth
+       FROM chain c
+       JOIN warm_tier w ON w.id = c.memory_id AND w.agent_id = $1
+       ORDER BY c.depth ASC, c.edge_strength DESC
+       LIMIT 50`,
+      [agentId, memoryId, safeDepth, directionLabel],
+    );
+    return rows;
+  }
+
+  /**
+   * Predicts probable next events for a context (v3.10). Retrieves the top 5
+   * warm memories matching the context in the given namespace, then follows
+   * outgoing causal edges to their effects, ranked by strength × confidence.
+   * Returns at most 10 predictions; empty when the context matches nothing.
+   */
+  async predict(
+    agentId: string,
+    context: string,
+    namespace: string = DEFAULT_NAMESPACE,
+  ): Promise<PredictionResult> {
+    this.assertAgentId(agentId);
+    if (!context || typeof context !== 'string') {
+      throw new TypeError('context must be a non-empty string');
+    }
+
+    // Find warm-tier memories matching the context
+    const contextResults = await this.query(agentId, {
+      q: context,
+      limit: 5,
+      namespace,
+    });
+
+    // Shared-pool results live in the shared_memories id space, not warm_tier —
+    // feeding their ids into the warm_tier-keyed causal_edges lookup would
+    // attribute predictions to whatever unrelated warm row shares the number.
+    const matchIds = contextResults
+      .filter((r) => !(r.metadata && r.metadata['_from_pool'] !== undefined))
+      .map((r) => r.id);
+
+    if (matchIds.length === 0) {
+      return { predicted_events: [] };
+    }
+
+    // Follow causal_edges from matched memories to find probable effects.
+    // The effect row must sit in the requested namespace — edges may span
+    // namespaces (sequence links are namespace-blind), and predict promises
+    // namespace-confined results like every other namespaced read path.
+    const { rows } = await this.pool.query<{
+      content: string; memory_id: bigint; strength: number;
+      confidence: number; avg_lag_seconds: number | null;
+    }>(
+      `SELECT w.content, ce.effect_id AS memory_id, ce.strength, ce.confidence, ce.avg_lag_seconds
+       FROM causal_edges ce
+       JOIN warm_tier w ON w.id = ce.effect_id AND w.agent_id = $1 AND w.namespace = $3
+       WHERE ce.agent_id = $1 AND ce.cause_id = ANY($2)
+       ORDER BY ce.confidence * (1 - exp(-ce.strength / 30.0)) DESC
+       LIMIT 10`,
+      [agentId, matchIds, namespace],
+    );
+
+    // Mined strengths land in [3, 100] (count × inverse-cv, cv floored at
+    // 0.1), so a raw strength × confidence product saturates at the 1.0 cap
+    // for virtually every real edge. The exponential squash keeps probability
+    // in (0, confidence), monotonic in strength, and never saturated — it is
+    // a relative ranking signal, not a calibrated probability.
+    return {
+      predicted_events: rows.map((r) => ({
+        content: r.content,
+        memory_id: r.memory_id,
+        probability: r.confidence * (1 - Math.exp(-r.strength / 30)),
+        avg_lag_seconds: r.avg_lag_seconds,
+      })),
+    };
+  }
+
+  // ─── Phase 5: Hierarchical Abstraction ─────────────────────────────────────
+
+  /**
+   * Lists an agent's abstractions (v3.11), optionally filtered by level.
+   * Only active rows are returned, ordered by confidence then recency,
+   * capped at 50.
+   */
+  async getAbstractions(
+    agentId: string,
+    level?: AbstractionLevel,
+    namespace?: string,
+  ): Promise<Abstraction[]> {
+    this.assertAgentId(agentId);
+    const ns = resolveNamespace(namespace);
+    const params: SqlParam[] = [agentId, ns];
+    let levelFilter = '';
+    if (level) {
+      params.push(level);
+      levelFilter = `AND level = $${params.length}`;
+    }
+    params.push(50); // result cap
+    const limitIdx = params.length;
+
+    const { rows } = await this.pool.query<Abstraction>(
+      `SELECT id, agent_id, level, content, source_reflection_ids, confidence, active, namespace, created_at
+       FROM abstractions
+       WHERE agent_id = $1 AND namespace = $2 AND active = true ${levelFilter}
+       ORDER BY confidence DESC, created_at DESC
+       LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows;
+  }
+
+  /** Active principle-level abstractions (v3.11) — getAbstractions() with level 'principle'. */
+  async getPrinciples(agentId: string, namespace?: string): Promise<Abstraction[]> {
+    return this.getAbstractions(agentId, 'principle', namespace);
   }
 }
