@@ -10,6 +10,16 @@ updates:
       time: "09:00"
       timezone: "UTC"
     open-pull-requests-limit: 5
+    # typescript is capped by the lint toolchain, not by us: every published
+    # @typescript-eslint release declares peer typescript ">=4.8.4 <6.1.0".
+    # A bump past that ceiling fails `npm ci` with ERESOLVE before any job can
+    # run, so it takes down every open PR, not just its own. Note this is a
+    # version ceiling rather than a semver-major ignore — 6.1.0 is a *minor*
+    # bump that would breach the same peer range. Lift when typescript-eslint
+    # widens the range.
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=6.1.0"]
     groups:
       production-dependencies:
         dependency-type: "production"
