@@ -20,7 +20,7 @@ import httpx
 from .types import (
     AddResult, QueryResult, ConsolidateResult, ClearResult, AgentStats,
     MemoryHealth, ResumeContext, FeedbackResult, SleepCycleResult,
-    ReflectionResult, MemoryHints,
+    ReflectionResult, MemoryHints, from_response,
 )
 
 
@@ -112,7 +112,7 @@ class MemForgeClient:
         if session_id:
             body["session_id"] = session_id
         raw = await self._post(f"/memory/{agent_id}/add", body)
-        return AddResult(**{k: raw[k] for k in ("id", "agent_id", "created_at") if k in raw})
+        return from_response(AddResult, raw)
 
     async def query(
         self,
@@ -155,7 +155,7 @@ class MemForgeClient:
         if explain:
             params["explain"] = "true"
         raw = await self._get(f"/memory/{agent_id}/query", params)
-        return [QueryResult(**r) for r in raw] if isinstance(raw, list) else []
+        return [from_response(QueryResult, r) for r in raw] if isinstance(raw, list) else []
 
     async def timeline(
         self,
@@ -196,12 +196,12 @@ class MemForgeClient:
         if target_namespace:
             body["target_namespace"] = target_namespace
         raw = await self._post(f"/memory/{agent_id}/consolidate", body)
-        return ConsolidateResult(**raw)
+        return from_response(ConsolidateResult, raw)
 
     async def clear(self, agent_id: str) -> ClearResult:
         """Archive all hot+warm memory to cold tier."""
         raw = await self._post(f"/memory/{agent_id}/clear")
-        return ClearResult(**raw)
+        return from_response(ClearResult, raw)
 
     async def stats(self, agent_id: str, namespace: str | None = None) -> AgentStats:
         """Get memory tier statistics."""
@@ -209,7 +209,7 @@ class MemForgeClient:
         if namespace:
             params["namespace"] = namespace
         raw = await self._get(f"/memory/{agent_id}/stats", params or None)
-        return AgentStats(**raw)
+        return from_response(AgentStats, raw)
 
     # ── Knowledge Graph ──────────────────────────────────────────────────
 
@@ -235,7 +235,7 @@ class MemForgeClient:
     ) -> ReflectionResult:
         """Trigger LLM reflection on recent memories."""
         raw = await self._post(f"/memory/{agent_id}/reflect", {"trigger": trigger, "limit": limit})
-        return ReflectionResult(**raw)
+        return from_response(ReflectionResult, raw)
 
     async def get_reflections(self, agent_id: str, limit: int = 10) -> list[dict[str, Any]]:
         """Retrieve stored reflections."""
@@ -276,12 +276,12 @@ class MemForgeClient:
         if include_reflection is not None:
             body["includeReflection"] = include_reflection
         raw = await self._post(f"/memory/{agent_id}/sleep", body)
-        return SleepCycleResult(**raw)
+        return from_response(SleepCycleResult, raw)
 
     async def memory_health(self, agent_id: str) -> MemoryHealth:
         """Get memory health metrics."""
         raw = await self._get(f"/memory/{agent_id}/health")
-        return MemoryHealth(**raw)
+        return from_response(MemoryHealth, raw)
 
     # ── Epistemic Confidence Model (v3.9) ─────────────────────────────────
 
@@ -412,7 +412,7 @@ class MemForgeClient:
         if namespace:
             params["namespace"] = namespace
         raw = await self._get(f"/memory/{agent_id}/resume", params)
-        return ResumeContext(**raw)
+        return from_response(ResumeContext, raw)
 
     # ── Feedback ─────────────────────────────────────────────────────────
 
@@ -428,7 +428,7 @@ class MemForgeClient:
         if metadata:
             body["metadata"] = metadata
         raw = await self._post(f"/memory/{agent_id}/feedback", body)
-        return FeedbackResult(**raw)
+        return from_response(FeedbackResult, raw)
 
     async def active_recall(self, agent_id: str, context: str, limit: int = 5) -> dict[str, Any]:
         """Proactively surface relevant memories for a context."""
