@@ -1741,7 +1741,20 @@ Extract the cross-cutting principles.`;
   //
   // Promotes provisional → established when a warm-tier row has:
   //   - evidence_count >= 3  (corroborated three or more times via feedback)
-  //   - positive retrievals from at least 2 distinct namespaces in retrieval_log
+  //   - positive retrievals on at least 2 distinct calendar days
+  //
+  // The day-spread clause replaces an earlier "2 distinct namespaces" test that
+  // could never fire: every search path filters warm rows to the caller's
+  // namespace, retrieval_log records that same namespace, and namespace is
+  // immutable after insert — so a row's retrieval evidence is always
+  // single-namespace and the count could not reach 2. Nothing was ever
+  // promoted in production, which also starved bootstrapAgent() (it copies
+  // only 'established' rows). Day-spread preserves the actual intent —
+  // corroboration from independent sessions rather than one burst — and is
+  // reachable. It is not redundant with evidence_count: that counter
+  // increments once per sleep cycle that saw positive feedback in the
+  // trailing 24h, so several cycles in one busy day can carry it to 3 without
+  // any independent confirmation.
   //
   // Also demotes established → provisional when staleness_score > 0.7 and the
   // row has not been accessed in 30 days — prevents stale memories from keeping
@@ -1768,7 +1781,7 @@ Extract the cross-cutting principles.`;
               FROM retrieval_log rl
              WHERE rl.agent_id = $1 AND rl.outcome = 'positive'
              GROUP BY rl.warm_tier_id
-            HAVING COUNT(DISTINCT rl.namespace) >= 2
+            HAVING COUNT(DISTINCT (rl.created_at AT TIME ZONE 'UTC')::date) >= 2
           )`,
       [agentId],
     );
