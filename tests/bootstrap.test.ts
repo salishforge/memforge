@@ -439,11 +439,14 @@ describe('bootstrapAgent — epistemic promotion path for inferred rows', () => 
        RETURNING id`,
       [PROMO_TARGET],
     );
+    // Positive retrievals on two distinct days — Phase 5.12's corroboration
+    // bar. (It previously required two distinct namespaces, which no real
+    // retrieval could ever satisfy; see tests/epistemic-confidence.test.ts.)
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
        VALUES
-         ($1, $2, 'probe', 'keyword', 1, 'default', 'positive'),
-         ($1, $2, 'probe', 'keyword', 1, 'workspace', 'positive')`,
+         ($1, $2, 'probe', 'keyword', 1, 'default', 'positive', now() - interval '2 days'),
+         ($1, $2, 'probe', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_TARGET, rows[0]!.id],
     );
 

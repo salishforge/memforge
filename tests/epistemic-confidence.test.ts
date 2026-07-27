@@ -299,16 +299,130 @@ describe('query() — epistemic filter: only_established', () => {
   });
 });
 
-describe('Phase 5.12 — epistemic promotion', () => {
-  const PROMO_AGENT = `${TEST_AGENT}-promotion`;
+
+/** Highest retrieval_log id for an agent, or '0' when none exist yet. */
+async function maxRetrievalId(agentId: string): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT COALESCE(max(id), 0)::text AS id FROM retrieval_log WHERE agent_id = $1`,
+    [agentId],
+  );
+  return rows[0]!.id;
+}
+
+/**
+ * Wait for the fire-and-forget retrieval_log insert from query() to land.
+ * Anchored on a pre-call id watermark rather than "any unrated row" — without
+ * the watermark this races: a leftover unrated row from a prior call satisfies
+ * the poll instantly and the test rates the wrong retrieval.
+ */
+async function waitForRetrievalAfter(agentId: string, sinceId: string, timeoutMs = 10_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM retrieval_log
+        WHERE agent_id = $1 AND id > $2::bigint
+        ORDER BY id ASC LIMIT 1`,
+      [agentId, sinceId],
+    );
+    if (rows[0]) return rows[0].id;
+    if (Date.now() > deadline) throw new Error(`query() never wrote a retrieval_log row after id ${sinceId}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+describe('Phase 5.12 — promotion is reachable through real write paths', () => {
+  // Regression guard for the dead-code defect: the previous corroboration rule
+  // (COUNT(DISTINCT namespace) >= 2) could only be satisfied by hand-inserting
+  // retrieval_log rows the system itself can never produce, so every promotion
+  // test passed while production promoted nothing. This suite drives the real
+  // query() + feedback() paths and only backdates a timestamp — never invents
+  // a state the code cannot reach.
+  const REACH_AGENT = `${TEST_AGENT}-reachable`;
 
   before(async () => {
-    await cleanupAgent(PROMO_AGENT);
-    await ensureAgent(PROMO_AGENT);
+    await cleanupAgent(REACH_AGENT);
+    await ensureAgent(REACH_AGENT);
   });
-  after(() => cleanupAgent(PROMO_AGENT));
+  after(() => cleanupAgent(REACH_AGENT));
 
-  it('promotes provisional → established when evidence_count >= 3 and multi-namespace retrievals exist', async () => {
+  it('promotes a row whose retrieval evidence came only from query() + feedback()', async () => {
+    await pool.query(
+      `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
+       VALUES ($1, 'Reachable corroboration probe memory', 'ep-reach-1', 'provisional', 3, 0.9)`,
+      [REACH_AGENT],
+    );
+
+    // Two genuine retrievals through the production search path, each rated
+    // positive through the production feedback path.
+    for (let i = 0; i < 2; i++) {
+      const watermark = await maxRetrievalId(REACH_AGENT);
+      const results = await manager.query(REACH_AGENT, { q: 'reachable corroboration probe' });
+      assert.ok(results.length > 0, 'probe memory must be retrievable');
+      // query() logs retrievals fire-and-forget (memory-manager.ts: `void
+      // this.pool.query(...)`), so the row lands shortly after the call
+      // returns. Wait for a row newer than the watermark.
+      const retrievalId = await waitForRetrievalAfter(REACH_AGENT, watermark);
+      await manager.feedback(REACH_AGENT, [BigInt(retrievalId)], 'positive');
+    }
+
+    // Backdate the earlier retrieval so the two land on different days. This
+    // is the one thing a test cannot do by waiting; everything else above is
+    // exactly what production does.
+    await pool.query(
+      `UPDATE retrieval_log SET created_at = now() - interval '2 days'
+       WHERE id = (SELECT min(id) FROM retrieval_log WHERE agent_id = $1)`,
+      [REACH_AGENT],
+    );
+
+    await engine.run(REACH_AGENT);
+
+    const { rows } = await pool.query<{ epistemic_status: string }>(
+      `SELECT epistemic_status FROM warm_tier WHERE agent_id = $1`,
+      [REACH_AGENT],
+    );
+    assert.equal(
+      rows[0]?.epistemic_status,
+      'established',
+      'promotion must be achievable without hand-crafted retrieval_log state',
+    );
+  });
+
+  it('retrieval evidence for a row is always logged under that row\'s own namespace', async () => {
+    // Pins the fact that made the old rule unreachable, so a future change
+    // that reintroduces a namespace-spread requirement fails loudly here.
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(DISTINCT rl.namespace)::text AS count
+         FROM retrieval_log rl
+         JOIN warm_tier w ON w.id = rl.warm_tier_id
+        WHERE rl.agent_id = $1 AND rl.namespace <> w.namespace`,
+      [REACH_AGENT],
+    );
+    assert.equal(rows[0]?.count, '0', 'no retrieval row may carry a namespace differing from its memory');
+  });
+});
+
+describe('Phase 5.12 — epistemic promotion', () => {
+  // Each test gets its own agent. These tests all call engine.run(), and a
+  // sleep cycle mutates every eligible row for the agent — including rows an
+  // earlier test seeded. Sharing one agent let a later cycle retroactively
+  // promote an earlier test's fixture, which showed up as a ~1-in-4 flake.
+  let promoSeq = 0;
+  const nextPromoAgent = (): string => `${TEST_AGENT}-promotion-${++promoSeq}`;
+  const promoAgents: string[] = [];
+  async function freshPromoAgent(): Promise<string> {
+    const id = nextPromoAgent();
+    promoAgents.push(id);
+    await cleanupAgent(id);
+    await ensureAgent(id);
+    return id;
+  }
+
+  after(async () => {
+    for (const id of promoAgents) await cleanupAgent(id);
+  });
+
+  it('promotes provisional → established when evidence_count >= 3 and retrievals span 2 days', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     // Insert a provisional warm-tier row with evidence_count=3
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
@@ -319,12 +433,14 @@ describe('Phase 5.12 — epistemic promotion', () => {
     const warmId = rows[0]?.id;
     assert.ok(warmId, 'must get a warm_tier id');
 
-    // Simulate positive retrievals from 2 distinct namespaces in retrieval_log
+    // Positive retrievals on 2 distinct days — the reachable corroboration
+    // signal. (A namespace spread is NOT reachable: retrieval evidence for a
+    // row is always logged under that row's own namespace.)
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
        VALUES
-         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive'),
-         ($1, $2, 'test query', 'keyword', 1, 'workspace', 'positive')`,
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now() - interval '2 days'),
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_AGENT, warmId],
     );
 
@@ -340,6 +456,7 @@ describe('Phase 5.12 — epistemic promotion', () => {
   });
 
   it('does not promote provisional rows with evidence_count < 3', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
        VALUES ($1, 'Provisional with insufficient evidence', 'ep-promo-2', 'provisional', 2, 0.7)
@@ -349,10 +466,13 @@ describe('Phase 5.12 — epistemic promotion', () => {
     const warmId = rows[0]?.id;
     assert.ok(warmId);
 
-    // Add only single-namespace positive retrievals
+    // Day spread is satisfied, so evidence_count is the only thing holding
+    // this row back — it must stay provisional.
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
-       VALUES ($1, $2, 'test query', 'keyword', 1, 'default', 'positive')`,
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
+       VALUES
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now() - interval '2 days'),
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_AGENT, warmId],
     );
 
@@ -365,7 +485,8 @@ describe('Phase 5.12 — epistemic promotion', () => {
     assert.equal(after[0]?.epistemic_status, 'provisional', 'row must remain provisional');
   });
 
-  it('does not promote provisional rows without multi-namespace retrievals', async () => {
+  it('does not promote provisional rows whose positive retrievals all land on one day', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
        VALUES ($1, 'Provisional with single namespace only', 'ep-promo-3', 'provisional', 5, 0.7)
@@ -375,12 +496,13 @@ describe('Phase 5.12 — epistemic promotion', () => {
     const warmId = rows[0]?.id;
     assert.ok(warmId);
 
-    // Only single distinct namespace
+    // Both retrievals land on the same day — a single burst is not
+    // independent corroboration, so promotion must not fire.
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
        VALUES
-         ($1, $2, 'query 1', 'keyword', 1, 'default', 'positive'),
-         ($1, $2, 'query 2', 'keyword', 1, 'default', 'positive')`,
+         ($1, $2, 'query 1', 'keyword', 1, 'default', 'positive', now()),
+         ($1, $2, 'query 2', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_AGENT, warmId],
     );
 
@@ -390,10 +512,11 @@ describe('Phase 5.12 — epistemic promotion', () => {
       `SELECT epistemic_status FROM warm_tier WHERE id = $1`,
       [warmId],
     );
-    assert.equal(after[0]?.epistemic_status, 'provisional', 'must remain provisional — only one distinct namespace');
+    assert.equal(after[0]?.epistemic_status, 'provisional', 'must remain provisional — a single-day burst is not independent corroboration');
   });
 
   it('does not touch already-established rows during promotion pass', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
        VALUES ($1, 'Already established memory', 'ep-promo-4', 'established', 10, 0.9)
@@ -413,6 +536,7 @@ describe('Phase 5.12 — epistemic promotion', () => {
   });
 
   it('promotes corroborated contested rows — contested is not terminal (v3.12)', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
        VALUES ($1, 'Contested memory that earns its way out', 'ep-promo-5', 'contested', 5, 0.8)
@@ -422,13 +546,13 @@ describe('Phase 5.12 — epistemic promotion', () => {
     const warmId = rows[0]?.id;
     assert.ok(warmId);
 
-    // Multi-namespace positive retrievals — the same evidence bar that
-    // promotes provisional and inferred rows clears the contested badge.
+    // Multi-day positive retrievals — the same evidence bar that promotes
+    // provisional and inferred rows clears the contested badge.
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
        VALUES
-         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive'),
-         ($1, $2, 'test query', 'keyword', 1, 'workspace', 'positive')`,
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now() - interval '2 days'),
+         ($1, $2, 'test query', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_AGENT, warmId],
     );
 
@@ -442,6 +566,7 @@ describe('Phase 5.12 — epistemic promotion', () => {
   });
 
   it('does not promote contested rows lacking the evidence bar', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance)
        VALUES ($1, 'Contested memory without corroboration', 'ep-promo-7', 'contested', 1, 0.8)
@@ -461,6 +586,7 @@ describe('Phase 5.12 — epistemic promotion', () => {
   });
 
   it('sets last_corroborated_at when a row is promoted', async () => {
+    const PROMO_AGENT = await freshPromoAgent();
     const { rows } = await pool.query<{ id: bigint }>(
       `INSERT INTO warm_tier (agent_id, content, content_hash, epistemic_status, evidence_count, importance, last_corroborated_at)
        VALUES ($1, 'Memory for corroboration timestamp test', 'ep-promo-6', 'provisional', 3, 0.8, NULL)
@@ -471,10 +597,10 @@ describe('Phase 5.12 — epistemic promotion', () => {
     assert.ok(warmId);
 
     await pool.query(
-      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome)
+      `INSERT INTO retrieval_log (agent_id, warm_tier_id, query_text, query_mode, rank_position, namespace, outcome, created_at)
        VALUES
-         ($1, $2, 'corroboration query', 'keyword', 1, 'default', 'positive'),
-         ($1, $2, 'corroboration query', 'keyword', 1, 'tools', 'positive')`,
+         ($1, $2, 'corroboration query', 'keyword', 1, 'default', 'positive', now() - interval '2 days'),
+         ($1, $2, 'corroboration query', 'keyword', 1, 'default', 'positive', now())`,
       [PROMO_AGENT, warmId],
     );
 
