@@ -105,6 +105,8 @@ export function buildOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'before', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Only return memories before this timestamp' },
             { name: 'decay', in: 'query', schema: { type: 'number', minimum: 0 }, description: 'Temporal decay rate per hour (0 = no decay)' },
             { name: 'namespace', in: 'query', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]*$' }, description: 'Memory namespace (default: "default")' },
+            { name: 'max_tokens', in: 'query', schema: { type: 'integer', minimum: 1 }, description: 'Return only the highest-ranked results fitting within this token budget (estimate: content.length / 4)' },
+            { name: 'epistemic', in: 'query', schema: { type: 'string', enum: ['only_established', 'include_provisional', 'include_contested', 'all'] }, description: 'Restrict results by calibrated uncertainty level (v3.9)' },
             { name: 'explain', in: 'query', schema: { type: 'string', enum: ['true', 'false'] }, description: 'When "true", attach per-result explanation factors (rank_score, epistemic_status, search_mode, temporal_decay)' },
           ],
           responses: {

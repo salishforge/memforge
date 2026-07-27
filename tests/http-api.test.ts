@@ -143,6 +143,78 @@ describe('Health and system endpoints', () => {
 
 // ─── Input Validation ───────────────────────────────────────────────────────
 
+describe('agentId validation (#162)', () => {
+  // A malformed agent id must produce 400 with the validation message on every
+  // agent-scoped route. Before the app.param validator, routes that called
+  // getAgentId() inside their main try returned 500 "Internal server error"
+  // instead — 20 routes were affected while 34 handled it correctly.
+  const BAD = 'bad%20agent';
+
+  it('returns 400 on a route that previously mishandled it (GET /entities)', async () => {
+    const res = await get(`/memory/${BAD}/entities`);
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.ok(body.error.includes('agentId'), `error must name agentId: ${body.error}`);
+  });
+
+  it('returns 400 on GET /graph', async () => {
+    const res = await get(`/memory/${BAD}/graph?entity=thing`);
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(body.error.includes('agentId'), `error must name agentId: ${body.error}`);
+  });
+
+  it('returns 400 on a route that already handled it (GET /query)', async () => {
+    const res = await get(`/memory/${BAD}/query?q=test`);
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(body.error.includes('agentId'), `error must name agentId: ${body.error}`);
+  });
+
+  it('returns 400 on POST routes too', async () => {
+    const res = await post(`/memory/${BAD}/add`, { content: 'hello' });
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(body.error.includes('agentId'), `error must name agentId: ${body.error}`);
+  });
+
+  it('over-long agent ids are rejected', async () => {
+    const res = await get(`/memory/${'a'.repeat(257)}/query?q=test`);
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(body.error.includes('agentId'), `error must name agentId: ${body.error}`);
+  });
+
+  it('agentId is validated BEFORE per-route body/query validation', async () => {
+    // Precedence change introduced with the validator: on the 34 routes that
+    // were already correct, a request invalid in both dimensions now reports
+    // the agentId problem rather than the body problem. Same status either
+    // way; pinned so the ordering is a documented choice, not a surprise.
+    const res = await get(`/memory/${BAD}/query`); // no ?q= either
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(
+      body.error.includes('agentId'),
+      `agentId must win over the missing-q error: ${body.error}`,
+    );
+  });
+
+  it('a well-formed agent id still reaches the handler', async () => {
+    const res = await get(`/memory/${TEST_AGENT}/query`); // valid id, missing q
+
+    assert.equal(res.status, 400);
+    const body = await res.json() as { ok: boolean; error: string };
+    assert.ok(body.error.includes('"q"'), `must be the handler's own error: ${body.error}`);
+  });
+});
+
 describe('Input validation', () => {
   it('POST /memory/:agentId/add rejects missing content', async () => {
     const res = await post(`/memory/${TEST_AGENT}/add`, {});
