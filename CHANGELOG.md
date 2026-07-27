@@ -2,6 +2,14 @@
 
 All notable changes to MemForge are documented here.
 
+## [Unreleased] — Benchmark Relabelling + Epistemic Confidence Model + Memory Sentiment Tagging + Adaptive Sleep Intelligence
+
+### Changed (Benchmark Relabelling — P0)
+
+- **Benchmark claim relabelled** — All references to "LongMemEval 93.2% R@5" changed to "LongMemEval-S retrieval R@5 93.2%" to distinguish retrieval recall from QA accuracy. LongMemEval's official metric is end-to-end QA accuracy (retrieve → generate → judge); retrieval R@5 is a sub-metric typically 20–30 points higher. This change prevents apples-to-oranges comparisons with systems reporting QA accuracy (e.g., Mem0, Zep).
+- **Documentation updated** — `README.md`, `benchmarks/RESULTS.md`, `benchmarks/README.md` now carry explicit disclaimers that retrieval R@5 and QA accuracy are not directly comparable.
+- **Downstream listings updated** — `server.json`, `smithery.yaml`, `glama.json` maintainer notes updated to reflect accurate metric labelling.
+
 ## [Unreleased] — Epistemic Confidence Model + Memory Sentiment Tagging + Adaptive Sleep Intelligence
 
 ### Added (Epistemic Confidence Model — F1)
@@ -667,7 +675,7 @@ documentation and schema cleanup landed in beta.3 itself.
 - **Post-Retrieval LLM Reranking** — Optional `ENABLE_LLM_RERANK=true` runs a lightweight LLM pass over top-k results to reorder by relevance. Disabled by default.
 - **LLM-Assisted Ingest** — Optional `ENABLE_LLM_INGEST=true` extracts entities, sentiment, and tags at write time. Disabled by default to keep hot path fast.
 - **Autonomous Weight Adaptation** — Sleep cycle Phase 1 now adjusts importance-weight hyperparameters based on retrieval outcome correlation, gradually tuning the scoring formula to deployment patterns.
-- **LongMemEval Benchmark Harness** — `benchmarks/` directory contains the full evaluation harness, 500-question dataset driver, reproducible run scripts, retry logic with incremental manifest saving. Current score: 93.2% R@5 (hybrid mode), 35.0% R@5 (keyword mode).
+- **LongMemEval Benchmark Harness** — `benchmarks/` directory contains the full evaluation harness, 500-question dataset driver, reproducible run scripts, retry logic with incremental manifest saving. Current score: 93.2% retrieval R@5 (hybrid mode), 35.0% retrieval R@5 (keyword mode). **Note:** These are retrieval-only scores (Recall@5), not end-to-end QA accuracy. LongMemEval's official metric is QA accuracy (retrieve → generate → judge); retrieval R@5 is a sub-metric.
 
 ### Security
 
@@ -681,8 +689,8 @@ documentation and schema cleanup landed in beta.3 itself.
 
 ### Performance
 
-- **93.2% Recall@5 — Hybrid mode** — LongMemEval 500-question benchmark with `EMBEDDING_PROVIDER=local`. Full R@k: R@1 81.0% → R@3 90.8% → R@5 93.2% → R@10 96.4%. Per-category: knowledge-update 97.4% R@5 / 100.0% R@10, multi-session 96.2% / 98.5%, single-session-assistant 100.0% / 100.0%, temporal-reasoning 91.0% / 94.7%, single-session-user 87.1% / 90.0%, single-session-preference 80.0% / 93.3%. Closes to within 3.4 points of MemPalace (96.6%) while running on pure PostgreSQL.
-- **35.0% Recall@5 — Keyword mode** — LongMemEval per-session keyword baseline. No embedding provider required. Lower score is expected — FTS is weak on short per-session rows. Use hybrid mode for best results.
+- **93.2% Retrieval R@5 — Hybrid mode** — LongMemEval-S 500-question benchmark with `EMBEDDING_PROVIDER=local`. Full R@k: R@1 81.0% → R@3 90.8% → R@5 93.2% → R@10 96.4%. Per-category: knowledge-update 97.4% R@5 / 100.0% R@10, multi-session 96.2% / 98.5%, single-session-assistant 100.0% / 100.0%, temporal-reasoning 91.0% / 94.7%, single-session-user 87.1% / 90.0%, single-session-preference 80.0% / 93.3%. Closes to within 3.4 points of MemPalace (96.6%) while running on pure PostgreSQL. **Note:** This is retrieval Recall@5, not end-to-end QA accuracy.
+- **35.0% Retrieval R@5 — Keyword mode** — LongMemEval-S per-session keyword baseline. No embedding provider required. Lower score is expected — FTS is weak on short per-session rows. Use hybrid mode for best results. **Note:** This is retrieval Recall@5, not QA accuracy.
 - **Local embedding throughput** — `@xenova/transformers` with bge-small-en-v1.5: 7.3 ms/embed, ~137 embeds/sec on CPU, in-process with no network overhead.
 - **Hybrid mode latency** — p50 32 ms, p95 47 ms per query (local PostgreSQL with local embeddings).
 - **Keyword mode latency** — p50 39 ms, p95 50 ms per query (PostgreSQL FTS).

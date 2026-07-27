@@ -157,7 +157,7 @@ database shape?), **behavioral risk** (does retrieval/scoring change visibly?),
 6. **Test infrastructure.** Existing tests assume deterministic outputs.
    Phase 5 needs a *property-based* test layer + a *behavioral fixture*
    layer (gold-standard agents whose memory we can inspect over time).
-7. **Benchmark regression.** LongMemEval R@5 is currently 93.2%. Any Phase 5
+7. **Benchmark regression.** LongMemEval-S retrieval R@5 is currently 93.2%. Any Phase 5
    change must not regress that. CI must gate on it.
 8. **Evaluation gap.** Phase 5 introduces capabilities we don't yet have a
    benchmark for ("does the agent know what it doesn't know?"). Closing that

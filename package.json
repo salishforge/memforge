@@ -59,7 +59,8 @@
     "benchmark:download": "node --import tsx/esm benchmarks/longmemeval/download.ts",
     "benchmark:ingest": "node --import tsx/esm benchmarks/longmemeval/ingest.ts",
     "benchmark:evaluate": "node --import tsx/esm benchmarks/longmemeval/evaluate.ts",
-    "benchmark:report": "node --import tsx/esm benchmarks/longmemeval/report.ts"
+    "benchmark:report": "node --import tsx/esm benchmarks/longmemeval/report.ts",
+    "benchmark:longmemeval-qa": "node --import tsx/esm benchmarks/longmemeval-qa/run.ts"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0"

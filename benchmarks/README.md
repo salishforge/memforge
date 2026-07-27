@@ -2,6 +2,30 @@
 
 Retrieval quality and performance benchmarks for the MemForge memory system.
 
+## Benchmark Suites
+
+### LongMemEval QA Accuracy (end-to-end)
+
+**Official LongMemEval metric:** retrieve → generate → judge
+
+```bash
+OPENAI_API_KEY=sk-... npm run benchmark:longmemeval-qa
+```
+
+See [`longmemeval-qa/README.md`](longmemeval-qa/README.md) for details. Costs ~$50–100 for full 500-question run.
+
+### LongMemEval Retrieval R@5 (retrieval-only)
+
+**Retrieval sub-metric:** session recall in top-k results
+
+```bash
+npm run benchmark:longmemeval
+```
+
+See below for details. Free (no external API calls).
+
+---
+
 ## LongMemEval
 
 [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (ICLR 2025) tests 5 memory abilities across 500 questions with conversation histories ranging from 115K to 1.5M tokens.
@@ -80,7 +104,7 @@ All via environment variables:
 
 - **keyword**: PostgreSQL full-text search + trigram fallback. No embedding provider needed.
 - **semantic**: pgvector cosine similarity. Requires `EMBEDDING_PROVIDER=local`, `ollama`, or `openai`.
-- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 93.2% R@5 / 96.4% R@10 with `EMBEDDING_PROVIDER=local`.
+- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 93.2% retrieval R@5 / 96.4% R@10 with `EMBEDDING_PROVIDER=local`.
 
 ### Output
 
@@ -95,11 +119,13 @@ Each session is tagged with `[SESSION_ID:xxx]` during ingestion. After consolida
 
 ### Baselines
 
-| System | R@5 | R@10 | Notes |
-|--------|-----|------|-------|
-| MemPalace | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
-| **MemForge (hybrid)** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
-| **MemForge (keyword)** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
-| Hippo (BM25) | 74.0% | — | Zero dependencies, keyword only |
-| Zep | Hippo +18.5% | — | Temporal knowledge graph |
-| Letta | 74.0% | — | LoCoMo benchmark, GPT-4o-mini |
+| System | Metric | R@5 | R@10 | Notes |
+|--------|--------|-----|------|-------|
+| MemPalace | retrieval R@5 | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
+| **MemForge (hybrid)** | **retrieval R@5** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (keyword)** | **retrieval R@5** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
+| Hippo (BM25) | retrieval R@5 | 74.0% | — | Zero dependencies, keyword only |
+| Zep | retrieval R@5 | Hippo +18.5% | — | Temporal knowledge graph |
+| Letta | LoCoMo accuracy | 74.0% | — | LoCoMo benchmark, GPT-4o-mini |
+
+> **Note:** All figures above are retrieval R@5 unless noted otherwise. Do not compare against systems reporting QA accuracy (e.g., Mem0 claims ~93.4% LongMemEval accuracy, not retrieval R@5).

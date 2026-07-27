@@ -2,7 +2,9 @@
 
 Generated: 2026-04-09
 
-## LongMemEval — hybrid mode
+> **Important:** These are **retrieval-only** scores (Recall@5) on the LongMemEval-S dataset. The official LongMemEval metric is **end-to-end QA accuracy** (retrieve → generate answer → LLM judge). Retrieval R@5 and QA accuracy are **not directly comparable** — QA accuracy is typically 20–30 percentage points lower than retrieval R@5. Do not compare these figures against leaderboard entries reporting QA accuracy (e.g., Mem0, Zep). See § Methodology for scoring details.
+
+## LongMemEval-S — hybrid mode (retrieval R@5)
 
 - Questions evaluated: 500
 - Consolidation mode: concat
