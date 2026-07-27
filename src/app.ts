@@ -1657,11 +1657,34 @@ export function createApp(deps: AppDependencies): express.Express {
   // ─── Helpers ──────────────────────────────────────────────────────────
 
   const AGENT_ID_PATTERN = /^[\w.@:=-]{1,256}$/;
+  const AGENT_ID_MESSAGE = 'agentId must be 1-256 characters of [a-zA-Z0-9_.@:=-]';
 
+  // Reject malformed agent ids once, for every route that declares :agentId
+  // (all 55 agent-scoped routes, including the /pool routes that carry both
+  // :poolId and :agentId). Previously each handler was responsible for
+  // catching getAgentId's TypeError, and 20 of them called it inside their
+  // main try — so the TypeError fell through to the generic 500 branch and
+  // fail() masked the message as "Internal server error". Validating in one
+  // place makes correctness structural: a route added tomorrow inherits it
+  // instead of depending on its author copying the idiom.
+  //
+  // Express resolves param callbacks when a route matches, not when they are
+  // registered, so this covers routes defined above it.
+  app.param('agentId', (req: Request, res: Response, next: NextFunction, value: unknown) => {
+    if (typeof value !== 'string' || !AGENT_ID_PATTERN.test(value)) {
+      fail(res, 400, AGENT_ID_MESSAGE);
+      return;
+    }
+    next();
+  });
+
+  // Retained as defense in depth. With the param validator in front of every
+  // route this should be unreachable, but deleting it would make handler
+  // correctness depend on middleware registration surviving future edits.
   function getAgentId(req: Request): string {
     const id = pstr(req.params['agentId']);
     if (!AGENT_ID_PATTERN.test(id)) {
-      throw new TypeError('agentId must be 1-256 characters of [a-zA-Z0-9_.@:=-]');
+      throw new TypeError(AGENT_ID_MESSAGE);
     }
     return id;
   }
