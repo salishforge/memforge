@@ -30,6 +30,15 @@ class ResilientMemForgeClient:
 
     On failure, returns safe defaults (empty lists, None, zeroed stats)
     and optionally calls an ``on_error`` callback.
+
+    Note that "failure" here includes *parse* failures, not just transport
+    ones: a response this SDK cannot deserialize is reported to ``on_error``
+    and then reads to the caller as an empty result, indistinguishable from
+    the server having no data. That masking is how issue #161 stayed hidden
+    — every query against a v3.8+ server returned ``[]`` rather than
+    raising. It is deliberately left as-is here; narrowing the caught
+    exceptions is a behavior change for every existing caller and belongs in
+    its own change.
     """
 
     def __init__(

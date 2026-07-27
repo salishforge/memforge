@@ -61,6 +61,30 @@ jobs:
           fi
           echo "dist/ OK — $(find dist -type f | wc -l) files produced"
 
+  test-python:
+    name: Python SDK tests (Python ${{ matrix.python }})
+    # Parsing-layer tests only — no server, no Postgres. Runs in seconds and
+    # guards the SDK against server response fields it does not yet declare.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and ceiling of the range pyproject.toml claims to support.
+        python: ["3.10", "3.13"]
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: python/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
   test-security:
     name: Security tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

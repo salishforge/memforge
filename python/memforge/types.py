@@ -1,8 +1,42 @@
-"""MemForge Python SDK — type definitions."""
+"""MemForge Python SDK — type definitions.
+
+The server grows its response payloads in minor releases: a memory row that
+carried 8 keys in v3.7 carries 12 in v3.12. Two rules keep this SDK usable
+across that drift, and both are load-bearing:
+
+1. Every response dataclass is built through :func:`from_response`, which
+   drops keys the dataclass does not declare. Without it a single new server
+   field raises ``TypeError`` on *every* call to the affected endpoint —
+   which is exactly how issue #161 shipped.
+2. Every field the server added after the dataclass was first written carries
+   a default, so an SDK running against an *older* server still parses. The
+   defaults are chosen to match what the server's omission means, not merely
+   to be falsy — see the per-field notes below.
+
+Together these make dataclass and server independently upgradable in either
+direction. Filtering alone would silently discard real data; adding fields
+alone would leave the next server release to break callers again.
+"""
 
 from __future__ import annotations
+
+import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Mapping, Optional, TypeVar
+
+T = TypeVar("T")
+
+
+def from_response(cls: type[T], raw: Mapping[str, Any]) -> T:
+    """Build a response dataclass from a server payload, ignoring unknown keys.
+
+    The server adds response fields in minor releases; an SDK that rejects
+    them breaks every caller on upgrade. Keys absent from ``raw`` fall back
+    to the dataclass default, which is how this SDK stays compatible with
+    servers older than itself.
+    """
+    known = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
+    return cls(**{k: v for k, v in raw.items() if k in known})
 
 
 @dataclass
@@ -10,6 +44,7 @@ class AddResult:
     id: int
     agent_id: str
     created_at: str
+    # Only emitted when the write collapsed onto an existing hot-tier row.
     deduplicated: bool = False
 
 
@@ -17,12 +52,30 @@ class AddResult:
 class QueryResult:
     id: int
     content: str
-    summary: Optional[str]
     metadata: dict[str, Any]
     consolidated_at: str
     time_start: Optional[str]
     time_end: Optional[str]
     rank: float
+
+    # `summary` is only populated under LLM consolidation, and shared-pool
+    # rows omit the key entirely, so it cannot be a required argument.
+    summary: Optional[str] = None
+
+    # v3.8 — sentiment/urgency/session_type merged from contributing hot rows.
+    # Absent means "no signals recorded", which is what an empty dict says.
+    context_signals: dict[str, Any] = field(default_factory=dict)
+
+    # v3.9 — calibrated uncertainty. None means the server did not report a
+    # status; it is not the same as any of the five status values.
+    epistemic_status: Optional[str] = None
+    # v3.9 — corroborating retrievals. The server's floor is 1, so 0 would be
+    # a lie; None means "not reported".
+    evidence_count: Optional[int] = None
+
+    # v3.10 — per-result rank factors, present only when query(explain=True).
+    # None distinguishes "not requested" from "requested, no factors".
+    explanation: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass
@@ -54,6 +107,10 @@ class AgentStats:
     last_consolidation: Optional[str]
     last_seen: Optional[str]
 
+    # v3.4 — warm rows awaiting re-embedding under the current model. Omitted
+    # when embeddings are disabled, where the answer is "unknown", not zero.
+    stale_embedding_count: Optional[int] = None
+
 
 @dataclass
 class MemoryHealth:
@@ -67,6 +124,12 @@ class MemoryHealth:
     knowledge_stability_pct: float
     retrieval_count_24h: int
     contradiction_rate: float
+
+    # v2.6 — staleness and knowledge-gap tracking. Always sent by v2.6+
+    # servers; the zero defaults cover pre-v2.6 ones.
+    stale_memory_count: int = 0
+    avg_staleness: float = 0.0
+    knowledge_gap_count_7d: int = 0
 
 
 @dataclass
@@ -99,6 +162,25 @@ class SleepCycleResult:
     phase5_reflection: bool
     tokens_used: int
     duration_ms: int
+
+    # Counters the engine always emits. Zero is the correct reading both when
+    # the phase did no work and when the server predates the phase.
+    phase5b_cold_purged: int = 0
+    schemas_detected: int = 0
+    conflicts_resolved: int = 0
+    audit_records_archived: int = 0
+
+    # Counters the engine emits only when non-zero — it assigns each key
+    # post-hoc behind `if counter > 0`, so an omitted key means exactly 0.
+    capacity_evicted: int = 0
+    temporal_expired: int = 0
+    procedures_evolved: int = 0
+    embeddings_migrated: int = 0
+    embeddings_migration_backlog: int = 0
+    deprecated_decayed: int = 0
+    epistemic_promoted: int = 0  # v3.9 — Sleep Phase 5.12
+    causal_edges_updated: int = 0  # v3.10 — Sleep Phase 6.1
+    principles_extracted: int = 0  # v3.11 — Sleep Phase 5.11
 
 
 @dataclass

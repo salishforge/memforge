@@ -20,7 +20,7 @@ from .conversation import ConversationMemory
 from .types import (
     AddResult, QueryResult, ConsolidateResult, ClearResult, AgentStats,
     MemoryHealth, ResumeContext, FeedbackResult, SleepCycleResult,
-    ReflectionResult, MemoryHints,
+    ReflectionResult, MemoryHints, from_response,
 )
 
 __version__ = "0.1.0"
@@ -41,4 +41,5 @@ __all__ = [
     "FeedbackResult",
     "SleepCycleResult",
     "ReflectionResult",
+    "from_response",
 ]
