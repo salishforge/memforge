@@ -310,6 +310,7 @@ const DEFAULTS: MemForgeConfig = {
   temporalDecayRate: 0,
   consolidationInnerBatchSize: 50,
   keywordOverlapBoost: 0.3,
+  hybridSemanticWeight: 1.5,
   temporalProximityDays: 7,
   enableLlmRerank: false,
   enableLlmIngest: false,
@@ -1167,11 +1168,15 @@ Ranking (numbers only):`;
       }
     });
 
-    // Semantic results weighted 1.5x — paraphrase matching is the primary failure mode
-    // in conversational memory retrieval (users ask differently than memories are stored)
+    // Semantic arm weighted above 1.0 because paraphrase matching is the
+    // primary failure mode in conversational memory retrieval (users ask
+    // differently than memories are stored). The multiplier is configurable —
+    // at 1.5 with K=60, semantic ranks 1-31 outscore a keyword-only rank-1
+    // hit, which is a strong thumb on the scale and worth measuring.
+    const semanticWeight = this.config.hybridSemanticWeight ?? 1.5;
     semanticResults.forEach((row, idx) => {
       const key = String(row.id);
-      const rrf = 1.5 / (K + idx + 1);
+      const rrf = semanticWeight / (K + idx + 1);
       const existing = scores.get(key);
       if (existing) {
         existing.score += rrf;
