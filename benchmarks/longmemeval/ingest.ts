@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig, type BenchmarkConfig } from '../lib/config.js';
 import { createLimiter } from '../lib/concurrency.js';
+import { selectSubset, resolveStrategy } from '../lib/sample.js';
 import type { LongMemEvalInstance, IngestManifest } from './types.js';
 
 // Dynamic import to avoid module-level side effects
@@ -88,8 +89,16 @@ export async function main(configOverride?: BenchmarkConfig): Promise<IngestMani
   // Load dataset
   const dataFile = join(config.datasetDir, 'longmemeval_s.json');
   const dataset = JSON.parse(readFileSync(dataFile, 'utf-8')) as LongMemEvalInstance[];
-  const questions = dataset.slice(config.questionOffset, config.questionOffset + config.questionLimit);
-  console.log(`Loaded ${dataset.length} instances, processing ${questions.length}`);
+  const strategy = resolveStrategy(process.env['BENCHMARK_SAMPLE']);
+  const selected = selectSubset(dataset, config.questionLimit, config.questionOffset, strategy);
+  const questions = selected.map((s) => s.instance);
+  const typeCounts = questions.reduce<Record<string, number>>((acc, q) => {
+    const t = q.question_type ?? 'unknown';
+    acc[t] = (acc[t] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(`Loaded ${dataset.length} instances, processing ${questions.length} (sampling: ${strategy})`);
+  console.log(`  type mix: ${Object.entries(typeCounts).map(([t, n]) => `${t}=${n}`).join(', ')}`);
 
   // Health check
   const client = await createClient(config);
@@ -107,7 +116,7 @@ export async function main(configOverride?: BenchmarkConfig): Promise<IngestMani
   const totalStart = performance.now();
 
   const promises = questions.map((instance, i) => {
-    const questionIndex = config.questionOffset + i;
+    const questionIndex = selected[i]!.datasetIndex;
     return limit(async () => {
       // Retry up to 2 times on transient failures (timeout, connection reset)
       for (let attempt = 0; attempt < 3; attempt++) {

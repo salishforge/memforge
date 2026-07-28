@@ -62,10 +62,40 @@ const counters: CacheCounters = { hits: 0, misses: 0, sets: 0, invalidations: 0,
 let redisClient: RedisClientType | null = null;
 let connectionPromise: Promise<RedisClientType | null> | null = null;
 
+/**
+ * Circuit breaker for an unreachable Redis.
+ *
+ * A failed connect costs ~7.5s: connectTimeout plus the reconnect backoff
+ * ladder before the client gives up. Without this, that price was paid on
+ * *every* cache read, because the failed attempt left no memory of itself —
+ * so a deployment with Redis simply absent (a documented, supported
+ * configuration) had multi-second latency on every cached endpoint while
+ * appearing to "degrade gracefully".
+ *
+ * After a failure we skip Redis outright until the cooldown expires, then
+ * allow exactly one probe. Reads fall through to the database, which is the
+ * intended degraded behaviour — just immediately instead of eventually.
+ */
+const CONNECT_FAILURE_COOLDOWN_MS = parseInt(
+  process.env['REDIS_RETRY_COOLDOWN_MS'] ?? '30000',
+  10,
+);
+let connectFailedAt = 0;
+
+/** Test seam: forget the breaker state so a suite can exercise both paths. */
+export function resetRedisCircuitBreaker(): void {
+  connectFailedAt = 0;
+}
+
 // ─── Connection ───────────────────────────────────────────────────────────────
 
 export async function getRedis(): Promise<RedisClientType | null> {
   if (redisClient?.isOpen) return redisClient;
+
+  // Breaker open — fail fast rather than re-paying the connect timeout.
+  if (connectFailedAt !== 0 && Date.now() - connectFailedAt < CONNECT_FAILURE_COOLDOWN_MS) {
+    return null;
+  }
 
   // Coalesce concurrent connection attempts
   if (connectionPromise) return connectionPromise;
@@ -103,9 +133,14 @@ export async function getRedis(): Promise<RedisClientType | null> {
       const safeUrl = url.replace(/:\/\/[^@]*@/, '://*:*@');
       log.info({ url: safeUrl }, 'Redis connected');
       redisClient = client;
+      connectFailedAt = 0; // recovered — close the breaker
       return client;
     } catch (err) {
-      log.error({ err }, 'Redis connection failed — operating without cache');
+      connectFailedAt = Date.now();
+      log.error(
+        { err, cooldownMs: CONNECT_FAILURE_COOLDOWN_MS },
+        'Redis connection failed — operating without cache; suppressing retries for the cooldown',
+      );
       return null;
     } finally {
       connectionPromise = null;

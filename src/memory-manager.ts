@@ -966,14 +966,33 @@ Ranking (numbers only):`;
     params.push(limit);
     const limitIdx = params.length;
 
+    // plainto_tsquery ANDs every lexeme, which is the wrong semantics for a
+    // natural-language question: "what kind of exercise did I do" becomes
+    // 'kind' & 'exercis' & 'say', and a short memory almost never contains
+    // all of them. Measured on the LongMemEval corpus, the AND form matched
+    // 0 rows where the OR form matched 16 — keyword search was returning at
+    // most one result per query, and hybrid's keyword arm contributed almost
+    // nothing to the fusion.
+    //
+    // Rewriting the operators to OR restores graded matching; ts_rank_cd then
+    // does the discriminating, ranking rows that match more query lexemes (and
+    // match them closer together) above weak single-term hits. Precision is
+    // preserved by ranking plus LIMIT rather than by refusing to match.
+    //
+    // The rewrite goes through plainto_tsquery rather than string-building a
+    // tsquery, so stemming, stop-word removal and escaping stay Postgres's
+    // job — the input is never interpolated into query syntax.
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
-              epistemic_status, evidence_count,
-              ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * (0.5 + 0.5 * importance) AS rank
-       FROM warm_tier
-       WHERE agent_id = $1
-         AND namespace = $3
-         AND content_tsv @@ plainto_tsquery('english', $2)
+      `WITH q AS (
+         SELECT replace(plainto_tsquery('english', $2)::text, '&', '|')::tsquery AS tsq
+       )
+       SELECT w.id, w.content, w.summary, w.metadata, w.consolidated_at, w.time_start, w.time_end,
+              w.context_signals, w.epistemic_status, w.evidence_count,
+              ts_rank_cd(w.content_tsv, q.tsq) * (0.5 + 0.5 * w.importance) AS rank
+       FROM warm_tier w, q
+       WHERE w.agent_id = $1
+         AND w.namespace = $3
+         AND w.content_tsv @@ q.tsq
          ${timeFilter}
        ORDER BY rank DESC
        LIMIT $${limitIdx}`,
