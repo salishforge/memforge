@@ -343,7 +343,7 @@ const DEFAULTS: MemForgeConfig = {
   temporalDecayRate: 0,
   consolidationInnerBatchSize: 50,
   keywordOverlapBoost: 0.3,
-  hybridSemanticWeight: 1.5,
+  hybridSemanticWeight: 1.0,
   temporalProximityDays: 7,
   enableLlmRerank: false,
   enableLlmIngest: false,
@@ -1201,12 +1201,16 @@ Ranking (numbers only):`;
       }
     });
 
-    // Semantic arm weighted above 1.0 because paraphrase matching is the
-    // primary failure mode in conversational memory retrieval (users ask
-    // differently than memories are stored). The multiplier is configurable —
-    // at 1.5 with K=60, semantic ranks 1-31 outscore a keyword-only rank-1
-    // hit, which is a strong thumb on the scale and worth measuring.
-    const semanticWeight = this.config.hybridSemanticWeight ?? 1.5;
+    // Equal-weighted RRF. The arms were previously fused 1.5:1 in favour of
+    // semantic, on the theory that paraphrase matching is the primary failure
+    // mode — but that ratio was calibrated while the keyword arm was returning
+    // roughly one result per query (the plainto_tsquery AND-semantics bug), so
+    // it was fit against a broken arm. Measured across all 500 LongMemEval
+    // questions after that arm was repaired, 1.0 beats 1.5 on R@1, R@5 and
+    // R@10, and halves the cases where fusion buries a session the lexical arm
+    // ranked first. Configurable via HYBRID_SEMANTIC_WEIGHT; the optimum
+    // depends on the embedding model, so measure before moving it.
+    const semanticWeight = this.config.hybridSemanticWeight ?? 1.0;
     semanticResults.forEach((row, idx) => {
       const key = String(row.id);
       const rrf = semanticWeight / (K + idx + 1);

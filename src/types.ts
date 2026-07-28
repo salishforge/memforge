@@ -808,11 +808,11 @@ export interface MemForgeConfig {
   keywordOverlapBoost: number;
   /**
    * Weight applied to the semantic arm's RRF contribution in hybrid search
-   * (default 1.5). Above 1.0 the semantic ranking dominates: with the standard
-   * RRF constant K=60, a weight of 1.5 means semantic ranks 1-31 all outscore
-   * a keyword-only rank-1 hit, so lexical matches the vector arm missed are
-   * effectively invisible. Exposed as HYBRID_SEMANTIC_WEIGHT so the balance
-   * can be measured rather than assumed.
+   * (default 1.0 — equal weighting). Above 1.0 the semantic ranking dominates:
+   * with the standard RRF constant K=60, a weight of 1.5 means semantic ranks
+   * 1-31 all outscore a keyword-only rank-1 hit, so lexical matches the vector
+   * arm missed become effectively invisible. Exposed as HYBRID_SEMANTIC_WEIGHT
+   * so the balance can be measured rather than assumed.
    */
   hybridSemanticWeight: number;
   /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). */
