@@ -129,6 +129,12 @@ export class MemForgeClient {
     epistemic?: 'only_established' | 'include_provisional' | 'include_contested' | 'all';
     /** Attach per-result explanation factors (v3.10). */
     explain?: boolean;
+    /**
+     * Per-result token budget: return only the passages of each memory that are
+     * relevant to `q`. A consolidated memory is a whole conversation while the
+     * answer is usually one exchange, so this is often a large context saving.
+     */
+    snippetTokens?: number;
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -139,6 +145,7 @@ export class MemForgeClient {
     if (options.namespace) params.set('namespace', options.namespace);
     if (options.epistemic) params.set('epistemic', options.epistemic);
     if (options.explain) params.set('explain', 'true');
+    if (options.snippetTokens !== undefined) params.set('snippet_tokens', String(options.snippetTokens));
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 

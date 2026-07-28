@@ -263,6 +263,13 @@ export interface QueryOptions {
   decayRate?: number;
   /** Token budget — return results fitting within this many tokens (estimate: content.length/4). */
   maxTokens?: number;
+  /**
+   * Per-result budget: reduce each memory to the passages most relevant to `q`,
+   * within this many tokens. A consolidated memory is a whole conversation while
+   * the answer is usually one exchange, so an agent otherwise pays for the rest.
+   * Omitted or 0 returns full content. Lexical and deterministic — no LLM call.
+   */
+  snippetTokens?: number;
   /** Namespace to search within (default: 'default') */
   namespace?: string;
   /** Restrict results to a given epistemic confidence level (v3.9). */

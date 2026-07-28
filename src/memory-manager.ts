@@ -11,6 +11,7 @@ import { emitWebhookEvent } from './webhooks.js';
 import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
+import { extractRelevantPassages } from './snippet.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema, SessionIdSchema } from './schemas.js';
 import { getConfig } from './config.js';
@@ -872,6 +873,17 @@ Ranking (numbers only):`;
     // Optional LLM reranking (opt-in via ENABLE_LLM_RERANK=true)
     if (this.config.enableLlmRerank && this.llm && results.length > 1) {
       results = await this.rerankWithLlm(opts.q, results);
+    }
+
+    // Reduce each memory to its query-relevant passages. Applied after
+    // reranking (which reads full content to judge relevance) and before the
+    // overall token budget, so the budget counts what the caller will actually
+    // receive rather than what was retrieved.
+    if (opts.snippetTokens && opts.snippetTokens > 0) {
+      results = results.map((r) => ({
+        ...r,
+        content: extractRelevantPassages(r.content, opts.q, opts.snippetTokens!),
+      }));
     }
 
     // Trim results to fit within caller-specified token budget

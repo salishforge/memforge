@@ -442,6 +442,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const before = qstr(req.query['before']);
     const decay = qstr(req.query['decay']);
     const maxTokens = qstr(req.query['max_tokens']);
+    const snippetTokens = qstr(req.query['snippet_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
     const rawEpistemic = qstr(req.query['epistemic']);
     const rawExplain = qstr(req.query['explain']);
@@ -485,6 +486,12 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
+    const snippetTokensNum = snippetTokens !== undefined ? parseInt(snippetTokens, 10) : undefined;
+    if (snippetTokensNum !== undefined && (isNaN(snippetTokensNum) || snippetTokensNum < 1)) {
+      fail(res, 400, '"snippet_tokens" must be a positive integer');
+      return;
+    }
+
     let namespace: string | undefined;
     if (rawNamespace !== undefined) {
       const nsResult = NamespaceSchema.safeParse(rawNamespace);
@@ -515,7 +522,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, namespace, epistemic, explain });
+    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, snippetTokens: snippetTokensNum, namespace, epistemic, explain });
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -534,6 +541,7 @@ export function createApp(deps: AppDependencies): express.Express {
         before: beforeDate,
         decayRate,
         maxTokens: maxTokensNum,
+        snippetTokens: snippetTokensNum,
         namespace,
         epistemic,
         explain,

@@ -210,13 +210,14 @@ export interface QueryKeyParams {
   before?: string;
   decay?: string;
   maxTokens?: number;
+  snippetTokens?: number;
   namespace?: string;
   epistemic?: string;
   explain?: boolean;
 }
 
 export function queryKey(agentId: string, q: string, limit: number, p: QueryKeyParams): string {
-  const suffix = `${p.mode ?? 'auto'}:${p.after ?? ''}:${p.before ?? ''}:${p.decay ?? ''}:${p.maxTokens ?? ''}:${p.namespace ?? ''}:${p.epistemic ?? ''}:${p.explain ?? false}`;
+  const suffix = `${p.mode ?? 'auto'}:${p.after ?? ''}:${p.before ?? ''}:${p.decay ?? ''}:${p.maxTokens ?? ''}:${p.snippetTokens ?? ''}:${p.namespace ?? ''}:${p.epistemic ?? ''}:${p.explain ?? false}`;
   return searchKey(agentId, `${q}:${suffix}`, limit);
 }
 
