@@ -2,18 +2,24 @@
 //
 // Runs the full LongMemEval pipeline: retrieve → generate answer → LLM judge
 // Official metric: end-to-end QA accuracy (not retrieval R@5)
-// Judge: gpt-4o-2024-08-06 (per paper's protocol, >97% human agreement)
 //
-// Usage: npx tsx benchmarks/longmemeval-qa/evaluate.ts [--limit=100] [--judge=openai]
+// Judge and reader default to Ollama (qwen3.5:cloud) so a run costs nothing
+// and needs no API key. Scores from a non-GPT-4o judge track relative
+// progress but are NOT comparable to published LongMemEval numbers — see
+// ../lib/llm.ts and the banner emitted below.
+//
+// Usage: npx tsx benchmarks/longmemeval-qa/evaluate.ts [--limit=100]
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig, type BenchmarkConfig } from '../lib/config.js';
+import { chat, loadLlmConfig, isPaperProtocolJudge } from '../lib/llm.js';
+import type { QueryMode } from '../../src/types.js';
 import type { LongMemEvalInstance, QAQuestionResult } from './types.js';
 
-const JUDGE_MODEL = process.env['QA_JUDGE_MODEL'] ?? 'gpt-4o-2024-08-06';
-const OPENAI_API_KEY = process.env['OPENAI_API_KEY'];
+const LLM = loadLlmConfig();
+const JUDGE_MODEL = LLM.judgeModel;
 
 async function createClient(config: BenchmarkConfig) {
   const { MemForgeClient } = await import('../../src/client.js');
@@ -28,50 +34,37 @@ async function judgeAnswer(
   expectedAnswer: string,
   generatedAnswer: string,
 ): Promise<{ correct: boolean; score: number; reasoning: string }> {
-  if (!OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY required for QA judging. Set QA_JUDGE_MODEL to use alternative judge.');
-  }
-
-  // Use OpenAI API directly to avoid external SDK dependency
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: JUDGE_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `You are an expert judge evaluating AI agent answers against gold standard answers.
+  const content = await chat(LLM, JUDGE_MODEL, {
+    system: `You are an expert judge evaluating AI agent answers against gold standard answers.
 Rate the generated answer on a scale of 0.0 to 1.0 based on factual correctness and completeness.
 Score 1.0 = fully correct and complete, 0.0 = completely wrong or irrelevant.
 Consider partial credit for answers that contain some correct information.
 Output JSON: {"score": 0.0-1.0, "correct": true/false, "reasoning": "brief explanation"}`,
-        },
-        {
-          role: 'user',
-          content: `Question: ${question}\n\nGold Answer: ${expectedAnswer}\n\nGenerated Answer: ${generatedAnswer}`,
-        },
-      ],
-      temperature: 0.0,
-      response_format: { type: 'json_object' },
-    }),
+    user: `Question: ${question}\n\nGold Answer: ${expectedAnswer}\n\nGenerated Answer: ${generatedAnswer}`,
+    temperature: 0.0,
+    json: true,
   });
 
-  if (!response.ok) {
-    throw new Error(`Judge API error: ${response.status} ${response.statusText}`);
+  let parsed: { score?: unknown; correct?: unknown; reasoning?: unknown };
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // Smaller judges occasionally wrap JSON in prose despite json mode. Fail
+    // loudly with the payload rather than scoring the question 0 — a silent
+    // zero is indistinguishable from a genuinely wrong answer and would
+    // depress the headline accuracy for a transport-level reason.
+    throw new Error(`Judge "${JUDGE_MODEL}" returned non-JSON: ${content.slice(0, 200)}`);
   }
 
-  const result = await response.json();
-  const content = result.choices[0].message.content;
-  const parsed = JSON.parse(content);
+  const score = typeof parsed.score === 'number' ? parsed.score : Number(parsed.score);
+  if (!Number.isFinite(score)) {
+    throw new Error(`Judge "${JUDGE_MODEL}" returned no usable score: ${content.slice(0, 200)}`);
+  }
 
   return {
-    score: parsed.score,
-    correct: parsed.correct,
-    reasoning: parsed.reasoning,
+    score,
+    correct: typeof parsed.correct === 'boolean' ? parsed.correct : score >= 0.5,
+    reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
   };
 }
 
@@ -80,47 +73,18 @@ async function generateAnswer(
   retrievedContext: string[],
   readerModel?: string,
 ): Promise<string> {
-  const model = readerModel ?? process.env['QA_READER_MODEL'] ?? 'gpt-4o-2024-08-06';
-  const apiKey = process.env['OPENAI_API_KEY'];
-
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY required for answer generation');
-  }
-
+  const model = readerModel ?? LLM.readerModel;
   const context = retrievedContext.join('\n\n---\n\n');
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        {
-          role: 'system',
-          content: `You are an AI agent answering questions based on retrieved context.
+  return chat(LLM, model, {
+    system: `You are an AI agent answering questions based on retrieved context.
 Use ONLY the information in the provided context to answer.
 If the context doesn't contain enough information, say so clearly.
 Be concise and factual. Cite specific details from the context.`,
-        },
-        {
-          role: 'user',
-          content: `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`,
-        },
-      ],
-      temperature: 0.3,
-      max_tokens: 500,
-    }),
+    user: `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`,
+    temperature: 0.3,
+    maxTokens: 500,
   });
-
-  if (!response.ok) {
-    throw new Error(`Reader API error: ${response.status} ${response.statusText}`);
-  }
-
-  const result = await response.json();
-  return result.choices[0].message.content ?? '';
 }
 
 async function evaluateQuestion(
@@ -137,7 +101,7 @@ async function evaluateQuestion(
   const results = await client.query(agentId, {
     q: instance.question,
     limit: maxK,
-    mode: config.queryModes[0] ?? 'hybrid',
+    mode: (config.queryModes[0] ?? 'hybrid') as QueryMode,
   });
   const queryMs = performance.now() - queryStart;
 
@@ -211,15 +175,22 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
   // Parse CLI args
   for (const arg of process.argv.slice(2)) {
     const limitMatch = arg.match(/^--limit=(\d+)$/);
-    if (limitMatch?.[1]) config.limit = parseInt(limitMatch[1], 10);
+    if (limitMatch?.[1]) config.questionLimit = parseInt(limitMatch[1], 10);
   }
 
   console.log('=== LongMemEval QA Accuracy Evaluation ===');
   console.log(`MemForge URL: ${config.memforgeUrl}`);
+  console.log(`LLM endpoint: ${LLM.baseUrl}${LLM.apiKey ? ' (authenticated)' : ' (no API key)'}`);
   console.log(`Judge model: ${JUDGE_MODEL}`);
-  console.log(`Reader model: ${process.env['QA_READER_MODEL'] ?? 'gpt-4o-2024-08-06'}`);
+  console.log(`Reader model: ${LLM.readerModel}`);
+  if (!isPaperProtocolJudge(JUDGE_MODEL)) {
+    console.log('');
+    console.log(`NOTE: judge "${JUDGE_MODEL}" is not the paper protocol judge (gpt-4o).`);
+    console.log('      Scores track relative progress but are NOT comparable to published');
+    console.log('      LongMemEval numbers. Re-run with a gpt-4o judge before publishing.');
+  }
   console.log(`Mode: ${config.queryModes.join(', ')}`);
-  console.log(`Limit: ${config.limit ?? 500}`);
+  console.log(`Limit: ${config.questionLimit}`);
   console.log('');
 
   // Load dataset
@@ -229,8 +200,8 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
   }
 
   const dataset: LongMemEvalInstance[] = JSON.parse(readFileSync(dataPath, 'utf-8'));
-  const limit = config.limit ?? dataset.length;
-  const offset = config.offset ?? 0;
+  const limit = config.questionLimit || dataset.length;
+  const offset = config.questionOffset;
   const subset = dataset.slice(offset, offset + limit);
 
   console.log(`Dataset loaded: ${dataset.length} total, evaluating ${limit} (offset ${offset})`);
@@ -259,6 +230,7 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
   console.log('Evaluating questions...');
   for (let i = 0; i < subset.length; i++) {
     const instance = subset[i];
+    if (!instance) continue;
     const questionIndex = offset + i;
 
     try {
@@ -296,7 +268,7 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
   }
 
   // Cleanup
-  if (config.cleanup) {
+  if (config.cleanupAfter) {
     console.log('Cleaning up...');
     try {
       await client.clear(agentId);
@@ -325,7 +297,11 @@ function saveResults(results: QAQuestionResult[], config: BenchmarkConfig, offse
     offset,
     count: results.length,
     judgeModel: JUDGE_MODEL,
-    readerModel: process.env['QA_READER_MODEL'] ?? 'gpt-4o-2024-08-06',
+    readerModel: LLM.readerModel,
+    llmEndpoint: LLM.baseUrl,
+    // Stamped into every saved run so a number can never be quoted later
+    // without the judge that produced it.
+    paperProtocolJudge: isPaperProtocolJudge(JUDGE_MODEL),
     modes: config.queryModes,
     results,
   };

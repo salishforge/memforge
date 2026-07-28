@@ -220,9 +220,23 @@ npm run benchmark:longmemeval-qa
 
 ---
 
-## Alternative: Using Ollama (Free, Local)
+## Default: Ollama (Free, Local)
 
-If you have Ollama installed and don't want to use OpenAI:
+The QA harness judges and generates with Ollama by default — no API key, no
+per-run cost. `qwen3.5:cloud` is the default for both roles.
+
+To use OpenAI instead (required before publishing — see comparability note
+below):
+
+```bash
+export QA_API_BASE=https://api.openai.com/v1
+export OPENAI_API_KEY=sk-...
+export QA_JUDGE_MODEL=gpt-4o-2024-08-06
+export QA_READER_MODEL=gpt-4o-2024-08-06
+npm run benchmark:longmemeval-qa
+```
+
+### Ollama setup
 
 ### Install Ollama
 ```bash
@@ -236,21 +250,37 @@ ollama pull qwen3.5:cloud
 # or: ollama pull qwen3.5:397b-cloud  # if available
 ```
 
-### Run Benchmark with Ollama
+### Run Benchmark with Ollama (default — no configuration needed)
 ```bash
-$env:QA_JUDGE_MODEL="qwen3.5:cloud"
-$env:QA_READER_MODEL="qwen3.5:cloud"
-$env:OLLAMA_BASE_URL="http://localhost:11434"
-# Note: OPENAI_API_KEY not required when using Ollama
-
-npm run benchmark:longmemeval-qa
+npm run benchmark:longmemeval-qa            # 500 questions
+BENCHMARK_LIMIT=10 npm run benchmark:longmemeval-qa   # smoke test
 ```
+
+Override only if your setup differs from the defaults:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama host root (no `/v1`) |
+| `QA_JUDGE_MODEL` | `qwen3.5:cloud` | Judge |
+| `QA_READER_MODEL` | `qwen3.5:cloud` | Reader/generator |
+| `QA_API_BASE` | `$OLLAMA_BASE_URL/v1` | Full OpenAI-compatible endpoint |
+| `QA_API_KEY` | `$OPENAI_API_KEY` | Sent as Bearer when set; Ollama ignores it |
+| `QA_TIMEOUT_MS` | `180000` | Per-request timeout |
 
 **Trade-offs:**
 - ✅ Free, no API costs
 - ✅ Private, runs locally
-- ❌ Results not directly comparable to leaderboard (paper uses GPT-4o)
+- ❌ **Results not comparable to published LongMemEval numbers** — the paper's
+  protocol judges with GPT-4o (>97% human agreement). A different judge scores
+  differently, so these numbers are valid only for tracking MemForge against
+  itself.
 - ❌ May be slower depending on hardware
+
+This is enforced, not just documented: the runner prints a warning when the
+judge is not `gpt-4o*`, the generated report replaces the comparability claim
+with an explicit "not comparable" notice, and every saved manifest records
+`judgeModel` and `paperProtocolJudge` so a number cannot be quoted later
+without the judge that produced it.
 
 **Recommendation:** Use Ollama for development/testing, OpenAI for final publishable results.
 

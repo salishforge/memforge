@@ -20,7 +20,7 @@ MemForge has a production-grade foundation with CI fully green:
 
 - **Tiered memory** with hot → warm → cold lifecycle
 - **Sleep cycles** — 10-phase background processor (scoring, triage, conflict resolution, revision, graph maintenance, reflection, schema detection)
-- **Hybrid retrieval** — dual-tokenizer FTS + pgvector HNSW semantic search + asymmetric RRF fusion (93.2% R@5 on LongMemEval)
+- **Hybrid retrieval** — dual-tokenizer FTS + pgvector HNSW semantic search + asymmetric RRF fusion (LongMemEval R@5 being re-measured — prior figure retracted)
 - **Active Knowledge Management** — staleness detection, prioritized experience replay, conflict resolution, temporal chains, knowledge gap detection, schema crystallization
 - **Cross-agent shared memory** — hierarchical pools, hearsay discounting, per-domain reputation
 - **Cryptographic audit chain** — HMAC integrity verification across all 14 mutation points

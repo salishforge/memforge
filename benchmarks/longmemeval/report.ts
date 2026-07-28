@@ -41,16 +41,28 @@ function generateMarkdown(reports: BenchmarkReport[]): string {
     // Overall Recall table
     lines.push('### Retrieval Quality');
     lines.push('');
-    lines.push('| Metric | Score |');
-    lines.push('|--------|-------|');
-    const ks = Object.keys(report.overall.recallAt).map(Number).sort((a, b) => a - b);
+    lines.push('> **Recall@k (sessions)** is the comparable metric: a hit means a gold');
+    lines.push('> session is among the first k distinct sessions by rank — LongMemEval\'s');
+    lines.push('> definition. **Recall@k (rows)** counts a hit anywhere inside the top-k');
+    lines.push('> retrieved rows; because consolidation packs multiple sessions per row it');
+    lines.push('> is strictly more generous and is NOT comparable to published figures.');
+    lines.push('');
+    lines.push('| Metric | Sessions (comparable) | Rows (native) |');
+    lines.push('|--------|----------------------|---------------|');
+    const ks = Object.keys(report.overall.recallAtSessions).map(Number).sort((a, b) => a - b);
     for (const k of ks) {
-      lines.push(`| Recall@${k} | ${formatPct(report.overall.recallAt[k] ?? 0)} |`);
+      const sess = formatPct(report.overall.recallAtSessions[k] ?? 0);
+      const rows = formatPct(report.overall.recallAtRows[k] ?? 0);
+      lines.push(`| Recall@${k} | ${sess} | ${rows} |`);
     }
     lines.push('');
+    lines.push(`Sessions packed per retrieved row: **${report.overall.sessionsPerRow.toFixed(1)}**`);
+    lines.push('(1.0 means rows and sessions are 1:1 and the two columns converge.)');
+    lines.push('');
 
-    // Baseline comparison
-    lines.push('**Baselines:** Hippo 74.0% R@5 (BM25 keyword), Zep +18.5% over full-context');
+    // Baseline comparison — only the sessions column is on the same footing.
+    lines.push('**Baselines (compare against the Sessions column only):** Hippo 74.0% R@5');
+    lines.push('(BM25 keyword), Zep +18.5% over full-context');
     lines.push('');
 
     // Per-category table
@@ -58,11 +70,11 @@ function generateMarkdown(reports: BenchmarkReport[]): string {
     lines.push('');
     const categories = Object.entries(report.perCategory).sort(([a], [b]) => a.localeCompare(b));
     if (categories.length > 0) {
-      const headerKs = ks.map((k) => `R@${k}`).join(' | ');
+      const headerKs = ks.map((k) => `R@${k} (sessions)`).join(' | ');
       lines.push(`| Category | Count | ${headerKs} |`);
       lines.push(`|----------|-------|${ks.map(() => '------').join('|')}|`);
       for (const [cat, data] of categories) {
-        const recalls = ks.map((k) => formatPct(data.recallAt[k] ?? 0)).join(' | ');
+        const recalls = ks.map((k) => formatPct(data.recallAtSessions[k] ?? 0)).join(' | ');
         lines.push(`| ${cat} | ${data.count} | ${recalls} |`);
       }
     }

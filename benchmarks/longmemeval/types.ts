@@ -25,7 +25,12 @@ export interface QuestionResult {
   expectedAnswer: string;
   answerSessionIds: number[];
   retrievedSessionIds: string[];
-  recallAt: Record<number, number>;
+  /** Paper-comparable: gold session among the first k distinct sessions by rank. */
+  recallAtSessions: Record<number, number>;
+  /** MemForge-native: gold session anywhere inside the top-k retrieved rows. */
+  recallAtRows: Record<number, number>;
+  /** Distinct sessions packed into each retrieved row — explains the gap above. */
+  sessionsPerRow: number;
   latency: {
     ingestMs: number;
     consolidateMs: number;
@@ -46,7 +51,8 @@ export interface LatencyStats {
 
 export interface CategoryResult {
   count: number;
-  recallAt: Record<number, number>;
+  recallAtSessions: Record<number, number>;
+  recallAtRows: Record<number, number>;
   latency: LatencyStats;
 }
 
@@ -57,7 +63,9 @@ export interface BenchmarkReport {
   queryMode: string;
   consolidationMode: string;
   overall: {
-    recallAt: Record<number, number>;
+    recallAtSessions: Record<number, number>;
+    recallAtRows: Record<number, number>;
+    sessionsPerRow: number;
     queryLatency: LatencyStats;
     ingestLatency: LatencyStats;
   };

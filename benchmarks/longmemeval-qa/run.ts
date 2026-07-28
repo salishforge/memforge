@@ -8,6 +8,9 @@ import { join } from 'node:path';
 import { loadConfig, type BenchmarkConfig } from '../lib/config.js';
 import { main as evaluate } from './evaluate.js';
 import type { QAQuestionResult, QAAggregateResult } from './types.js';
+import { loadLlmConfig, isPaperProtocolJudge } from '../lib/llm.js';
+
+const LLM = loadLlmConfig();
 
 function calculateStats(results: QAQuestionResult[]): QAAggregateResult {
   const totalQuestions = results.length;
@@ -18,12 +21,11 @@ function calculateStats(results: QAQuestionResult[]): QAAggregateResult {
   // Per-category breakdown
   const perCategory: Record<string, { count: number; correct: number; accuracy: number; avgScore: number }> = {};
   for (const result of results) {
-    if (!perCategory[result.questionType]) {
-      perCategory[result.questionType] = { count: 0, correct: 0, accuracy: 0, avgScore: 0 };
-    }
-    perCategory[result.questionType].count++;
-    if (result.correct) perCategory[result.questionType].correct++;
-    perCategory[result.questionType].avgScore += result.score ?? 0;
+    const bucket = perCategory[result.questionType]
+      ?? (perCategory[result.questionType] = { count: 0, correct: 0, accuracy: 0, avgScore: 0 });
+    bucket.count++;
+    if (result.correct) bucket.correct++;
+    bucket.avgScore += result.score ?? 0;
   }
 
   for (const category of Object.values(perCategory)) {
@@ -50,8 +52,8 @@ function calculateStats(results: QAQuestionResult[]): QAAggregateResult {
     perCategory,
     latency: avgLatency,
     tokensPerRetrieval,
-    judgeModel: process.env['QA_JUDGE_MODEL'] ?? 'gpt-4o-2024-08-06',
-    readerModel: process.env['QA_READER_MODEL'] ?? 'gpt-4o-2024-08-06',
+    judgeModel: LLM.judgeModel,
+    readerModel: LLM.readerModel,
     timestamp: new Date().toISOString(),
   };
 }
@@ -63,9 +65,21 @@ function generateReport(stats: QAAggregateResult, results: QAQuestionResult[]): 
   lines.push('');
   lines.push(`Generated: ${stats.timestamp}`);
   lines.push('');
-  lines.push('> **Important:** These are **end-to-end QA accuracy** scores (retrieve → generate → judge).');
-  lines.push('> This is the official LongMemEval metric, directly comparable to leaderboard entries.');
-  lines.push('> Judge: `' + stats.judgeModel + '` (per paper protocol, >97% human agreement)');
+  lines.push('> **Important:** These are **end-to-end QA accuracy** scores (retrieve → generate → judge),');
+  lines.push('> not retrieval recall.');
+  lines.push('');
+  if (isPaperProtocolJudge(stats.judgeModel)) {
+    lines.push('> Judge: `' + stats.judgeModel + '` — the paper protocol judge (>97% human agreement),');
+    lines.push('> so these scores are directly comparable to published LongMemEval entries.');
+  } else {
+    // The comparability claim is conditional on the judge. Emitting it
+    // unconditionally is how a local-model score gets quoted as a
+    // leaderboard result.
+    lines.push('> **Not comparable to published LongMemEval numbers.** Judge: `' + stats.judgeModel + '`,');
+    lines.push('> whereas the paper protocol judges with `gpt-4o` (>97% human agreement). These');
+    lines.push('> scores are valid for tracking relative progress between MemForge runs only.');
+    lines.push('> Re-run with `QA_JUDGE_MODEL=gpt-4o-2024-08-06` before publishing or comparing.');
+  }
   lines.push('');
   lines.push('## Overall Accuracy');
   lines.push('');
@@ -123,7 +137,7 @@ export async function main() {
   // Parse CLI args
   for (const arg of process.argv.slice(2)) {
     const limitMatch = arg.match(/^--limit=(\d+)$/);
-    if (limitMatch?.[1]) config.limit = parseInt(limitMatch[1], 10);
+    if (limitMatch?.[1]) config.questionLimit = parseInt(limitMatch[1], 10);
   }
 
   console.log('=== LongMemEval QA Accuracy Benchmark ===');

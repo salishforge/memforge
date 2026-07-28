@@ -104,7 +104,7 @@ All via environment variables:
 
 - **keyword**: PostgreSQL full-text search + trigram fallback. No embedding provider needed.
 - **semantic**: pgvector cosine similarity. Requires `EMBEDDING_PROVIDER=local`, `ollama`, or `openai`.
-- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** — achieves 93.2% retrieval R@5 / 96.4% R@10 with `EMBEDDING_PROVIDER=local`.
+- **hybrid**: Asymmetric reciprocal rank fusion of keyword + semantic (semantic 1.5× weight). Requires embedding provider. **Recommended** with `EMBEDDING_PROVIDER=local`. (Prior R@5/R@10 figures retracted — scorer defect; re-run in progress.)
 
 ### Output
 
@@ -122,7 +122,7 @@ Each session is tagged with `[SESSION_ID:xxx]` during ingestion. After consolida
 | System | Metric | R@5 | R@10 | Notes |
 |--------|--------|-----|------|-------|
 | MemPalace | retrieval R@5 | 96.6% | — | Dedicated graph-memory system, requires Neo4j |
-| **MemForge (hybrid)** | **retrieval R@5** | **93.2%** | **96.4%** | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
+| **MemForge (hybrid)** | **retrieval R@5** | _re-measuring_ | _re-measuring_ | Pure PostgreSQL, `EMBEDDING_PROVIDER=local` |
 | **MemForge (keyword)** | **retrieval R@5** | **35.0%** | **35.0%** | Pure PostgreSQL, no embedding provider needed (per-session FTS) |
 | Hippo (BM25) | retrieval R@5 | 74.0% | — | Zero dependencies, keyword only |
 | Zep | retrieval R@5 | Hippo +18.5% | — | Temporal knowledge graph |
