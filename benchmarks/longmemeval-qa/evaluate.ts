@@ -58,7 +58,11 @@ Output JSON: {"score": 0.0-1.0, "correct": true/false, "reasoning": "brief expla
 
   let parsed: { score?: unknown; correct?: unknown; reasoning?: unknown };
   try {
-    parsed = JSON.parse(stripCodeFence(content));
+    const raw: unknown = JSON.parse(stripCodeFence(content));
+    // Some judges wrap the verdict in a single-element array. Accepting that
+    // shape is cheap; rejecting it made the row permanently unscoreable, and
+    // a resume loop that retries errored rows then spins on it forever.
+    parsed = (Array.isArray(raw) ? raw[0] : raw) as typeof parsed;
   } catch {
     // Smaller judges occasionally wrap JSON in prose despite json mode. Fail
     // loudly with the payload rather than scoring the question 0 — a silent
