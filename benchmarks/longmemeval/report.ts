@@ -33,7 +33,21 @@ function generateMarkdown(reports: BenchmarkReport[]): string {
   for (const report of reports) {
     lines.push(`## LongMemEval — ${report.queryMode} mode`);
     lines.push('');
-    lines.push(`- Questions evaluated: ${report.questionsEvaluated}`);
+    // A partial run must never read like the official measurement. The
+    // generator overwrites RESULTS.md in place, so without this a 20-question
+    // smoke test silently replaces the published page.
+    const FULL_DATASET = 500;
+    const isFullRun = report.questionsEvaluated >= FULL_DATASET;
+    const sampling = process.env['BENCHMARK_SAMPLE'] === 'sequential' ? 'sequential' : 'stratified';
+    if (!isFullRun) {
+      lines.push(`> ## ⚠️ Partial run — not an official result`);
+      lines.push('>');
+      lines.push(`> ${report.questionsEvaluated} of ${FULL_DATASET} questions (${sampling} sample).`);
+      lines.push('> Reported for development iteration only. Publishable figures require a');
+      lines.push('> full 500-question run; cite nothing from this page until then.');
+      lines.push('');
+    }
+    lines.push(`- Questions evaluated: ${report.questionsEvaluated}${isFullRun ? '' : ` of ${FULL_DATASET} (${sampling} sample)`}`);
     lines.push(`- Consolidation mode: ${report.consolidationMode}`);
     lines.push(`- Timestamp: ${report.timestamp}`);
     lines.push('');
