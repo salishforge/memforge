@@ -23,10 +23,14 @@ export async function ingest(
 
   let ingested = 0;
   const errors: Array<{ index: number; error: string }> = [];
+  // Accumulates across every instance — the manifest below reports the full
+  // set. Previously declared inside the loop and read after it, which is a
+  // ReferenceError at runtime.
+  const allSessions = new Set<number>();
 
   for (let i = 0; i < instances.length; i++) {
     const instance = instances[i];
-    const allSessions = new Set<number>();
+    if (!instance) continue;
 
     try {
       // Ingest all haystack sessions for this question

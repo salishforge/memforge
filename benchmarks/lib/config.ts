@@ -12,6 +12,8 @@ export interface BenchmarkConfig {
   agentPrefix: string;
   concurrency: number;
   consolidationMode: 'concat' | 'summarize';
+  /** Hot-tier rows per inner consolidation batch; mirrors the server env var. */
+  consolidationBatchSize: number;
   cleanupAfter: boolean;
 }
 

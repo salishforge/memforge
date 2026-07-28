@@ -3,8 +3,13 @@
 This benchmark runs the **full LongMemEval pipeline**: retrieve → generate answer → LLM judge.
 
 **Official metric:** End-to-end QA accuracy (not retrieval R@5)
-**Judge:** `gpt-4o-2024-08-06` (per paper's protocol, >97% human agreement)
-**Reader:** `gpt-4o-2024-08-06` (configurable via `QA_READER_MODEL`)
+**Judge (default):** `qwen3.5:cloud` via local Ollama — free, no API key
+**Reader (default):** `qwen3.5:cloud` via local Ollama
+
+> Only a `gpt-4o*` judge follows the paper's protocol (>97% human agreement).
+> With any other judge these scores track relative progress but are **not**
+> comparable to published LongMemEval numbers. The runner warns, the report
+> says so, and each manifest records the judge used.
 
 ## Why This Matters
 
@@ -15,16 +20,18 @@ The official LongMemEval metric is **QA accuracy**, not retrieval Recall@5. Retr
 ## Quick Run (10 questions)
 
 ```bash
-OPENAI_API_KEY=sk-... BENCHMARK_LIMIT=10 npm run benchmark:longmemeval-qa
+BENCHMARK_LIMIT=10 npm run benchmark:longmemeval-qa
 ```
 
 ## Full Run (500 questions)
 
 ```bash
-OPENAI_API_KEY=sk-... npm run benchmark:longmemeval-qa
+npm run benchmark:longmemeval-qa
 ```
 
-> **Warning:** A full 500-question run costs ~$50–100 in OpenAI API charges (judge + reader calls).
+> **Cost:** $0 on the default Ollama path. A full 500-question run against
+> OpenAI (`QA_API_BASE=https://api.openai.com/v1`, `QA_JUDGE_MODEL=gpt-4o-2024-08-06`)
+> costs ~$50–100 in judge + reader calls.
 
 ## Configuration
 
@@ -34,9 +41,12 @@ All via environment variables:
 |----------|---------|-------------|
 | `MEMFORGE_URL` | `http://localhost:3333` | MemForge server URL |
 | `MEMFORGE_TOKEN` | (none) | Bearer token for auth |
-| `OPENAI_API_KEY` | (required) | OpenAI API key for judge and reader |
-| `QA_JUDGE_MODEL` | `gpt-4o-2024-08-06` | Judge model (must be >= GPT-4o quality) |
-| `QA_READER_MODEL` | `gpt-4o-2024-08-06` | Reader/generator model |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama host root (no `/v1`) |
+| `QA_API_BASE` | `$OLLAMA_BASE_URL/v1` | OpenAI-compatible endpoint |
+| `QA_API_KEY` | `$OPENAI_API_KEY` | Bearer token; unnecessary for Ollama |
+| `QA_TIMEOUT_MS` | `180000` | Per-request timeout |
+| `QA_JUDGE_MODEL` | `qwen3.5:cloud` | Judge model (use `gpt-4o-*` for comparable results) |
+| `QA_READER_MODEL` | `qwen3.5:cloud` | Reader/generator model |
 | `BENCHMARK_LIMIT` | `500` | Number of questions to evaluate |
 | `BENCHMARK_OFFSET` | `0` | Skip first N questions |
 | `BENCHMARK_MODES` | `hybrid` | Retrieval mode: keyword, semantic, hybrid |
