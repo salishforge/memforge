@@ -540,6 +540,13 @@ export class MemoryManager {
     namespace?: string,
     sessionId?: string,
     clientId?: string,
+    /**
+     * When the remembered event actually happened, if known. Distinct from the
+     * row's created_at, which is when MemForge stored it — for imported,
+     * backfilled or replayed memories those differ, and every temporal feature
+     * (after/before filters, proximity scoring, timeline) keys off the latter.
+     */
+    occurredAt?: Date,
   ): Promise<AddResult> {
     this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
@@ -597,10 +604,10 @@ export class MemoryManager {
     const contextSignals = this.inferContextSignals(content);
 
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals)],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals), occurredAt ?? null],
     );
 
     const result = rows[0]!;
@@ -1260,12 +1267,16 @@ Ranking (numbers only):`;
     const clauses: string[] = [];
     let idx = nextParamIdx;
 
+    // Prefer event time when the caller supplied one at write time. Without
+    // this, a conversation from 2023 imported today answers "what happened last
+    // week?" — the filter would be reading ingestion time. COALESCE keeps every
+    // pre-v3.13 row behaving exactly as before, since occurred_at is NULL there.
     if (after) {
-      clauses.push(`AND (time_end >= $${idx} OR (time_end IS NULL AND consolidated_at >= $${idx}))`);
+      clauses.push(`AND (COALESCE(occurred_at, time_end, consolidated_at) >= $${idx})`);
       idx++;
     }
     if (before) {
-      clauses.push(`AND (time_start <= $${idx} OR (time_start IS NULL AND consolidated_at <= $${idx}))`);
+      clauses.push(`AND (COALESCE(occurred_at, time_start, consolidated_at) <= $${idx})`);
     }
 
     return clauses.join(' ');
@@ -1461,8 +1472,9 @@ Ranking (numbers only):`;
             created_at: Date;
             session_id: string;
             context_signals: ContextSignals;
+            occurred_at: Date | null;
           }>(
-            `SELECT id, content, metadata, created_at, session_id, context_signals
+            `SELECT id, content, metadata, created_at, session_id, context_signals, occurred_at
              FROM hot_tier
              WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
@@ -1481,6 +1493,13 @@ Ranking (numbers only):`;
           const oldest = hotRows.rows[0]!.created_at;
           const newest = hotRows.rows[hotRows.rows.length - 1]!.created_at;
           const batchSize = hotRows.rows.length;
+          // Earliest event time among the contributing rows. Null when none
+          // carried one, in which case readers fall back to the ingestion
+          // columns and behaviour is unchanged from before v3.13.
+          const occurredAt = hotRows.rows
+            .map((r) => r.occurred_at)
+            .filter((d): d is Date => d instanceof Date)
+            .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
 
           // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7
           // across sampled pairs) — concat produces equivalent results without API cost.
@@ -1652,10 +1671,10 @@ Ranking (numbers only):`;
           // 'shared' or another value when WARM_CONSOLIDATION_TARGET is configured for
           // cross-project propagation).
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, context_signals)
-             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, $13)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, context_signals, occurred_at)
+             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, $13, $14)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals)],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals), occurredAt],
           );
           const warmRowId = warmRow.rows[0]!.id;
 

@@ -32,6 +32,14 @@ const JUDGE_MODEL = LLM.judgeModel;
  */
 const QA_MODE = (process.env['BENCHMARK_MODES']?.split(',')[0]?.trim() || 'hybrid') as QueryMode;
 
+/**
+ * Per-memory token budget. 0 (the default) sends whole memories, which is what
+ * every run before this measured. Set it to reduce each memory to the passages
+ * relevant to the question — the context saving without the evidence loss that
+ * narrowing QA_TOP_K incurs.
+ */
+const SNIPPET_TOKENS = parseInt(process.env['QA_SNIPPET_TOKENS'] ?? '0', 10) || 0;
+
 async function createClient(config: BenchmarkConfig) {
   const { MemForgeClient } = await import('../../src/client.js');
   return new MemForgeClient({
@@ -161,6 +169,7 @@ async function evaluateQuestion(
     q: instance.question,
     limit: maxK,
     mode: QA_MODE,
+    ...(SNIPPET_TOKENS > 0 ? { snippetTokens: SNIPPET_TOKENS } : {}),
   });
   const queryMs = performance.now() - queryStart;
 

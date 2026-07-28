@@ -79,6 +79,7 @@ const TOOLS: MCPToolDefinition[] = [
         limit: { type: 'integer', description: 'Max results (default 10)' },
         mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'], description: 'Search mode' },
         namespace: { type: 'string', description: 'Memory namespace (default: "default")' },
+        snippet_tokens: { type: 'integer', description: 'Return only the passages of each memory relevant to q, within this per-result token budget. A stored memory is often a whole conversation while the answer is one exchange, so this usually cuts context substantially. Omit for full content.' },
       },
       required: ['agent_id', 'q'],
     },
@@ -773,6 +774,7 @@ async function executeTool(client: MemForgeClient, name: string, args: Record<st
         limit: args['limit'] as number | undefined,
         mode: args['mode'] as 'keyword' | 'semantic' | 'hybrid' | undefined,
         namespace: args['namespace'] as string | undefined,
+        snippetTokens: args['snippet_tokens'] as number | undefined,
       });
 
     case 'memforge_timeline':

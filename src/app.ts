@@ -402,6 +402,24 @@ export function createApp(deps: AppDependencies): express.Express {
     const callerClientId = getClientId(req);
 
     try {
+      // Event time, when the caller knows it. Imported and backfilled memories
+      // are the whole point: created_at records when we stored it, which is not
+      // when it happened, and the temporal filters key off the latter.
+      const rawOccurredAt = (req.body as Record<string, unknown>)['occurred_at'];
+      let occurredAt: Date | undefined;
+      if (rawOccurredAt !== undefined && rawOccurredAt !== null) {
+        if (typeof rawOccurredAt !== 'string' && typeof rawOccurredAt !== 'number') {
+          fail(res, 400, '"occurred_at" must be an ISO 8601 string or epoch milliseconds');
+          return;
+        }
+        const parsed = new Date(rawOccurredAt);
+        if (isNaN(parsed.getTime())) {
+          fail(res, 400, '"occurred_at" is not a valid date');
+          return;
+        }
+        occurredAt = parsed;
+      }
+
       const result = await manager.add(
         getAgentId(req),
         storeContent,
@@ -411,6 +429,7 @@ export function createApp(deps: AppDependencies): express.Express {
         callerNamespace,
         callerSessionId,
         callerClientId,
+        occurredAt,
       );
       void invalidateAgent(getAgentId(req));
       ok(res, {
