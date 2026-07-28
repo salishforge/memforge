@@ -163,3 +163,42 @@ describe('session attribution in packed memories', () => {
     );
   });
 });
+
+describe('conversational adjacency', () => {
+  it('includes the reply to a matching turn', () => {
+    // The answer's own wording need not overlap the query — the question does.
+    // Selecting matching turns in isolation strands exactly those answers.
+    const content =
+      HEADER +
+      turn('user', 'Remind me, what did I study at university?') +
+      turn('assistant', 'You studied Business Administration.') +
+      turn('user', 'Unrelated chatter about pasta recipes and carbonara.');
+
+    const out = extractRelevantPassages(content, 'what did I study at university', 60);
+
+    assert.match(out, /what did I study/, 'the matching turn');
+    assert.match(out, /Business Administration/, 'the reply carrying the answer must come along');
+  });
+
+  it('includes the question that prompted a matching reply', () => {
+    const content =
+      HEADER +
+      turn('user', 'Some earlier context that frames things.') +
+      turn('assistant', 'Yes, your Business Administration degree is relevant there.') +
+      turn('user', 'Unrelated chatter about hiking trails in the mountains.');
+
+    const out = extractRelevantPassages(content, 'Business Administration degree', 60);
+
+    assert.match(out, /Business Administration/);
+    assert.match(out, /earlier context that frames/, 'the preceding turn gives the reply its meaning');
+  });
+
+  it('still respects the budget when pulling in neighbours', () => {
+    const content =
+      HEADER + Array.from({ length: 30 }, (_, i) => turn('user', `degree discussion number ${i} here`)).join('');
+
+    const out = extractRelevantPassages(content, 'degree', 40);
+
+    assert.ok(out.length <= 40 * 4 + HEADER.length + 80, `budget overshot: ${out.length}`);
+  });
+});

@@ -136,12 +136,32 @@ export function extractRelevantPassages(content: string, query: string, maxToken
   // silently returning the first N characters is what the caller would do.
   if (scored[0]!.hits === 0) return content.slice(0, budgetChars);
 
+  // A conversation's meaning lives in exchanges, not in isolated turns: the
+  // answer to "what degree did I graduate with" is usually in the reply to the
+  // turn that matched, or in the question that prompted the matching reply.
+  // Taking the highest-scoring turns alone routinely strands an answer whose
+  // own wording never overlaps the query — the vocabulary-mismatch case that
+  // scored worst on every benchmark category.
+  const byIndex = new Map(candidates.map((c) => [c.index, c]));
   let used = header ? header.text.length : 0;
   const picked: Segment[] = [];
-  for (const { segment: s } of scored) {
-    if (used + s.text.length > budgetChars && picked.length > 0) continue;
+  const taken = new Set<number>();
+
+  const take = (s: Segment | undefined): boolean => {
+    if (!s || taken.has(s.index)) return false;
+    if (used + s.text.length > budgetChars && picked.length > 0) return false;
     picked.push(s);
+    taken.add(s.index);
     used += s.text.length;
+    return true;
+  };
+
+  for (const { segment: s } of scored) {
+    if (!take(s)) continue;
+    // Pull in the neighbouring turns of a match, cheapest side first. These are
+    // best-effort: if the budget cannot fit them the match still stands alone.
+    take(byIndex.get(s.index + 1));
+    take(byIndex.get(s.index - 1));
   }
   if (picked.length === 0) return content.slice(0, budgetChars);
 
