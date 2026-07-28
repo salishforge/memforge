@@ -138,7 +138,12 @@ async function evaluateQuestion(
   questionIndex: number,
   config: BenchmarkConfig,
 ): Promise<QAQuestionResult> {
-  const maxK = Math.max(...config.queryTopK);
+  // How many sessions the reader receives. Retrieval recall rises with k
+  // (complete-evidence recall is 84.0% at k=5 and 91.8% at k=10) but so does
+  // the noise the reader must read past — k=10 is ~32k tokens of transcript.
+  // Which effect dominates is an empirical question about the reader, not a
+  // property of retrieval, so it is measurable rather than assumed.
+  const maxK = parseInt(process.env['QA_TOP_K'] ?? '', 10) || Math.max(...config.queryTopK);
 
   // Step 1: Retrieve
   const queryStart = performance.now();
