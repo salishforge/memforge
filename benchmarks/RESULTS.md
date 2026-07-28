@@ -4,15 +4,9 @@ Generated: 2026-07-28
 
 ## LongMemEval — hybrid mode
 
-> ## ⚠️ Partial run — not an official result
->
-> 42 of 500 questions (stratified sample).
-> Reported for development iteration only. Publishable figures require a
-> full 500-question run; cite nothing from this page until then.
-
-- Questions evaluated: 42 of 500 (stratified sample)
+- Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-28T01:21:09.050Z
+- Timestamp: 2026-07-28T08:21:37.478Z
 
 ### Retrieval Quality
 
@@ -24,10 +18,10 @@ Generated: 2026-07-28
 
 | Metric | Sessions (comparable) | Rows (native) |
 |--------|----------------------|---------------|
-| Recall@1 | 69.0% | 69.0% |
-| Recall@3 | 85.7% | 85.7% |
-| Recall@5 | 92.9% | 92.9% |
-| Recall@10 | 92.9% | 92.9% |
+| Recall@1 | 83.2% | 83.2% |
+| Recall@3 | 93.0% | 93.0% |
+| Recall@5 | 95.2% | 95.2% |
+| Recall@10 | 97.0% | 97.0% |
 
 Sessions packed per retrieved row: **1.0**
 (1.0 means rows and sessions are 1:1 and the two columns converge.)
@@ -39,31 +33,25 @@ Sessions packed per retrieved row: **1.0**
 
 | Category | Count | R@1 (sessions) | R@3 (sessions) | R@5 (sessions) | R@10 (sessions) |
 |----------|-------|------|------|------|------|
-| knowledge-update | 7 | 85.7% | 100.0% | 100.0% | 100.0% |
-| multi-session | 7 | 85.7% | 85.7% | 100.0% | 100.0% |
-| single-session-assistant | 7 | 85.7% | 100.0% | 100.0% | 100.0% |
-| single-session-preference | 7 | 42.9% | 71.4% | 85.7% | 85.7% |
-| single-session-user | 7 | 57.1% | 71.4% | 85.7% | 85.7% |
-| temporal-reasoning | 7 | 57.1% | 85.7% | 85.7% | 85.7% |
+| knowledge-update | 78 | 94.9% | 98.7% | 100.0% | 100.0% |
+| multi-session | 133 | 88.7% | 96.2% | 97.7% | 100.0% |
+| single-session-assistant | 56 | 89.3% | 94.6% | 98.2% | 100.0% |
+| single-session-preference | 30 | 50.0% | 73.3% | 83.3% | 93.3% |
+| single-session-user | 70 | 80.0% | 90.0% | 91.4% | 91.4% |
+| temporal-reasoning | 133 | 77.4% | 91.7% | 93.2% | 94.7% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 27ms | 52ms | 31ms |
-| Ingest (per question) | 5.2s | 10.7s | 5.4s |
+| Query | 36ms | 76ms | 56ms |
+| Ingest (per question) | 6.4s | 9.2s | 6.3s |
 
 ## LongMemEval — keyword mode
 
-> ## ⚠️ Partial run — not an official result
->
-> 42 of 500 questions (stratified sample).
-> Reported for development iteration only. Publishable figures require a
-> full 500-question run; cite nothing from this page until then.
-
-- Questions evaluated: 42 of 500 (stratified sample)
+- Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-28T01:21:09.051Z
+- Timestamp: 2026-07-28T08:21:37.485Z
 
 ### Retrieval Quality
 
@@ -75,10 +63,10 @@ Sessions packed per retrieved row: **1.0**
 
 | Metric | Sessions (comparable) | Rows (native) |
 |--------|----------------------|---------------|
-| Recall@1 | 69.0% | 69.0% |
-| Recall@3 | 83.3% | 83.3% |
-| Recall@5 | 92.9% | 92.9% |
-| Recall@10 | 95.2% | 95.2% |
+| Recall@1 | 68.8% | 68.8% |
+| Recall@3 | 86.4% | 86.4% |
+| Recall@5 | 91.8% | 91.8% |
+| Recall@10 | 96.4% | 96.4% |
 
 Sessions packed per retrieved row: **1.0**
 (1.0 means rows and sessions are 1:1 and the two columns converge.)
@@ -90,19 +78,19 @@ Sessions packed per retrieved row: **1.0**
 
 | Category | Count | R@1 (sessions) | R@3 (sessions) | R@5 (sessions) | R@10 (sessions) |
 |----------|-------|------|------|------|------|
-| knowledge-update | 7 | 85.7% | 100.0% | 100.0% | 100.0% |
-| multi-session | 7 | 85.7% | 85.7% | 100.0% | 100.0% |
-| single-session-assistant | 7 | 57.1% | 100.0% | 100.0% | 100.0% |
-| single-session-preference | 7 | 42.9% | 42.9% | 71.4% | 85.7% |
-| single-session-user | 7 | 71.4% | 85.7% | 100.0% | 100.0% |
-| temporal-reasoning | 7 | 71.4% | 85.7% | 85.7% | 85.7% |
+| knowledge-update | 78 | 79.5% | 96.2% | 100.0% | 100.0% |
+| multi-session | 133 | 75.2% | 94.0% | 97.0% | 98.5% |
+| single-session-assistant | 56 | 58.9% | 89.3% | 92.9% | 96.4% |
+| single-session-preference | 30 | 40.0% | 50.0% | 73.3% | 83.3% |
+| single-session-user | 70 | 70.0% | 84.3% | 92.9% | 97.1% |
+| temporal-reasoning | 133 | 66.2% | 81.2% | 85.0% | 94.7% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 9ms | 40ms | 12ms |
-| Ingest (per question) | 5.2s | 10.7s | 5.4s |
+| Query | 12ms | 74ms | 36ms |
+| Ingest (per question) | 6.4s | 9.2s | 6.3s |
 
 ---
 

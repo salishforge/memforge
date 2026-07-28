@@ -74,6 +74,32 @@ describe('cache degradation when Redis is unreachable', () => {
     assert.ok(elapsed < 500, `cacheSet took ${elapsed}ms with Redis absent`);
   });
 
+  it('a connect attempt cannot outlive its timeout', async (t) => {
+    if (!redisAbsent) return t.skip('Redis reachable — breaker never opens');
+
+    // Regression guard for a wedge observed in a long-running server: if
+    // connect() never settles, the stored connectionPromise is never cleared
+    // and EVERY later cache read awaits it forever — /health stayed instant
+    // while all cached endpoints hung, with an idle event loop and a healthy
+    // DB pool. The attempt is now bounded independently of the client's own
+    // retry ladder, so a probe always resolves one way or the other.
+    resetRedisCircuitBreaker();
+    const start = Date.now();
+    const client = await getRedis();
+    const elapsed = Date.now() - start;
+
+    assert.equal(client, null);
+    assert.ok(
+      elapsed < 15_000,
+      `a probe must settle within its timeout budget, took ${elapsed}ms`,
+    );
+
+    // And the breaker must be open afterwards, so the cost is paid once.
+    const second = Date.now();
+    await getRedis();
+    assert.ok(Date.now() - second < 500, 'the following call must short-circuit');
+  });
+
   it('re-probes after the breaker is reset', async (t) => {
     if (!redisAbsent) return t.skip('Redis reachable — breaker never opens');
 

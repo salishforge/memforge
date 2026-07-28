@@ -14,7 +14,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig, type BenchmarkConfig } from '../lib/config.js';
-import { chat, loadLlmConfig, isPaperProtocolJudge } from '../lib/llm.js';
+import { chat, loadLlmConfig, isPaperProtocolJudge, stripCodeFence } from '../lib/llm.js';
+import { createLimiter } from '../lib/concurrency.js';
 import type { QueryMode } from '../../src/types.js';
 import type { LongMemEvalInstance, QAQuestionResult } from './types.js';
 
@@ -47,7 +48,7 @@ Output JSON: {"score": 0.0-1.0, "correct": true/false, "reasoning": "brief expla
 
   let parsed: { score?: unknown; correct?: unknown; reasoning?: unknown };
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(stripCodeFence(content));
   } catch {
     // Smaller judges occasionally wrap JSON in prose despite json mode. Fail
     // loudly with the payload rather than scoring the question 0 — a silent
@@ -82,7 +83,7 @@ Use ONLY the information in the provided context to answer.
 If the context doesn't contain enough information, say so clearly.
 Be concise and factual. Cite specific details from the context.`,
     user: `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`,
-    temperature: 0.3,
+    temperature: LLM.readerTemperature,
     maxTokens: 500,
   });
 }
@@ -193,62 +194,86 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
   console.log(`Limit: ${config.questionLimit}`);
   console.log('');
 
-  // Load dataset
-  const dataPath = join(process.cwd(), 'benchmarks', 'longmemeval', 'data', 'longmemeval.json');
-  if (!existsSync(dataPath)) {
-    throw new Error(`Dataset not found at ${dataPath}. Run 'npm run benchmark:download' first.`);
+  // Load the ingest manifest produced by the retrieval harness. QA reuses it
+  // rather than ingesting its own corpus, for two reasons:
+  //
+  //  * Correctness. This step previously ingested EVERY question's haystack
+  //    into a single agent, so each question searched all 500 haystacks
+  //    (~24,000 sessions) instead of its own ~50. That is not LongMemEval's
+  //    protocol — each question has its own haystack — and it would have
+  //    produced a meaninglessly low accuracy that still looked legitimate.
+  //  * Cost. Ingesting 24,000 sessions takes the better part of an hour; one
+  //    corpus can serve both the retrieval and QA harnesses.
+  const manifestPath = join(config.resultsDir, 'ingest-manifest.json');
+  if (!existsSync(manifestPath)) {
+    throw new Error(
+      `Ingest manifest not found at ${manifestPath}. Run 'npx tsx benchmarks/longmemeval/ingest.ts' first — QA evaluates against the same per-question agents.`,
+    );
   }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+    agents: Array<{ agentId: string; questionIndex: number }>;
+  };
 
-  const dataset: LongMemEvalInstance[] = JSON.parse(readFileSync(dataPath, 'utf-8'));
-  const limit = config.questionLimit || dataset.length;
-  const offset = config.questionOffset;
-  const subset = dataset.slice(offset, offset + limit);
+  const dataFile = join(config.datasetDir, 'longmemeval_s.json');
+  if (!existsSync(dataFile)) {
+    throw new Error(`Dataset not found at ${dataFile}. Run 'npm run benchmark:download' first.`);
+  }
+  const dataset: LongMemEvalInstance[] = JSON.parse(readFileSync(dataFile, 'utf-8'));
 
-  console.log(`Dataset loaded: ${dataset.length} total, evaluating ${limit} (offset ${offset})`);
+  console.log(`Dataset loaded: ${dataset.length} total; manifest lists ${manifest.agents.length} ingested questions`);
   console.log('');
 
   const client = await createClient(config);
-  const agentId = `longmemeval-qa-${Date.now()}`;
   const results: QAQuestionResult[] = [];
 
-  // Ingest all sessions first (reuse existing ingest logic)
-  console.log('Ingesting sessions...');
-  const { ingest } = await import('./ingest.js');
-  await ingest(client, agentId, subset, config);
-  console.log('Ingestion complete.');
-  console.log('');
+  // Resume support — a 500-question run is hours of sequential LLM calls and
+  // must not restart from zero after an interruption.
+  const partialPath = join(config.resultsDir, 'qa-partial.json');
+  if (existsSync(partialPath)) {
+    results.push(...(JSON.parse(readFileSync(partialPath, 'utf-8')) as QAQuestionResult[]));
+    console.log(`Resuming from ${results.length} completed questions`);
+  }
+  // Only completed questions count as done. Error rows are dropped so a resume
+  // retries them — otherwise a transient rate-limit permanently poisons those
+  // questions and the final number is computed over a biased subset.
+  const failed = results.filter((r) => r.errors.generateError ?? r.errors.judgeError);
+  if (failed.length > 0) {
+    console.log(`Discarding ${failed.length} previously-errored questions for retry`);
+    results.splice(0, results.length, ...results.filter((r) => !(r.errors.generateError ?? r.errors.judgeError)));
+  }
+  const done = new Set(results.map((r) => r.questionIndex));
 
-  // Consolidate
-  console.log('Consolidating...');
-  const consolidateStart = performance.now();
-  await client.consolidate(agentId);
-  const consolidateMs = performance.now() - consolidateStart;
-  console.log(`Consolidation complete (${Math.round(consolidateMs)}ms).`);
-  console.log('');
+  // Evaluate each question against its own agent.
+  //
+  // Questions are fully independent — separate agents, separate LLM calls — so
+  // they run concurrently. Sequentially a 500-question run is ~4h of waiting on
+  // round-trips at ~30s each; the default of 3 matches an Ollama Pro plan's
+  // concurrent model slots. Raise QA_CONCURRENCY only as far as the provider
+  // actually admits, or the extra requests just queue.
+  const qaConcurrency = Math.max(1, parseInt(process.env['QA_CONCURRENCY'] ?? '3', 10));
+  const limiter = createLimiter(qaConcurrency);
+  console.log(`Evaluating questions (concurrency ${qaConcurrency})...`);
 
-  // Evaluate each question
-  console.log('Evaluating questions...');
-  for (let i = 0; i < subset.length; i++) {
-    const instance = subset[i];
-    if (!instance) continue;
-    const questionIndex = offset + i;
+  const pending = manifest.agents.filter(
+    (a) => !done.has(a.questionIndex) && dataset[a.questionIndex],
+  );
+  let finished = 0;
+
+  await Promise.all(pending.map((agent) => limiter(async () => {
+    const instance = dataset[agent.questionIndex]!;
 
     try {
-      const result = await evaluateQuestion(client, instance, agentId, questionIndex, config);
+      const result = await evaluateQuestion(client, instance, agent.agentId, agent.questionIndex, config);
       results.push(result);
 
       const status = result.correct ? '✓' : '✗';
       const scoreStr = result.score !== null ? `${(result.score * 100).toFixed(0)}%` : 'N/A';
-      console.log(`Q${questionIndex + 1} [${instance.question_type}] ${status} (${scoreStr})`);
-
-      // Save incremental results
-      if ((i + 1) % 10 === 0 || i === subset.length - 1) {
-        saveResults(results, config, offset);
-      }
+      finished++;
+      console.log(`[${finished}/${pending.length}] Q${agent.questionIndex} [${instance.question_type}] ${status} (${scoreStr})`);
     } catch (err) {
-      console.error(`Q${questionIndex + 1} ERROR:`, err instanceof Error ? err.message : err);
+      console.error(`Q${agent.questionIndex} ERROR:`, err instanceof Error ? err.message : err);
       results.push({
-        questionIndex,
+        questionIndex: agent.questionIndex,
         questionType: instance.question_type ?? 'unknown',
         question: instance.question,
         expectedAnswer: instance.answer,
@@ -265,17 +290,19 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
         },
       });
     }
-  }
 
-  // Cleanup
-  if (config.cleanupAfter) {
-    console.log('Cleaning up...');
-    try {
-      await client.clear(agentId);
-    } catch (err) {
-      console.error('Cleanup error:', err instanceof Error ? err.message : err);
-    }
-  }
+    // Checkpoint every question — cheap next to an LLM round-trip, and it is
+    // what makes an interrupted multi-hour run resumable. writeFileSync is
+    // synchronous, so concurrent tasks cannot interleave a partial file.
+    writeFileSync(partialPath, JSON.stringify(results, null, 2));
+    if (results.length % 10 === 0) saveResults(results, config, 0);
+  })));
+
+  // Completion order is nondeterministic under concurrency; report by question.
+  results.sort((a, b) => a.questionIndex - b.questionIndex);
+
+  // No cleanup here: the corpus belongs to the retrieval harness's manifest
+  // and is deliberately reusable across runs.
 
   console.log('');
   console.log('=== Evaluation Complete ===');

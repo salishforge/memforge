@@ -82,6 +82,16 @@ const CONNECT_FAILURE_COOLDOWN_MS = parseInt(
 );
 let connectFailedAt = 0;
 
+/**
+ * Hard ceiling on a single connect attempt, independent of the client's own
+ * retry ladder. Slightly above socket connectTimeout (5s) plus one backoff so
+ * a genuinely slow-but-working Redis is not cut off.
+ */
+const CONNECT_ATTEMPT_TIMEOUT_MS = parseInt(
+  process.env['REDIS_CONNECT_TIMEOUT_MS'] ?? '8000',
+  10,
+);
+
 /** Test seam: forget the breaker state so a suite can exercise both paths. */
 export function resetRedisCircuitBreaker(): void {
   connectFailedAt = 0;
@@ -102,6 +112,7 @@ export async function getRedis(): Promise<RedisClientType | null> {
 
   connectionPromise = (async (): Promise<RedisClientType | null> => {
     const url = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+    let clientRef: RedisClientType | undefined;
     try {
       const client = createClient({
         url,
@@ -116,6 +127,7 @@ export async function getRedis(): Promise<RedisClientType | null> {
           },
         },
       }) as RedisClientType;
+      clientRef = client;
 
       client.on('error', (err: Error) => {
         log.error({ err }, 'Redis error');
@@ -129,7 +141,22 @@ export async function getRedis(): Promise<RedisClientType | null> {
         redisClient = null;
       });
 
-      await client.connect();
+      // Bound the attempt ourselves. reconnectStrategy tells the client when
+      // to stop retrying, but it does not guarantee connect() settles — and an
+      // unsettled promise here is catastrophic rather than slow: it is stored
+      // in connectionPromise, the `finally` that clears it never runs, and
+      // every later cache read awaits the same dead promise forever. Observed
+      // in a long-running server: /health stayed instant while every cached
+      // read hung indefinitely, with an idle event loop and a healthy pool.
+      await Promise.race([
+        client.connect(),
+        new Promise((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error(`Redis connect exceeded ${CONNECT_ATTEMPT_TIMEOUT_MS}ms`)),
+            CONNECT_ATTEMPT_TIMEOUT_MS,
+          ).unref(),
+        ),
+      ]);
       const safeUrl = url.replace(/:\/\/[^@]*@/, '://*:*@');
       log.info({ url: safeUrl }, 'Redis connected');
       redisClient = client;
@@ -137,6 +164,13 @@ export async function getRedis(): Promise<RedisClientType | null> {
       return client;
     } catch (err) {
       connectFailedAt = Date.now();
+      // Drop the half-open client explicitly; otherwise a timed-out attempt
+      // leaves a socket and reconnect timers behind on every probe.
+      try {
+        await clientRef?.destroy();
+      } catch {
+        // already dead — nothing to release
+      }
       log.error(
         { err, cooldownMs: CONNECT_FAILURE_COOLDOWN_MS },
         'Redis connection failed — operating without cache; suppressing retries for the cooldown',
