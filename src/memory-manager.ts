@@ -728,11 +728,11 @@ Ranking (numbers only):`;
             ? `SELECT id, content, summary, metadata, published_at as consolidated_at, source_agent_id, hop_count, base_confidence, importance,
                       ts_rank_cd(content_tsv, plainto_tsquery('english', $2)) * importance AS rank
                FROM shared_memories WHERE pool_id = $1 AND content_tsv @@ plainto_tsquery('english', $2)
-               ORDER BY rank DESC LIMIT $3`
+               ORDER BY rank DESC, id DESC LIMIT $3`
             : `SELECT id, content, summary, metadata, published_at as consolidated_at, source_agent_id, hop_count, base_confidence, importance,
                       (1 - (embedding <=> $2::${await this.vcast()})) * importance AS rank
                FROM shared_memories WHERE pool_id = $1 AND embedding IS NOT NULL
-               ORDER BY embedding <=> $2::${await this.vcast()} LIMIT $3`,
+               ORDER BY embedding <=> $2::${await this.vcast()}, id DESC LIMIT $3`,
           mode === 'keyword' || mode === 'code'
             ? [pool.pool_id, searchText, Math.min(resolvedLimit, 10)]
             : [pool.pool_id, `[${(await this.embedder.embed(searchText)).join(',')}]`, Math.min(resolvedLimit, 10)],
@@ -994,7 +994,14 @@ Ranking (numbers only):`;
          AND w.namespace = $3
          AND w.content_tsv @@ q.tsq
          ${timeFilter}
-       ORDER BY rank DESC
+       -- Deterministic tie-break. ts_rank_cd produces heavy ties (measured: 20
+       -- retrieved rows sharing only 6 distinct ranks), and without a stable
+       -- second key Postgres may return tied rows in any order — the same
+       -- query gave different results run to run, which makes retrieval
+       -- irreproducible for callers and unmeasurable for the benchmark.
+       -- Newest-first among equals is the useful semantic: when relevance
+       -- cannot distinguish two memories, prefer the more recent one.
+       ORDER BY rank DESC, w.id DESC
        LIMIT $${limitIdx}`,
       params,
     );
@@ -1034,7 +1041,8 @@ Ranking (numbers only):`;
          AND namespace = $3
          AND content_code_tsv @@ plainto_tsquery('simple', $2)
          ${timeFilter}
-       ORDER BY rank DESC
+       -- Stable tie-break; see queryKeyword.
+       ORDER BY rank DESC, id DESC
        LIMIT $${limitIdx}`,
       params,
     );
@@ -1071,7 +1079,8 @@ Ranking (numbers only):`;
          AND namespace = $4
          AND content ILIKE $3
          ${timeFilter}
-       ORDER BY rank DESC
+       -- Stable tie-break; see queryKeyword.
+       ORDER BY rank DESC, id DESC
        LIMIT $${limitIdx}`,
       params,
     );
@@ -1111,7 +1120,9 @@ Ranking (numbers only):`;
          AND namespace = $3
          AND embedding IS NOT NULL
          ${timeFilter}
-       ORDER BY embedding <=> $2::${await this.vcast()}
+       -- Stable tie-break; see queryKeyword. Vector distances tie less often
+       -- than lexical ranks, but halfvec quantization makes it possible.
+       ORDER BY embedding <=> $2::${await this.vcast()}, id DESC
        LIMIT $${limitIdx}`,
       params,
     );
