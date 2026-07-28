@@ -252,7 +252,40 @@ const RESERVED_METADATA_KEYS = new Set([
   '_superseded',
   '_client_id',
   '_session_id',
+  '_source_metadata',
 ]);
+
+/**
+ * Metadata keys consolidation owns on the warm row. Caller-supplied keys that
+ * collide with these are never hoisted — they would overwrite the system's own
+ * account of how the row was built. They remain intact under `_source_metadata`.
+ */
+const CONSOLIDATION_OWNED_METADATA_KEYS = new Set([
+  'batch_size',
+  'oldest',
+  'newest',
+  'consolidation_mode',
+  'key_facts',
+  'entities',
+  'relationships',
+  'sentiment',
+]);
+
+/**
+ * Extract the caller-authored keys from a hot-tier row's metadata.
+ *
+ * Underscore-prefixed keys are system state (`_client_id`, `_outcome_type`,
+ * `_superseded`), not caller data. Excluding them by prefix keeps hot-tier
+ * bookkeeping from being promoted into the warm row as if the caller had
+ * supplied it.
+ */
+function callerAuthoredKeys(metadata: Record<string, unknown> | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!key.startsWith('_')) out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Recursively remove reserved system keys from caller-supplied metadata.
@@ -1522,6 +1555,36 @@ Ranking (numbers only):`;
             return typeof cid === 'string' ? cid : null;
           })();
           if (latestClientId) metadata._client_id = latestClientId;
+
+          // ── Carry caller-supplied metadata into the warm row ───────────
+          // Consolidation builds warm metadata from scratch, which used to
+          // discard whatever the caller attached at add() time. An agent
+          // tagging memories with a source document, customer id, or the
+          // real-world time of an event lost all of it the first time a batch
+          // consolidated — silently, and unrecoverably once the hot rows were
+          // deleted below.
+          //
+          // A batch folds N rows into one, so neither mechanism alone suffices:
+          //  * `_source_metadata` keeps every contributing row's keys, in the
+          //    same order as the batch. This is the only way per-row values
+          //    (distinct timestamps, distinct source ids) survive a batch > 1.
+          //  * keys the whole batch agrees on are also lifted to the top level,
+          //    so the common case stays directly filterable in SQL as
+          //    `metadata->>'customer_id'` rather than through array containment.
+          const perRowMetadata = hotRows.rows.map((r) => callerAuthoredKeys(r.metadata));
+          if (perRowMetadata.some((m) => Object.keys(m).length > 0)) {
+            metadata._source_metadata = perRowMetadata;
+
+            const first = perRowMetadata[0]!;
+            for (const [key, value] of Object.entries(first)) {
+              if (CONSOLIDATION_OWNED_METADATA_KEYS.has(key)) continue;
+              const encoded = JSON.stringify(value);
+              const unanimous = perRowMetadata.every(
+                (m) => key in m && JSON.stringify(m[key]) === encoded,
+              );
+              if (unanimous) metadata[key] = value;
+            }
+          }
 
           // Determine dominant outcome_type from this inner batch's rows
           const outcomeCounts = new Map<string, number>();
