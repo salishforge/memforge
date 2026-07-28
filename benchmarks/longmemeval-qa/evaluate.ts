@@ -144,6 +144,12 @@ async function evaluateQuestion(
   // Which effect dominates is an empirical question about the reader, not a
   // property of retrieval, so it is measurable rather than assumed.
   const maxK = parseInt(process.env['QA_TOP_K'] ?? '', 10) || Math.max(...config.queryTopK);
+  // Sessions retrieved and sessions shown to the reader are separate levers.
+  // Slicing the top of an unchanged ranking is a no-op — the top 5 of a
+  // limit-10 query are the top 5 of a limit-5 query — so this only does
+  // anything when something reorders the results first, i.e. reranking.
+  // Retrieve wide for evidence, show narrow to limit dilution.
+  const contextK = parseInt(process.env['QA_CONTEXT_K'] ?? '', 10) || maxK;
 
   // Step 1: Retrieve
   const queryStart = performance.now();
@@ -168,7 +174,8 @@ async function evaluateQuestion(
       const date = sessionDateOf((r as { metadata?: Record<string, unknown> }).metadata);
       return date ? `[DATE:${date}]\n${content}` : content;
     })
-    .filter((c) => c.length > 0);
+    .filter((c) => c.length > 0)
+    .slice(0, contextK);
 
   // Step 2: Generate answer
   const generateStart = performance.now();
@@ -285,7 +292,9 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
 
   // Resume support — a 500-question run is hours of sequential LLM calls and
   // must not restart from zero after an interruption.
-  const partialPath = join(config.resultsDir, 'qa-partial.json');
+  // Named so concurrent runs (different reader models, different context
+  // widths) do not overwrite each other's resume state.
+  const partialPath = join(config.resultsDir, process.env['QA_PARTIAL_NAME'] ?? 'qa-partial.json');
   if (existsSync(partialPath)) {
     results.push(...(JSON.parse(readFileSync(partialPath, 'utf-8')) as QAQuestionResult[]));
     console.log(`Resuming from ${results.length} completed questions`);
