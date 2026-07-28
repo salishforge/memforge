@@ -157,7 +157,7 @@ database shape?), **behavioral risk** (does retrieval/scoring change visibly?),
 6. **Test infrastructure.** Existing tests assume deterministic outputs.
    Phase 5 needs a *property-based* test layer + a *behavioral fixture*
    layer (gold-standard agents whose memory we can inspect over time).
-7. **Benchmark regression.** LongMemEval-S retrieval R@5 is currently 93.2%. Any Phase 5
+7. **Benchmark regression.** The prior 93.2% R@5 figure is retracted (scorer ignored k); the gate is suspended until the corrected re-run establishes a baseline. Any Phase 5
    change must not regress that. CI must gate on it.
 8. **Evaluation gap.** Phase 5 introduces capabilities we don't yet have a
    benchmark for ("does the agent know what it doesn't know?"). Closing that
@@ -372,7 +372,7 @@ counts are the natural unit of work. Calendar-time depends entirely on the
 sponsoring operator's availability and the routing choices we make per
 session.
 
-**Q: What stops Phase 5 from regressing the 93.2% LongMemEval R@5 number?**
+**Q: What stops Phase 5 from regressing LongMemEval retrieval quality?** (The 93.2% figure is retracted — scorer defect; baseline pending re-run.)
 CI gates on it. Any Phase 5 PR that drops R@5 by more than 1 point is
 blocked at merge time. Phase 5 is *additive* — emergent namespaces don't
 replace existing ones, abstraction layers don't replace warm-tier rows, the

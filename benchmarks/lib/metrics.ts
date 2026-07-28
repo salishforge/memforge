@@ -1,28 +1,72 @@
 // Benchmark scoring utilities — Recall@k, latency stats, session extraction
+//
+// Two Recall@k definitions live here, and the distinction is the whole
+// ballgame for comparability.
+//
+// LongMemEval's corpus unit is the *session*: retrieve k sessions, score a hit
+// if a gold session is among them. MemForge's retrieval unit is the warm-tier
+// *row*, and consolidation packs many sessions into one row — up to
+// CONSOLIDATION_INNER_BATCH_SIZE of them. So "top 5 rows" can contain
+// hundreds of sessions, and scoring that as R@5 measures something far more
+// generous than the paper does.
+//
+// Both numbers are therefore computed and reported under distinct names:
+//
+//   recallAtKSessions — first k distinct sessions in rank order. This is the
+//                       paper-comparable definition and the headline metric.
+//   recallAtKRows     — any gold session anywhere inside the top-k rows. This
+//                       is MemForge's native retrieval behaviour and is
+//                       strictly >= the session number; the gap is the packing
+//                       advantage, quantified by sessionsPerRow.
+//
+// Run with CONSOLIDATION_INNER_BATCH_SIZE=1 to make rows and sessions 1:1, at
+// which point the two metrics converge.
 
 import type { QuestionResult, LatencyStats, CategoryResult } from '../longmemeval/types.js';
 
 const SESSION_ID_RE = /\[SESSION_ID:([^\]]+)\]/g;
 
-/** Extract [SESSION_ID:xxx] markers from warm-tier content. */
+/** Extract [SESSION_ID:xxx] markers from warm-tier content, in order of appearance. */
 export function extractSessionIds(content: string): string[] {
-  const ids: string[] = [];
-  let match;
-  while ((match = SESSION_ID_RE.exec(content)) !== null) {
-    if (match[1]) ids.push(match[1]);
-  }
-  SESSION_ID_RE.lastIndex = 0;
-  return ids;
+  // matchAll rather than exec-with-lastIndex-reset: the shared /g regex
+  // carries mutable state between calls, and an early return would leave
+  // lastIndex dangling for the next caller.
+  return [...content.matchAll(SESSION_ID_RE)]
+    .map((m) => m[1])
+    .filter((id): id is string => id !== undefined);
 }
 
 /**
- * Compute Recall@k: 1 if any answer session appears in the top-k retrieved sessions, 0 otherwise.
- * retrievedSessionIds should be in rank order (from highest to lowest ranked results).
+ * Recall@k over sessions — 1 if any gold session is among the first k distinct
+ * sessions in rank order, else 0. This is LongMemEval's definition.
+ *
+ * `retrievedSessionIds` must be rank-ordered and already de-duplicated.
  */
-export function recallAtK(retrievedSessionIds: string[], answerSessionIds: string[], k: number): number {
+export function recallAtKSessions(
+  retrievedSessionIds: string[],
+  answerSessionIds: string[],
+  k: number,
+): number {
   const topK = new Set(retrievedSessionIds.slice(0, k));
-  for (const aid of answerSessionIds) {
-    if (topK.has(String(aid))) return 1;
+  return answerSessionIds.some((aid) => topK.has(String(aid))) ? 1 : 0;
+}
+
+/**
+ * Recall@k over rows — 1 if any gold session appears anywhere inside the top-k
+ * retrieved rows, else 0. Generous relative to the session metric whenever
+ * consolidation packs multiple sessions per row; reported so the packing
+ * advantage is visible rather than baked silently into a headline number.
+ *
+ * `perRowSessionIds[i]` holds the sessions found in the i-th ranked row.
+ */
+export function recallAtKRows(
+  perRowSessionIds: string[][],
+  answerSessionIds: string[],
+  k: number,
+): number {
+  const gold = new Set(answerSessionIds.map(String));
+  for (const row of perRowSessionIds.slice(0, k)) {
+    if (row.some((sid) => gold.has(sid))) return 1;
   }
   return 0;
 }
@@ -55,12 +99,25 @@ export function latencyStats(values: number[]): LatencyStats {
 export function aggregateScores(
   results: QuestionResult[],
   topKValues: number[],
-): { overall: { recallAt: Record<number, number>; queryLatency: LatencyStats; ingestLatency: LatencyStats }; perCategory: Record<string, CategoryResult> } {
+): {
+  overall: {
+    recallAtSessions: Record<number, number>;
+    recallAtRows: Record<number, number>;
+    sessionsPerRow: number;
+    queryLatency: LatencyStats;
+    ingestLatency: LatencyStats;
+  };
+  perCategory: Record<string, CategoryResult>;
+} {
+  const mean = (xs: number[]): number =>
+    xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+
   // Overall
-  const overallRecall: Record<number, number> = {};
+  const overallSessions: Record<number, number> = {};
+  const overallRows: Record<number, number> = {};
   for (const k of topKValues) {
-    const recalls = results.map((r) => r.recallAt[k] ?? 0);
-    overallRecall[k] = recalls.length > 0 ? recalls.reduce((a, b) => a + b, 0) / recalls.length : 0;
+    overallSessions[k] = mean(results.map((r) => r.recallAtSessions[k] ?? 0));
+    overallRows[k] = mean(results.map((r) => r.recallAtRows[k] ?? 0));
   }
 
   const queryLatencies = results.map((r) => r.latency.queryMs);
@@ -77,21 +134,25 @@ export function aggregateScores(
 
   const perCategory: Record<string, CategoryResult> = {};
   for (const [cat, catResults] of categories) {
-    const catRecall: Record<number, number> = {};
+    const catSessions: Record<number, number> = {};
+    const catRows: Record<number, number> = {};
     for (const k of topKValues) {
-      const recalls = catResults.map((r) => r.recallAt[k] ?? 0);
-      catRecall[k] = recalls.reduce((a, b) => a + b, 0) / recalls.length;
+      catSessions[k] = mean(catResults.map((r) => r.recallAtSessions[k] ?? 0));
+      catRows[k] = mean(catResults.map((r) => r.recallAtRows[k] ?? 0));
     }
     perCategory[cat] = {
       count: catResults.length,
-      recallAt: catRecall,
+      recallAtSessions: catSessions,
+      recallAtRows: catRows,
       latency: latencyStats(catResults.map((r) => r.latency.queryMs)),
     };
   }
 
   return {
     overall: {
-      recallAt: overallRecall,
+      recallAtSessions: overallSessions,
+      recallAtRows: overallRows,
+      sessionsPerRow: mean(results.map((r) => r.sessionsPerRow)),
       queryLatency: latencyStats(queryLatencies),
       ingestLatency: latencyStats(ingestLatencies),
     },

@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig, type BenchmarkConfig } from '../lib/config.js';
-import { extractSessionIds, recallAtK } from '../lib/metrics.js';
+import { extractSessionIds, recallAtKSessions, recallAtKRows } from '../lib/metrics.js';
 import type { LongMemEvalInstance, QuestionResult, IngestManifest } from './types.js';
 
 async function createClient(config: BenchmarkConfig) {
@@ -38,39 +38,38 @@ async function evaluateQuestion(
   });
   const queryMs = performance.now() - queryStart;
 
-  // Extract session IDs from results in rank order
-  const retrievedSessionIds: string[] = [];
-  for (const result of results) {
+  // Sessions per retrieved row, in rank order. Both Recall@k definitions and
+  // the packing factor derive from this one structure.
+  const perRowSessionIds: string[][] = results.map((result) => {
     const content = typeof result === 'object' && result !== null && 'content' in result
       ? (result as { content: string }).content
       : '';
-    const extracted = extractSessionIds(content);
-    for (const id of extracted) {
-      if (!retrievedSessionIds.includes(id)) {
+    return extractSessionIds(content);
+  });
+
+  // Flatten to a rank-ordered, de-duplicated session list.
+  const seen = new Set<string>();
+  const retrievedSessionIds: string[] = [];
+  for (const row of perRowSessionIds) {
+    for (const id of row) {
+      if (!seen.has(id)) {
+        seen.add(id);
         retrievedSessionIds.push(id);
       }
     }
   }
 
-  // Compute Recall@k for each k
-  const recallAt: Record<number, number> = {};
   const answerIds = instance.answer_session_ids.map(String);
+  const recallAtSessions: Record<number, number> = {};
+  const recallAtRows: Record<number, number> = {};
   for (const k of config.queryTopK) {
-    // For Recall@k, use session IDs from the top-k warm-tier results
-    // Since one warm-tier result may contain multiple sessions (batch consolidation),
-    // we extract all session IDs from results[0..k-1]
-    const topKSessionIds: string[] = [];
-    for (let i = 0; i < Math.min(k, results.length); i++) {
-      const r = results[i];
-      const content = typeof r === 'object' && r !== null && 'content' in r
-        ? (r as { content: string }).content
-        : '';
-      for (const sid of extractSessionIds(content)) {
-        if (!topKSessionIds.includes(sid)) topKSessionIds.push(sid);
-      }
-    }
-    recallAt[k] = recallAtK(topKSessionIds, answerIds, topKSessionIds.length);
+    recallAtSessions[k] = recallAtKSessions(retrievedSessionIds, answerIds, k);
+    recallAtRows[k] = recallAtKRows(perRowSessionIds, answerIds, k);
   }
+
+  const sessionsPerRow = perRowSessionIds.length > 0
+    ? perRowSessionIds.reduce((sum, row) => sum + row.length, 0) / perRowSessionIds.length
+    : 0;
 
   return {
     questionIndex,
@@ -79,7 +78,9 @@ async function evaluateQuestion(
     expectedAnswer: instance.answer,
     answerSessionIds: instance.answer_session_ids,
     retrievedSessionIds,
-    recallAt,
+    recallAtSessions,
+    recallAtRows,
+    sessionsPerRow,
     latency: { ingestMs, consolidateMs, queryMs },
     queryMode: mode,
     resultCount: results.length,

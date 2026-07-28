@@ -1,10 +1,35 @@
 # MemForge Benchmark Results
 
-Generated: 2026-04-09
+> # ⚠️ RETRACTED — do not cite the figures below
+>
+> **Every Recall@k number on this page is invalid.** The scorer that produced
+> them called `recallAtK(ids, answers, ids.length)` — passing the candidate
+> list's own length as `k`, so the internal `slice(0, k)` never truncated and
+> R@1, R@3, R@5 and R@10 were all computed over the *entire* retrieved set.
+>
+> The inflation is not marginal. Consolidation packs many sessions into each
+> warm-tier row, so "the top 5 rows" could hold hundreds of sessions. What was
+> published as "93.2% R@5" actually means *"a gold session appeared anywhere
+> among all sessions inside the top 5 rows."* That is not LongMemEval's R@5.
+>
+> Fixed in `benchmarks/lib/metrics.ts`, which now computes two clearly named
+> metrics — `recallAtKSessions` (LongMemEval's definition, the comparable one)
+> and `recallAtKRows` (MemForge's native row-level behaviour) — plus the
+> sessions-per-row packing factor that explains the gap. Regression tests live
+> in `tests/benchmark-metrics.test.ts`; the scorer previously had none, which
+> is how this shipped.
+>
+> A corrected full re-run is in progress. Numbers below are retained only as a
+> record of what was previously claimed.
 
-> **Important:** These are **retrieval-only** scores (Recall@5) on the LongMemEval-S dataset. The official LongMemEval metric is **end-to-end QA accuracy** (retrieve → generate answer → LLM judge). Retrieval R@5 and QA accuracy are **not directly comparable** — QA accuracy is typically 20–30 percentage points lower than retrieval R@5. Do not compare these figures against leaderboard entries reporting QA accuracy (e.g., Mem0, Zep). See § Methodology for scoring details.
+Generated: 2026-04-09 (superseded)
 
-## LongMemEval-S — hybrid mode (retrieval R@5)
+> **Also note:** these were **retrieval-only** scores, not LongMemEval's
+> official end-to-end QA accuracy (retrieve → generate → judge), which is
+> typically 20–30 points lower. The QA harness now lives in
+> `benchmarks/longmemeval-qa/`.
+
+## [RETRACTED] LongMemEval-S — hybrid mode (retrieval R@5)
 
 - Questions evaluated: 500
 - Consolidation mode: concat

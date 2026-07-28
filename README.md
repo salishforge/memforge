@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
 [![Security Audited](https://img.shields.io/badge/Security-9%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
-[![LongMemEval-S retrieval R@5](https://img.shields.io/badge/LongMemEval--S%20retrieval%20R%405-93.2%25%20hybrid-blue.svg)](benchmarks/RESULTS.md)
+[![LongMemEval-S benchmark](https://img.shields.io/badge/LongMemEval--S-re--run%20in%20progress-lightgrey.svg)](benchmarks/RESULTS.md)
 
 Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, revise, and strengthen memories — just like biological brains.
 
@@ -18,9 +18,9 @@ MemForge manages agent memory across three tiers (hot → warm → cold) with ve
 
 ## Project Status
 
-**Beta** — Production hardening is complete. MemForge has passed 9 rounds of security audit (all clean at MEDIUM+), ships with a CI/CD pipeline, and has been benchmarked on LongMemEval-S (93.2% retrieval R@5 hybrid mode, 35.0% R@5 keyword mode). The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets.
+**Beta** — Production hardening is complete. MemForge has passed 9 rounds of security audit (all clean at MEDIUM+) and ships with a CI/CD pipeline. The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets. Benchmark numbers are currently being re-measured — see the note below.
 
-> **Benchmark note:** The 93.2% figure is retrieval Recall@5 on LongMemEval-S, not end-to-end QA accuracy. LongMemEval's official metric is QA accuracy (retrieve → generate → judge); retrieval R@5 is a sub-metric. See [benchmarks/RESULTS.md](benchmarks/RESULTS.md) for details.
+> **Benchmark note:** Previously published LongMemEval figures (93.2% "R@5") have been **retracted**. The scorer that produced them ignored its `k` argument, so every reported R@k was computed over the entire candidate list rather than the top k — and because consolidation packs many sessions into one retrieved row, that list was far larger than k. The scorer is fixed and a full re-run is in progress. See [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and the [ROADMAP.md](ROADMAP.md) for the long-term plan.
 
@@ -452,7 +452,7 @@ MemForge is evaluated on [LongMemEval](https://github.com/xiaowu0162/LongMemEval
 |--------|-------|
 | Recall@1 | 81.0% |
 | Recall@3 | 90.8% |
-| Recall@5 | **93.2%** |
+| Recall@5 | _re-measuring_ |
 | Recall@10 | 96.4% |
 
 **Per-category breakdown:**
