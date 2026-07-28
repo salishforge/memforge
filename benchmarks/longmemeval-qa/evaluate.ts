@@ -22,6 +22,16 @@ import type { LongMemEvalInstance, QAQuestionResult } from './types.js';
 const LLM = loadLlmConfig();
 const JUDGE_MODEL = LLM.judgeModel;
 
+/**
+ * QA answers each question with a single retrieval mode, so it cannot use the
+ * shared `BENCHMARK_MODES` list the way the retrieval sweep does — that list
+ * defaults to `keyword` precisely because the sweep enumerates every mode.
+ * Reading `queryModes[0]` therefore benchmarked keyword-only retrieval and
+ * silently never exercised hybrid, which is the flagship path and the one
+ * worth reporting. An explicit BENCHMARK_MODES still wins.
+ */
+const QA_MODE = (process.env['BENCHMARK_MODES']?.split(',')[0]?.trim() || 'hybrid') as QueryMode;
+
 async function createClient(config: BenchmarkConfig) {
   const { MemForgeClient } = await import('../../src/client.js');
   return new MemForgeClient({
@@ -72,20 +82,53 @@ Output JSON: {"score": 0.0-1.0, "correct": true/false, "reasoning": "brief expla
 async function generateAnswer(
   question: string,
   retrievedContext: string[],
+  questionDate?: string,
   readerModel?: string,
 ): Promise<string> {
   const model = readerModel ?? LLM.readerModel;
   const context = retrievedContext.join('\n\n---\n\n');
+  // Elapsed-time questions need both endpoints: each session carries a
+  // [DATE:] stamp, and "how long ago" is measured from when the question
+  // is being asked.
+  const asked = questionDate ? `The current date is ${questionDate}.\n\n` : '';
 
   return chat(LLM, model, {
     system: `You are an AI agent answering questions based on retrieved context.
 Use ONLY the information in the provided context to answer.
+Each context block is stamped with the date of the conversation it came from.
+Use those dates to answer questions about when something happened or how much
+time passed between events.
 If the context doesn't contain enough information, say so clearly.
 Be concise and factual. Cite specific details from the context.`,
-    user: `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`,
+    user: `${asked}Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`,
     temperature: LLM.readerTemperature,
     maxTokens: 500,
   });
+}
+
+/**
+ * Read the ingest-supplied session date off a retrieved memory.
+ *
+ * Consolidation hoists a key to the top level only when every row in the batch
+ * agrees on it, so a memory built from one session carries `session_date`
+ * directly while a multi-session batch keeps the individual dates under
+ * `_source_metadata`. Both shapes are real depending on
+ * CONSOLIDATION_INNER_BATCH_SIZE; for a batch the earliest date is the one
+ * that describes when the memory's content begins.
+ */
+function sessionDateOf(metadata: Record<string, unknown> | undefined): string | null {
+  if (!metadata) return null;
+
+  const hoisted = metadata['session_date'];
+  if (typeof hoisted === 'string') return hoisted;
+
+  const sources = metadata['_source_metadata'];
+  if (!Array.isArray(sources)) return null;
+  const dates = sources
+    .map((s) => (s as Record<string, unknown> | null)?.['session_date'])
+    .filter((d): d is string => typeof d === 'string')
+    .sort();
+  return dates[0] ?? null;
 }
 
 async function evaluateQuestion(
@@ -102,23 +145,32 @@ async function evaluateQuestion(
   const results = await client.query(agentId, {
     q: instance.question,
     limit: maxK,
-    mode: (config.queryModes[0] ?? 'hybrid') as QueryMode,
+    mode: QA_MODE,
   });
   const queryMs = performance.now() - queryStart;
 
-  // Extract context from retrieved results
-  const retrievedContext = results.map(r => 
-    typeof r === 'object' && r !== null && 'content' in r
-      ? (r as { content: string }).content
-      : ''
-  ).filter(c => c.length > 0);
+  // Extract context from retrieved results, stamped with each session's date.
+  //
+  // A quarter of LongMemEval is temporal-reasoning ("how many days between X
+  // and Y"), and the sessions themselves only ever say "today" — without the
+  // date the question is unanswerable no matter how good retrieval is. The
+  // ingest attaches `session_date` to every memory, so surface it here.
+  const retrievedContext = results
+    .map((r) => {
+      if (typeof r !== 'object' || r === null || !('content' in r)) return '';
+      const content = (r as { content: string }).content;
+      if (!content) return '';
+      const date = sessionDateOf((r as { metadata?: Record<string, unknown> }).metadata);
+      return date ? `[DATE:${date}]\n${content}` : content;
+    })
+    .filter((c) => c.length > 0);
 
   // Step 2: Generate answer
   const generateStart = performance.now();
   let generatedAnswer = '';
   let generateError: string | null = null;
   try {
-    generatedAnswer = await generateAnswer(instance.question, retrievedContext);
+    generatedAnswer = await generateAnswer(instance.question, retrievedContext, instance.question_date);
   } catch (err) {
     generateError = err instanceof Error ? err.message : 'Unknown error';
   }
@@ -190,7 +242,7 @@ export async function main(configOverride?: BenchmarkConfig): Promise<QAQuestion
     console.log('      Scores track relative progress but are NOT comparable to published');
     console.log('      LongMemEval numbers. Re-run with a gpt-4o judge before publishing.');
   }
-  console.log(`Mode: ${config.queryModes.join(', ')}`);
+  console.log(`Mode: ${QA_MODE}`);
   console.log(`Limit: ${config.questionLimit}`);
   console.log('');
 
@@ -329,7 +381,7 @@ function saveResults(results: QAQuestionResult[], config: BenchmarkConfig, offse
     // Stamped into every saved run so a number can never be quoted later
     // without the judge that produced it.
     paperProtocolJudge: isPaperProtocolJudge(JUDGE_MODEL),
-    modes: config.queryModes,
+    modes: [QA_MODE],
     results,
   };
 
