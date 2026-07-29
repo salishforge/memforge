@@ -11,6 +11,7 @@ import { emitWebhookEvent } from './webhooks.js';
 import { NoOpEmbeddingProvider } from './embedding.js';
 import type { EmbeddingProvider } from './embedding.js';
 import { REFLECTION_SYSTEM_PROMPT, PROCEDURE_EXTRACTION_PROMPT, wrapUserContent } from './llm.js';
+import { extractRelevantPassages } from './snippet.js';
 import type { LLMProvider, ConsolidationSummary } from './llm.js';
 import { safeParseLLMResponse, ReflectionResponseSchema, ProcedureExtractionSchema, NamespaceSchema, SessionIdSchema } from './schemas.js';
 import { getConfig } from './config.js';
@@ -252,7 +253,40 @@ const RESERVED_METADATA_KEYS = new Set([
   '_superseded',
   '_client_id',
   '_session_id',
+  '_source_metadata',
 ]);
+
+/**
+ * Metadata keys consolidation owns on the warm row. Caller-supplied keys that
+ * collide with these are never hoisted — they would overwrite the system's own
+ * account of how the row was built. They remain intact under `_source_metadata`.
+ */
+const CONSOLIDATION_OWNED_METADATA_KEYS = new Set([
+  'batch_size',
+  'oldest',
+  'newest',
+  'consolidation_mode',
+  'key_facts',
+  'entities',
+  'relationships',
+  'sentiment',
+]);
+
+/**
+ * Extract the caller-authored keys from a hot-tier row's metadata.
+ *
+ * Underscore-prefixed keys are system state (`_client_id`, `_outcome_type`,
+ * `_superseded`), not caller data. Excluding them by prefix keeps hot-tier
+ * bookkeeping from being promoted into the warm row as if the caller had
+ * supplied it.
+ */
+function callerAuthoredKeys(metadata: Record<string, unknown> | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!key.startsWith('_')) out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Recursively remove reserved system keys from caller-supplied metadata.
@@ -310,7 +344,7 @@ const DEFAULTS: MemForgeConfig = {
   temporalDecayRate: 0,
   consolidationInnerBatchSize: 50,
   keywordOverlapBoost: 0.3,
-  hybridSemanticWeight: 1.5,
+  hybridSemanticWeight: 1.0,
   temporalProximityDays: 7,
   enableLlmRerank: false,
   enableLlmIngest: false,
@@ -506,6 +540,13 @@ export class MemoryManager {
     namespace?: string,
     sessionId?: string,
     clientId?: string,
+    /**
+     * When the remembered event actually happened, if known. Distinct from the
+     * row's created_at, which is when MemForge stored it — for imported,
+     * backfilled or replayed memories those differ, and every temporal feature
+     * (after/before filters, proximity scoring, timeline) keys off the latter.
+     */
+    occurredAt?: Date,
   ): Promise<AddResult> {
     this.assertAgentId(agentId);
     if (!content || typeof content !== 'string') {
@@ -563,10 +604,10 @@ export class MemoryManager {
     const contextSignals = this.inferContextSignals(content);
 
     const { rows } = await this.pool.query<AddResult>(
-      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO hot_tier (agent_id, content, metadata, content_hash, namespace, session_id, context_signals, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, agent_id, created_at`,
-      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals)],
+      [agentId, content, JSON.stringify(enrichedMetadata), contentHash, ns, sid, JSON.stringify(contextSignals), occurredAt ?? null],
     );
 
     const result = rows[0]!;
@@ -839,6 +880,17 @@ Ranking (numbers only):`;
     // Optional LLM reranking (opt-in via ENABLE_LLM_RERANK=true)
     if (this.config.enableLlmRerank && this.llm && results.length > 1) {
       results = await this.rerankWithLlm(opts.q, results);
+    }
+
+    // Reduce each memory to its query-relevant passages. Applied after
+    // reranking (which reads full content to judge relevance) and before the
+    // overall token budget, so the budget counts what the caller will actually
+    // receive rather than what was retrieved.
+    if (opts.snippetTokens && opts.snippetTokens > 0) {
+      results = results.map((r) => ({
+        ...r,
+        content: extractRelevantPassages(r.content, opts.q, opts.snippetTokens!),
+      }));
     }
 
     // Trim results to fit within caller-specified token budget
@@ -1168,12 +1220,16 @@ Ranking (numbers only):`;
       }
     });
 
-    // Semantic arm weighted above 1.0 because paraphrase matching is the
-    // primary failure mode in conversational memory retrieval (users ask
-    // differently than memories are stored). The multiplier is configurable —
-    // at 1.5 with K=60, semantic ranks 1-31 outscore a keyword-only rank-1
-    // hit, which is a strong thumb on the scale and worth measuring.
-    const semanticWeight = this.config.hybridSemanticWeight ?? 1.5;
+    // Equal-weighted RRF. The arms were previously fused 1.5:1 in favour of
+    // semantic, on the theory that paraphrase matching is the primary failure
+    // mode — but that ratio was calibrated while the keyword arm was returning
+    // roughly one result per query (the plainto_tsquery AND-semantics bug), so
+    // it was fit against a broken arm. Measured across all 500 LongMemEval
+    // questions after that arm was repaired, 1.0 beats 1.5 on R@1, R@5 and
+    // R@10, and halves the cases where fusion buries a session the lexical arm
+    // ranked first. Configurable via HYBRID_SEMANTIC_WEIGHT; the optimum
+    // depends on the embedding model, so measure before moving it.
+    const semanticWeight = this.config.hybridSemanticWeight ?? 1.0;
     semanticResults.forEach((row, idx) => {
       const key = String(row.id);
       const rrf = semanticWeight / (K + idx + 1);
@@ -1211,12 +1267,16 @@ Ranking (numbers only):`;
     const clauses: string[] = [];
     let idx = nextParamIdx;
 
+    // Prefer event time when the caller supplied one at write time. Without
+    // this, a conversation from 2023 imported today answers "what happened last
+    // week?" — the filter would be reading ingestion time. COALESCE keeps every
+    // pre-v3.13 row behaving exactly as before, since occurred_at is NULL there.
     if (after) {
-      clauses.push(`AND (time_end >= $${idx} OR (time_end IS NULL AND consolidated_at >= $${idx}))`);
+      clauses.push(`AND (COALESCE(occurred_at, time_end, consolidated_at) >= $${idx})`);
       idx++;
     }
     if (before) {
-      clauses.push(`AND (time_start <= $${idx} OR (time_start IS NULL AND consolidated_at <= $${idx}))`);
+      clauses.push(`AND (COALESCE(occurred_at, time_start, consolidated_at) <= $${idx})`);
     }
 
     return clauses.join(' ');
@@ -1412,8 +1472,9 @@ Ranking (numbers only):`;
             created_at: Date;
             session_id: string;
             context_signals: ContextSignals;
+            occurred_at: Date | null;
           }>(
-            `SELECT id, content, metadata, created_at, session_id, context_signals
+            `SELECT id, content, metadata, created_at, session_id, context_signals, occurred_at
              FROM hot_tier
              WHERE agent_id = $1 AND namespace = $2
              ORDER BY created_at ASC
@@ -1432,6 +1493,13 @@ Ranking (numbers only):`;
           const oldest = hotRows.rows[0]!.created_at;
           const newest = hotRows.rows[hotRows.rows.length - 1]!.created_at;
           const batchSize = hotRows.rows.length;
+          // Earliest event time among the contributing rows. Null when none
+          // carried one, in which case readers fall back to the ingestion
+          // columns and behaviour is unchanged from before v3.13.
+          const occurredAt = hotRows.rows
+            .map((r) => r.occurred_at)
+            .filter((d): d is Date => d instanceof Date)
+            .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
 
           // Heuristic pre-screening: skip LLM for high-overlap batches (Jaccard > 0.7
           // across sampled pairs) — concat produces equivalent results without API cost.
@@ -1523,6 +1591,36 @@ Ranking (numbers only):`;
           })();
           if (latestClientId) metadata._client_id = latestClientId;
 
+          // ── Carry caller-supplied metadata into the warm row ───────────
+          // Consolidation builds warm metadata from scratch, which used to
+          // discard whatever the caller attached at add() time. An agent
+          // tagging memories with a source document, customer id, or the
+          // real-world time of an event lost all of it the first time a batch
+          // consolidated — silently, and unrecoverably once the hot rows were
+          // deleted below.
+          //
+          // A batch folds N rows into one, so neither mechanism alone suffices:
+          //  * `_source_metadata` keeps every contributing row's keys, in the
+          //    same order as the batch. This is the only way per-row values
+          //    (distinct timestamps, distinct source ids) survive a batch > 1.
+          //  * keys the whole batch agrees on are also lifted to the top level,
+          //    so the common case stays directly filterable in SQL as
+          //    `metadata->>'customer_id'` rather than through array containment.
+          const perRowMetadata = hotRows.rows.map((r) => callerAuthoredKeys(r.metadata));
+          if (perRowMetadata.some((m) => Object.keys(m).length > 0)) {
+            metadata._source_metadata = perRowMetadata;
+
+            const first = perRowMetadata[0]!;
+            for (const [key, value] of Object.entries(first)) {
+              if (CONSOLIDATION_OWNED_METADATA_KEYS.has(key)) continue;
+              const encoded = JSON.stringify(value);
+              const unanimous = perRowMetadata.every(
+                (m) => key in m && JSON.stringify(m[key]) === encoded,
+              );
+              if (unanimous) metadata[key] = value;
+            }
+          }
+
           // Determine dominant outcome_type from this inner batch's rows
           const outcomeCounts = new Map<string, number>();
           for (const r of hotRows.rows) {
@@ -1573,10 +1671,10 @@ Ranking (numbers only):`;
           // 'shared' or another value when WARM_CONSOLIDATION_TARGET is configured for
           // cross-project propagation).
           const warmRow = await client.query<{ id: bigint }>(
-            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, context_signals)
-             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, $13)
+            `INSERT INTO warm_tier (agent_id, content, summary, source_hot_ids, metadata, embedding, time_start, time_end, outcome_type, namespace, embedding_model, session_id, context_signals, occurred_at)
+             VALUES ($1, $2, $9, $3, $4, $5::${await this.vcast()}, $6, $7, $8, $10, $11, $12, $13, $14)
              RETURNING id`,
-            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals)],
+            [agentId, finalContent, batchIds, JSON.stringify(metadata), vectorLiteral, oldest, newest, dominantOutcome, summaryText, targetNs, embeddingModel, latestSessionId, JSON.stringify(mergedSignals), occurredAt],
           );
           const warmRowId = warmRow.rows[0]!.id;
 

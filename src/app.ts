@@ -402,6 +402,24 @@ export function createApp(deps: AppDependencies): express.Express {
     const callerClientId = getClientId(req);
 
     try {
+      // Event time, when the caller knows it. Imported and backfilled memories
+      // are the whole point: created_at records when we stored it, which is not
+      // when it happened, and the temporal filters key off the latter.
+      const rawOccurredAt = (req.body as Record<string, unknown>)['occurred_at'];
+      let occurredAt: Date | undefined;
+      if (rawOccurredAt !== undefined && rawOccurredAt !== null) {
+        if (typeof rawOccurredAt !== 'string' && typeof rawOccurredAt !== 'number') {
+          fail(res, 400, '"occurred_at" must be an ISO 8601 string or epoch milliseconds');
+          return;
+        }
+        const parsed = new Date(rawOccurredAt);
+        if (isNaN(parsed.getTime())) {
+          fail(res, 400, '"occurred_at" is not a valid date');
+          return;
+        }
+        occurredAt = parsed;
+      }
+
       const result = await manager.add(
         getAgentId(req),
         storeContent,
@@ -411,6 +429,7 @@ export function createApp(deps: AppDependencies): express.Express {
         callerNamespace,
         callerSessionId,
         callerClientId,
+        occurredAt,
       );
       void invalidateAgent(getAgentId(req));
       ok(res, {
@@ -442,6 +461,7 @@ export function createApp(deps: AppDependencies): express.Express {
     const before = qstr(req.query['before']);
     const decay = qstr(req.query['decay']);
     const maxTokens = qstr(req.query['max_tokens']);
+    const snippetTokens = qstr(req.query['snippet_tokens']);
     const rawNamespace = qstr(req.query['namespace']);
     const rawEpistemic = qstr(req.query['epistemic']);
     const rawExplain = qstr(req.query['explain']);
@@ -485,6 +505,12 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
+    const snippetTokensNum = snippetTokens !== undefined ? parseInt(snippetTokens, 10) : undefined;
+    if (snippetTokensNum !== undefined && (isNaN(snippetTokensNum) || snippetTokensNum < 1)) {
+      fail(res, 400, '"snippet_tokens" must be a positive integer');
+      return;
+    }
+
     let namespace: string | undefined;
     if (rawNamespace !== undefined) {
       const nsResult = NamespaceSchema.safeParse(rawNamespace);
@@ -515,7 +541,7 @@ export function createApp(deps: AppDependencies): express.Express {
       return;
     }
 
-    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, namespace, epistemic, explain });
+    const key = queryKey(agentId, q, limitNum, { mode, after, before, decay, maxTokens: maxTokensNum, snippetTokens: snippetTokensNum, namespace, epistemic, explain });
     const cached = await cacheGet(key);
     if (cached !== null) {
       res.setHeader('X-Cache', 'HIT');
@@ -534,6 +560,7 @@ export function createApp(deps: AppDependencies): express.Express {
         before: beforeDate,
         decayRate,
         maxTokens: maxTokensNum,
+        snippetTokens: snippetTokensNum,
         namespace,
         epistemic,
         explain,

@@ -205,7 +205,7 @@ Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KEYWORD_OVERLAP_BOOST` | `0.3` | Score boost when query tokens overlap memory keywords |
-| `HYBRID_SEMANTIC_WEIGHT` | `1.5` | Weight on the semantic arm's RRF contribution in hybrid search. With RRF K=60, 1.5 means semantic ranks 1-31 outscore a keyword-only rank-1 hit; lower values give the lexical arm more say. Optimal value depends on the embedding model — measure before changing. |
+| `HYBRID_SEMANTIC_WEIGHT` | `1.0` | Weight on the semantic arm's RRF contribution in hybrid search (1.0 = equal weighting). With RRF K=60, a weight of 1.5 means semantic ranks 1-31 outscore a keyword-only rank-1 hit; lower values give the lexical arm more say. Optimal value depends on the embedding model — measure before changing. |
 | `TEMPORAL_PROXIMITY_DAYS` | `7` | Days window for temporal proximity boost |
 | `CONSOLIDATION_INNER_BATCH_SIZE` | `50` | Hot-tier rows per inner consolidation batch |
 | `TEMPORAL_DECAY_RATE` | `0` | Score decay per hour (0 = disabled) |

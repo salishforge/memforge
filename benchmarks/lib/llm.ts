@@ -31,7 +31,9 @@ export interface LlmConfig {
   apiKey: string | undefined;
   judgeModel: string;
   readerModel: string;
+  readerTemperature: number;
   timeoutMs: number;
+  maxRetries: number;
 }
 
 export function loadLlmConfig(): LlmConfig {
@@ -43,10 +45,18 @@ export function loadLlmConfig(): LlmConfig {
     apiKey: process.env['QA_API_KEY'] ?? process.env['OPENAI_API_KEY'],
     judgeModel: process.env['QA_JUDGE_MODEL'] ?? DEFAULT_QA_MODEL,
     readerModel: process.env['QA_READER_MODEL'] ?? DEFAULT_QA_MODEL,
+    // Greedy by default. The reader previously sampled at 0.3, so the same
+    // question produced different answers — and therefore different judge
+    // verdicts — between runs: observed a question scoring 100% then 0% with
+    // nothing changed. A benchmark whose score moves on re-run cannot measure
+    // an improvement. Residual variance remains (hosted models are not bitwise
+    // reproducible), but this removes the deliberate source.
+    readerTemperature: parseFloat(process.env['QA_READER_TEMPERATURE'] ?? '0'),
     // Cloud-hosted Ollama models answer in tens of seconds under load; the
     // previous implementation had no timeout at all, so one stalled request
     // could hang a 500-question run indefinitely.
     timeoutMs: parseInt(process.env['QA_TIMEOUT_MS'] ?? '180000', 10),
+    maxRetries: parseInt(process.env['QA_MAX_RETRIES'] ?? '5', 10),
   };
 }
 
@@ -90,21 +100,42 @@ export async function chat(
   if (opts.maxTokens !== undefined) body['max_tokens'] = opts.maxTokens;
   if (opts.json) body['response_format'] = { type: 'json_object' };
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(config.timeoutMs),
-  });
+  // Retry transient failures. A 500-question run makes thousands of calls, and
+  // every hosted provider rate-limits: an unretried 429 does not merely lose
+  // one question, it loses every question after the quota wall — measured on a
+  // full run, 177 of 500 failed this way, wiping out two entire categories and
+  // leaving a biased 316-question sample that still looked like a result.
+  let response: Response | undefined;
+  let lastError = '';
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(
-      `LLM request failed (${response.status} ${response.statusText}) at ${config.baseUrl} for model "${model}": ${detail.slice(0, 300)}`,
-    );
+    if (response.ok) break;
+
+    const retryable = response.status === 429 || response.status >= 500;
+    lastError = await response.text().catch(() => '');
+    if (!retryable || attempt === config.maxRetries) {
+      throw new Error(
+        `LLM request failed (${response.status} ${response.statusText}) at ${config.baseUrl} for model "${model}" after ${attempt + 1} attempt(s): ${lastError.slice(0, 300)}`,
+      );
+    }
+
+    // Honour Retry-After when the provider sends it; otherwise exponential
+    // backoff with jitter so concurrent workers do not resynchronise and
+    // stampede the limit again together.
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : Math.min(2 ** attempt * 1000, 30_000) * (0.5 + Math.random());
+    await new Promise((r) => setTimeout(r, backoffMs));
   }
 
-  const result = await response.json() as {
+  const result = await response!.json() as {
     choices?: Array<{ message?: { content?: string } }>;
   };
   const content = result.choices?.[0]?.message?.content;
@@ -112,4 +143,16 @@ export async function chat(
     throw new Error(`LLM returned no message content for model "${model}"`);
   }
   return content;
+}
+
+/**
+ * Judges sometimes wrap JSON in a markdown code fence despite being asked for
+ * a JSON object — observed 7 times in a 500-question run, each of which was
+ * otherwise a perfectly good verdict thrown away by JSON.parse. Strip the
+ * fence rather than discard the judgment.
+ */
+export function stripCodeFence(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/.exec(trimmed);
+  return fenced?.[1]?.trim() ?? trimmed;
 }

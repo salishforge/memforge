@@ -46,3 +46,4 @@ benchmarks/data/
 benchmarks/results/
 __pycache__/
 *.pyc
+benchmarks/longmemeval-qa/results/

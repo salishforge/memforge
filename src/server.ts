@@ -56,7 +56,7 @@ const manager = new MemoryManager({
   temporalDecayRate: parseFloat(process.env['TEMPORAL_DECAY_RATE'] ?? '0'),
   consolidationInnerBatchSize: parseInt(process.env['CONSOLIDATION_INNER_BATCH_SIZE'] ?? '50', 10),
   keywordOverlapBoost: parseFloat(process.env['KEYWORD_OVERLAP_BOOST'] ?? '0.3'),
-  hybridSemanticWeight: parseFloat(process.env['HYBRID_SEMANTIC_WEIGHT'] ?? '1.5'),
+  hybridSemanticWeight: parseFloat(process.env['HYBRID_SEMANTIC_WEIGHT'] ?? '1.0'),
   temporalProximityDays: parseFloat(process.env['TEMPORAL_PROXIMITY_DAYS'] ?? '7'),
   enableLlmRerank: process.env['ENABLE_LLM_RERANK'] === 'true',
   enableLlmIngest: process.env['ENABLE_LLM_INGEST'] === 'true',

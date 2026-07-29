@@ -44,12 +44,17 @@ CREATE TABLE IF NOT EXISTS hot_tier (
   content_hash    TEXT,
   namespace       TEXT        NOT NULL DEFAULT 'default',
   session_id      TEXT        NOT NULL DEFAULT 'default',
-  context_signals JSONB       NOT NULL DEFAULT '{}'
+  context_signals JSONB       NOT NULL DEFAULT '{}',
+  -- v3.13: when the remembered event happened (valid time), as opposed to
+  -- created_at, which is when MemForge stored it. NULL when the caller did
+  -- not supply it; readers fall back to created_at.
+  occurred_at     TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS hot_tier_agent_id_idx     ON hot_tier (agent_id);
 CREATE INDEX IF NOT EXISTS hot_tier_created_at_idx   ON hot_tier (created_at DESC);
 CREATE INDEX IF NOT EXISTS hot_tier_content_hash_idx ON hot_tier (agent_id, content_hash);
+CREATE INDEX IF NOT EXISTS warm_tier_occurred_idx     ON warm_tier (agent_id, occurred_at) WHERE occurred_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS hot_tier_namespace_idx    ON hot_tier (agent_id, namespace);
 CREATE INDEX IF NOT EXISTS hot_tier_session_idx      ON hot_tier (agent_id, namespace, session_id);
 
@@ -74,9 +79,13 @@ CREATE TABLE IF NOT EXISTS warm_tier (
   source_hot_ids              BIGINT[]    NOT NULL DEFAULT '{}',
   metadata                    JSONB       NOT NULL DEFAULT '{}',
   consolidated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- Temporal bounds of the source events in this consolidated row
+  -- Temporal bounds of the source events in this consolidated row.
+  -- NOTE: these are ingestion timestamps — see occurred_at for event time.
   time_start                  TIMESTAMPTZ,
   time_end                    TIMESTAMPTZ,
+  -- v3.13: earliest event time among the contributing rows (valid time).
+  -- NULL when unknown; readers fall back to time_start/consolidated_at.
+  occurred_at                 TIMESTAMPTZ,
   -- Access tracking for temporal decay and reinforcement
   access_count                INT         NOT NULL DEFAULT 0,
   last_accessed               TIMESTAMPTZ,

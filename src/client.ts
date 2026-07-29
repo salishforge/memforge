@@ -107,12 +107,20 @@ export class MemForgeClient {
   // ─── Memory Operations ──────────────────────────────────────────────────
 
   /** Add a memory event to the hot tier. */
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string): Promise<AddResult> {
+  /**
+   * Store a memory.
+   *
+   * `occurredAt` is when the remembered event happened, which for imported or
+   * backfilled memories is not when it is being stored. Supply it and the
+   * temporal filters read it instead of the ingestion timestamp.
+   */
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string, occurredAt?: Date | string): Promise<AddResult> {
     return this.post<AddResult>(`/memory/${enc(agentId)}/add`, {
       content,
       metadata,
       ...(namespace ? { namespace } : {}),
       ...(sessionId ? { session_id: sessionId } : {}),
+      ...(occurredAt ? { occurred_at: occurredAt instanceof Date ? occurredAt.toISOString() : occurredAt } : {}),
     });
   }
 
@@ -129,6 +137,12 @@ export class MemForgeClient {
     epistemic?: 'only_established' | 'include_provisional' | 'include_contested' | 'all';
     /** Attach per-result explanation factors (v3.10). */
     explain?: boolean;
+    /**
+     * Per-result token budget: return only the passages of each memory that are
+     * relevant to `q`. A consolidated memory is a whole conversation while the
+     * answer is usually one exchange, so this is often a large context saving.
+     */
+    snippetTokens?: number;
   }): Promise<QueryResult[]> {
     const params = new URLSearchParams({ q: options.q });
     if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -139,6 +153,7 @@ export class MemForgeClient {
     if (options.namespace) params.set('namespace', options.namespace);
     if (options.epistemic) params.set('epistemic', options.epistemic);
     if (options.explain) params.set('explain', 'true');
+    if (options.snippetTokens !== undefined) params.set('snippet_tokens', String(options.snippetTokens));
     return this.get<QueryResult[]>(`/memory/${enc(agentId)}/query?${params}`);
   }
 
@@ -724,8 +739,8 @@ export class ResilientMemForgeClient {
   }
 
   // Memory operations — return empty results on failure
-  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string): Promise<AddResult | null> {
-    return this.safe('add', () => this.client.add(agentId, content, metadata, namespace, sessionId), null);
+  async add(agentId: string, content: string, metadata?: Record<string, unknown>, namespace?: string, sessionId?: string, occurredAt?: Date | string): Promise<AddResult | null> {
+    return this.safe('add', () => this.client.add(agentId, content, metadata, namespace, sessionId, occurredAt), null);
   }
 
   async query(agentId: string, options: Parameters<MemForgeClient['query']>[1]): Promise<QueryResult[]> {

@@ -263,6 +263,13 @@ export interface QueryOptions {
   decayRate?: number;
   /** Token budget — return results fitting within this many tokens (estimate: content.length/4). */
   maxTokens?: number;
+  /**
+   * Per-result budget: reduce each memory to the passages most relevant to `q`,
+   * within this many tokens. A consolidated memory is a whole conversation while
+   * the answer is usually one exchange, so an agent otherwise pays for the rest.
+   * Omitted or 0 returns full content. Lexical and deterministic — no LLM call.
+   */
+  snippetTokens?: number;
   /** Namespace to search within (default: 'default') */
   namespace?: string;
   /** Restrict results to a given epistemic confidence level (v3.9). */
@@ -808,11 +815,11 @@ export interface MemForgeConfig {
   keywordOverlapBoost: number;
   /**
    * Weight applied to the semantic arm's RRF contribution in hybrid search
-   * (default 1.5). Above 1.0 the semantic ranking dominates: with the standard
-   * RRF constant K=60, a weight of 1.5 means semantic ranks 1-31 all outscore
-   * a keyword-only rank-1 hit, so lexical matches the vector arm missed are
-   * effectively invisible. Exposed as HYBRID_SEMANTIC_WEIGHT so the balance
-   * can be measured rather than assumed.
+   * (default 1.0 — equal weighting). Above 1.0 the semantic ranking dominates:
+   * with the standard RRF constant K=60, a weight of 1.5 means semantic ranks
+   * 1-31 all outscore a keyword-only rank-1 hit, so lexical matches the vector
+   * arm missed become effectively invisible. Exposed as HYBRID_SEMANTIC_WEIGHT
+   * so the balance can be measured rather than assumed.
    */
   hybridSemanticWeight: number;
   /** Temporal proximity window in days for time-aware scoring (default 7, 0 = disabled). */
