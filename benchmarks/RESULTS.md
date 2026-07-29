@@ -2,40 +2,11 @@
 
 Generated: 2026-07-29
 
-## How to read these numbers
-
-**Retrieval recall is not QA accuracy.** LongMemEval's headline metric is
-end-to-end QA (retrieve → generate → judge); the recall tables below measure
-only whether a gold session was retrieved. Recall runs 20–40 points above QA
-on the same system, so these tables are not comparable to figures published by
-systems reporting QA accuracy.
-
-**Recall@k counts a hit if *any* gold session is retrieved.** That is
-LongMemEval's definition, and it flatters multi-evidence questions:
-`multi-session` questions need 2.59 gold sessions on average, and scoring them
-100% when one of three is present overstates what actually reached the reader.
-Complete-evidence recall — all gold sessions present — is **91.8%** against
-97.6% any-hit. Prefer the former when reasoning about what a reader can answer.
-
-**QA accuracy depends heavily on the reader model, and on how much context it
-is given.** Measured across three reader families on this corpus, the same
-retrieval produced 56.2%–69.8% QA depending on the model, and the optimal
-context width differed *in direction*: weaker readers scored best on ~14,000
-tokens of extracted passages and lost 4–6 points at 32,000 tokens of whole
-memories, while the strongest reader peaked at 32,000. A single QA number
-without its reader and context width attached is not meaningful.
-
-**Prior figures from this harness were wrong.** Before 2026-07-29, QA runs
-used keyword-only retrieval rather than hybrid, and never supplied session
-dates to the reader — which made `temporal-reasoning` (133 of 500 questions)
-unanswerable by construction. Any QA number published before that date
-understates the system and should not be compared with these.
-
 ## LongMemEval — hybrid mode
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T02:15:57.504Z
+- Timestamp: 2026-07-29T08:36:51.463Z
 
 ### Retrieval Quality
 
@@ -47,10 +18,10 @@ understates the system and should not be compared with these.
 
 | Metric | Sessions (comparable) | Rows (native) |
 |--------|----------------------|---------------|
-| Recall@1 | 83.8% | 83.8% |
-| Recall@3 | 92.6% | 92.6% |
-| Recall@5 | 95.4% | 95.4% |
-| Recall@10 | 97.6% | 97.6% |
+| Recall@1 | 81.6% | 81.6% |
+| Recall@3 | 90.4% | 90.4% |
+| Recall@5 | 93.0% | 93.0% |
+| Recall@10 | 95.2% | 95.2% |
 
 Sessions packed per retrieved row: **1.0**
 (1.0 means rows and sessions are 1:1 and the two columns converge.)
@@ -62,25 +33,25 @@ Sessions packed per retrieved row: **1.0**
 
 | Category | Count | R@1 (sessions) | R@3 (sessions) | R@5 (sessions) | R@10 (sessions) |
 |----------|-------|------|------|------|------|
-| knowledge-update | 78 | 96.2% | 100.0% | 100.0% | 100.0% |
-| multi-session | 133 | 88.7% | 95.5% | 97.7% | 100.0% |
+| knowledge-update | 78 | 93.6% | 97.4% | 97.4% | 97.4% |
+| multi-session | 133 | 85.7% | 92.5% | 94.7% | 97.0% |
 | single-session-assistant | 56 | 89.3% | 92.9% | 98.2% | 100.0% |
 | single-session-preference | 30 | 46.7% | 70.0% | 83.3% | 93.3% |
-| single-session-user | 70 | 81.4% | 91.4% | 92.9% | 95.7% |
-| temporal-reasoning | 133 | 78.9% | 91.0% | 93.2% | 94.7% |
+| single-session-user | 70 | 78.6% | 88.6% | 90.0% | 92.9% |
+| temporal-reasoning | 133 | 76.7% | 88.7% | 90.2% | 91.7% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 40ms | 97ms | 50ms |
-| Ingest (per question) | 6.8s | 10.5s | 6.9s |
+| Query | 43ms | 99ms | 53ms |
+| Ingest (per question) | 6.4s | 11.2s | 6.6s |
 
 ## LongMemEval — keyword mode
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T02:15:57.512Z
+- Timestamp: 2026-07-29T08:36:51.471Z
 
 ### Retrieval Quality
 
@@ -92,10 +63,10 @@ Sessions packed per retrieved row: **1.0**
 
 | Metric | Sessions (comparable) | Rows (native) |
 |--------|----------------------|---------------|
-| Recall@1 | 68.8% | 68.8% |
-| Recall@3 | 86.4% | 86.4% |
-| Recall@5 | 91.8% | 91.8% |
-| Recall@10 | 96.4% | 96.4% |
+| Recall@1 | 67.0% | 67.0% |
+| Recall@3 | 84.6% | 84.6% |
+| Recall@5 | 90.0% | 90.0% |
+| Recall@10 | 94.0% | 94.0% |
 
 Sessions packed per retrieved row: **1.0**
 (1.0 means rows and sessions are 1:1 and the two columns converge.)
@@ -107,25 +78,25 @@ Sessions packed per retrieved row: **1.0**
 
 | Category | Count | R@1 (sessions) | R@3 (sessions) | R@5 (sessions) | R@10 (sessions) |
 |----------|-------|------|------|------|------|
-| knowledge-update | 78 | 79.5% | 96.2% | 100.0% | 100.0% |
-| multi-session | 133 | 75.2% | 94.0% | 97.0% | 98.5% |
+| knowledge-update | 78 | 76.9% | 93.6% | 97.4% | 97.4% |
+| multi-session | 133 | 72.9% | 91.7% | 94.7% | 95.5% |
 | single-session-assistant | 56 | 58.9% | 89.3% | 92.9% | 96.4% |
 | single-session-preference | 30 | 40.0% | 50.0% | 73.3% | 83.3% |
-| single-session-user | 70 | 70.0% | 84.3% | 92.9% | 97.1% |
-| temporal-reasoning | 133 | 66.2% | 81.2% | 85.0% | 94.7% |
+| single-session-user | 70 | 67.1% | 81.4% | 90.0% | 94.3% |
+| temporal-reasoning | 133 | 64.7% | 79.7% | 83.5% | 91.7% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 21ms | 65ms | 40ms |
-| Ingest (per question) | 6.8s | 10.5s | 6.9s |
+| Query | 21ms | 66ms | 41ms |
+| Ingest (per question) | 6.4s | 11.2s | 6.6s |
 
 ## LongMemEval — semantic mode
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T02:15:57.519Z
+- Timestamp: 2026-07-29T08:36:51.478Z
 
 ### Retrieval Quality
 
@@ -137,10 +108,10 @@ Sessions packed per retrieved row: **1.0**
 
 | Metric | Sessions (comparable) | Rows (native) |
 |--------|----------------------|---------------|
-| Recall@1 | 76.0% | 76.0% |
-| Recall@3 | 88.2% | 88.2% |
-| Recall@5 | 89.6% | 89.6% |
-| Recall@10 | 95.4% | 95.4% |
+| Recall@1 | 74.2% | 74.2% |
+| Recall@3 | 86.0% | 86.0% |
+| Recall@5 | 87.4% | 87.4% |
+| Recall@10 | 93.0% | 93.0% |
 
 Sessions packed per retrieved row: **1.0**
 (1.0 means rows and sessions are 1:1 and the two columns converge.)
@@ -152,19 +123,19 @@ Sessions packed per retrieved row: **1.0**
 
 | Category | Count | R@1 (sessions) | R@3 (sessions) | R@5 (sessions) | R@10 (sessions) |
 |----------|-------|------|------|------|------|
-| knowledge-update | 78 | 79.5% | 96.2% | 97.4% | 98.7% |
-| multi-session | 133 | 82.0% | 91.0% | 92.5% | 98.5% |
+| knowledge-update | 78 | 76.9% | 93.6% | 94.9% | 96.2% |
+| multi-session | 133 | 78.9% | 88.0% | 89.5% | 95.5% |
 | single-session-assistant | 56 | 96.4% | 100.0% | 100.0% | 100.0% |
 | single-session-preference | 30 | 60.0% | 80.0% | 80.0% | 90.0% |
-| single-session-user | 70 | 60.0% | 72.9% | 74.3% | 85.7% |
-| temporal-reasoning | 133 | 71.4% | 85.7% | 88.0% | 94.7% |
+| single-session-user | 70 | 58.6% | 70.0% | 71.4% | 82.9% |
+| temporal-reasoning | 133 | 69.9% | 83.5% | 85.7% | 91.7% |
 
 ### Latency
 
 | Operation | p50 | p95 | Mean |
 |-----------|-----|-----|------|
-| Query | 30ms | 74ms | 35ms |
-| Ingest (per question) | 6.8s | 10.5s | 6.9s |
+| Query | 28ms | 58ms | 31ms |
+| Ingest (per question) | 6.4s | 11.2s | 6.6s |
 
 ---
 
