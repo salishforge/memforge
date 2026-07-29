@@ -232,6 +232,12 @@ export interface QueryResult {
   consolidated_at: Date;
   time_start: Date | null;
   time_end: Date | null;
+  /**
+   * When the remembered event happened (v3.13). Null when the caller did not
+   * supply one, in which case time_start/consolidated_at — which record when it
+   * was ingested — are the only temporal information available.
+   */
+  occurred_at: Date | null;
   rank: number;
   /** Sentiment/urgency/session_type signals merged from contributing hot rows. */
   context_signals?: ContextSignals;

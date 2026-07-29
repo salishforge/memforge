@@ -54,12 +54,17 @@ async function ingestQuestion(
     // Prefix with session marker for scoring
     const taggedContent = `[SESSION_ID:${sessionId}]\n${turnText}`;
 
+    // LongMemEval dates look like "2023/05/20 (Sat) 02:21". Passing it as the
+    // event time is the point of occurred_at: these conversations happened in
+    // 2023 and are being ingested now, so every temporal filter would otherwise
+    // read the ingestion clock.
+    const occurredAt = sessionDate ? new Date(sessionDate.replace(/\s*\([A-Za-z]{3}\)/, '')) : undefined;
     await client.add(agentId, taggedContent, {
       session_id: sessionId,
       session_date: sessionDate,
       session_index: i,
       benchmark: 'longmemeval',
-    });
+    }, undefined, undefined, occurredAt && !isNaN(occurredAt.getTime()) ? occurredAt : undefined);
     sessionsIngested++;
   }
 

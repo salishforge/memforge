@@ -792,6 +792,9 @@ Ranking (numbers only):`;
             summary: pr.summary ?? undefined,
             metadata: { ...pr.metadata, _from_pool: pool.pool_id, _source_agent: pr.source_agent_id, _trust_score: trustScore },
             consolidated_at: pr.published_at,
+            // Pool rows are published summaries, not consolidated conversations;
+            // they carry no event time of their own.
+            occurred_at: null,
             time_start: null,
             time_end: null,
             rank: pr.rank * trustScore,
@@ -1039,7 +1042,7 @@ Ranking (numbers only):`;
       `WITH q AS (
          SELECT replace(plainto_tsquery('english', $2)::text, '&', '|')::tsquery AS tsq
        )
-       SELECT w.id, w.content, w.summary, w.metadata, w.consolidated_at, w.time_start, w.time_end,
+       SELECT w.id, w.content, w.summary, w.metadata, w.consolidated_at, w.time_start, w.time_end, w.occurred_at,
               w.context_signals, w.epistemic_status, w.evidence_count,
               ts_rank_cd(w.content_tsv, q.tsq) * (0.5 + 0.5 * w.importance) AS rank
        FROM warm_tier w, q
@@ -1086,7 +1089,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, occurred_at, context_signals,
               epistemic_status, evidence_count,
               ts_rank_cd(content_code_tsv, plainto_tsquery('simple', $2)) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
@@ -1124,7 +1127,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, occurred_at, context_signals,
               epistemic_status, evidence_count,
               similarity(content, $2) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
@@ -1165,7 +1168,7 @@ Ranking (numbers only):`;
     const limitIdx = params.length;
 
     const { rows } = await this.pool.query<QueryResult>(
-      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, context_signals,
+      `SELECT id, content, summary, metadata, consolidated_at, time_start, time_end, occurred_at, context_signals,
               epistemic_status, evidence_count,
               (1 - (embedding <=> $2::${await this.vcast()})) * (0.5 + 0.5 * importance) AS rank
        FROM warm_tier
