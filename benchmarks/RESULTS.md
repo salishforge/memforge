@@ -2,11 +2,33 @@
 
 Generated: 2026-07-29
 
+## How to read these numbers
+
+**Retrieval recall is not QA accuracy.** LongMemEval's headline metric is
+end-to-end QA (retrieve → generate → judge); the tables below measure only
+whether a gold session was retrieved. Recall runs 20–40 points above QA on
+the same system, so these are not comparable to figures published by systems
+reporting QA accuracy. For the paper-comparable QA number see
+`benchmarks/OFFICIAL-RESULTS.md`.
+
+**Recall@k counts a hit if *any* gold session is retrieved.** That is
+LongMemEval's definition, and it flatters multi-evidence questions:
+`multi-session` questions need ~2.6 gold sessions on average, and scoring
+them 100% when one of three is present overstates what reached the reader.
+Prefer complete-evidence recall when reasoning about what a reader can
+actually answer.
+
+**QA accuracy depends on the reader model and on how much context it gets.**
+Measured across three reader families on this corpus, identical retrieval
+produced 56%–70% QA depending on the model, and the optimal context width
+differed *in direction* between them. A QA figure without its reader and
+context width attached is not meaningful.
+
 ## LongMemEval — hybrid mode
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T08:36:51.463Z
+- Timestamp: 2026-07-29T08:58:04.212Z
 
 ### Retrieval Quality
 
@@ -51,7 +73,7 @@ Sessions packed per retrieved row: **1.0**
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T08:36:51.471Z
+- Timestamp: 2026-07-29T08:58:04.220Z
 
 ### Retrieval Quality
 
@@ -96,7 +118,7 @@ Sessions packed per retrieved row: **1.0**
 
 - Questions evaluated: 500
 - Consolidation mode: concat
-- Timestamp: 2026-07-29T08:36:51.478Z
+- Timestamp: 2026-07-29T08:58:04.227Z
 
 ### Retrieval Quality
 

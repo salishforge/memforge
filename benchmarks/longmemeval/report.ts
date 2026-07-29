@@ -29,6 +29,30 @@ function generateMarkdown(reports: BenchmarkReport[]): string {
   lines.push('');
   lines.push(`Generated: ${now}`);
   lines.push('');
+  // Emitted here rather than hand-written into RESULTS.md: that file is
+  // regenerated on every run, so narrative added to it is silently lost.
+  lines.push('## How to read these numbers');
+  lines.push('');
+  lines.push('**Retrieval recall is not QA accuracy.** LongMemEval\'s headline metric is');
+  lines.push('end-to-end QA (retrieve → generate → judge); the tables below measure only');
+  lines.push('whether a gold session was retrieved. Recall runs 20–40 points above QA on');
+  lines.push('the same system, so these are not comparable to figures published by systems');
+  lines.push('reporting QA accuracy. For the paper-comparable QA number see');
+  lines.push('`benchmarks/OFFICIAL-RESULTS.md`.');
+  lines.push('');
+  lines.push('**Recall@k counts a hit if *any* gold session is retrieved.** That is');
+  lines.push('LongMemEval\'s definition, and it flatters multi-evidence questions:');
+  lines.push('`multi-session` questions need ~2.6 gold sessions on average, and scoring');
+  lines.push('them 100% when one of three is present overstates what reached the reader.');
+  lines.push('Prefer complete-evidence recall when reasoning about what a reader can');
+  lines.push('actually answer.');
+  lines.push('');
+  lines.push('**QA accuracy depends on the reader model and on how much context it gets.**');
+  lines.push('Measured across three reader families on this corpus, identical retrieval');
+  lines.push('produced 56%–70% QA depending on the model, and the optimal context width');
+  lines.push('differed *in direction* between them. A QA figure without its reader and');
+  lines.push('context width attached is not meaningful.');
+  lines.push('');
 
   for (const report of reports) {
     lines.push(`## LongMemEval — ${report.queryMode} mode`);
