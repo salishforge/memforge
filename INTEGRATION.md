@@ -90,6 +90,33 @@ const context = await client.activeRecall(agentId, userMessage);
 
 Inject the results into the agent's system prompt or context window.
 
+#### Managing how much context you pull
+
+A stored memory is often an entire conversation — in a real corpus the median
+consolidated row is ~10,000 characters, so `limit: 10` can be 25,000+ tokens.
+Two knobs control what that costs you:
+
+```typescript
+const memories = await client.query(agentId, {
+  q: userMessage,
+  mode: 'hybrid',
+  limit: 10,
+  snippetTokens: 1500,   // per memory: keep only passages relevant to q
+});
+```
+
+`snippetTokens` returns the parts of each memory that answer the query rather
+than the whole conversation. It is lexical and deterministic — no LLM call, no
+extra round trip.
+
+**How much context is right depends on your reader model, and the answer is not
+"as much as possible" or "as little as possible".** Measured on 500 LongMemEval
+questions across three model families: weaker readers scored best on ~14,000
+tokens of extracted passages and *lost* 4–6 points when given 32,000 tokens of
+whole memories, while a stronger reader scored best on the full 32,000 and lost
+ground when narrowed. If you are unsure, start with `limit: 10` and no snippet
+budget, then measure — narrowing helps some models and hurts others.
+
 ### Step 2: Act (agent does its work)
 
 This is your agent's normal operation. MemForge doesn't interfere here — it just provided context in Step 1.
@@ -111,6 +138,27 @@ await client.add(agentId, 'User prefers dark mode', {
 // (retrievalIds come from Step 1's query results)
 await client.feedback(agentId, retrievalIds, 'positive', ['task_completed']);
 ```
+
+#### Importing or backfilling: say when it happened
+
+MemForge records when it *stored* a memory. If you are importing history,
+replaying a log, or ingesting anything after the fact, pass the real event time
+— otherwise every temporal query reads the ingestion clock and a conversation
+from 2023 answers "what happened this week?".
+
+```typescript
+await client.add(
+  agentId,
+  'Visited the Museum of Modern Art',
+  { source: 'chat-export' },
+  undefined,                      // namespace
+  undefined,                      // sessionId
+  new Date('2023-05-20T02:21:00Z') // when it actually happened
+);
+```
+
+`after`/`before` filters prefer this and fall back to ingestion time, so
+memories written without it behave exactly as before.
 
 ### Step 4: Sleep (when the agent is idle)
 
@@ -252,8 +300,18 @@ curl -X POST http://localhost:3333/memory/my-agent/add \
   -H "Content-Type: application/json" \
   -d '{"content": "User prefers dark mode"}'
 
+# Store a memory that happened earlier (import / backfill)
+curl -X POST http://localhost:3333/memory/my-agent/add \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Visited MoMA", "occurred_at": "2023-05-20T02:21:00Z"}'
+
 # Query memory
 curl "http://localhost:3333/memory/my-agent/query?q=user+preferences" \
+  -H "Authorization: Bearer $MEMFORGE_TOKEN"
+
+# Query, returning only the passages relevant to the question
+curl "http://localhost:3333/memory/my-agent/query?q=user+preferences&snippet_tokens=1500" \
   -H "Authorization: Bearer $MEMFORGE_TOKEN"
 ```
 

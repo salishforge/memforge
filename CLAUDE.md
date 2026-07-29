@@ -99,7 +99,7 @@ context = await memory.get_context("current topic")
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/memory/:id/add` | Store event in hot tier |
-| GET | `/memory/:id/query?q=` | Search warm tier |
+| GET | `/memory/:id/query?q=` | Search warm tier (`snippet_tokens=N` returns only query-relevant passages) |
 | POST | `/memory/:id/consolidate` | Hot→warm consolidation |
 | GET | `/memory/:id/timeline` | Chronological retrieval |
 | POST | `/memory/:id/sleep` | Run full sleep cycle |
@@ -207,6 +207,8 @@ Key concepts: Hot → Warm → Cold tiers. Hybrid retrieval (FTS + pgvector HNSW
 | `KEYWORD_OVERLAP_BOOST` | `0.3` | Score boost when query tokens overlap memory keywords |
 | `HYBRID_SEMANTIC_WEIGHT` | `1.0` | Weight on the semantic arm's RRF contribution in hybrid search (1.0 = equal weighting). With RRF K=60, a weight of 1.5 means semantic ranks 1-31 outscore a keyword-only rank-1 hit; lower values give the lexical arm more say. Optimal value depends on the embedding model — measure before changing. |
 | `TEMPORAL_PROXIMITY_DAYS` | `7` | Days window for temporal proximity boost |
+| `snippet_tokens` (query param) | — | Per-result token budget. Reduces each returned memory to the passages relevant to `q`. A stored memory is often a whole conversation while the answer is one exchange; median warm row is ~10,000 chars. Lexical, deterministic, no LLM call. Omitted = full content. |
+| `occurred_at` (add body) | — | When the remembered event happened, as opposed to when it was stored. `after`/`before` filters prefer it and fall back to ingestion time. Essential for imported or backfilled memories (v3.13). |
 | `CONSOLIDATION_INNER_BATCH_SIZE` | `50` | Hot-tier rows per inner consolidation batch |
 | `TEMPORAL_DECAY_RATE` | `0` | Score decay per hour (0 = disabled) |
 

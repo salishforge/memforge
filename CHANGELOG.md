@@ -2,6 +2,74 @@
 
 All notable changes to MemForge are documented here.
 
+## [Unreleased] — Retrieval Compaction, Bi-Temporal Memory, Benchmark Correctness
+
+### Fixed (product defects)
+
+- **Consolidation silently discarded caller-supplied metadata.** Warm-tier
+  metadata was rebuilt from consolidation's own bookkeeping, so anything a
+  caller attached at `add()` time was dropped — and because consolidation then
+  deletes the contributing hot rows, permanently. An agent tagging memories with
+  a source document, customer id, or event time lost all of it on the first
+  sleep cycle. Caller keys are now preserved per contributing row under
+  `_source_metadata`, and keys the whole batch agrees on are hoisted to the top
+  level so they stay filterable as `metadata->>'key'`. Underscore-prefixed keys
+  are excluded (they are hot-tier system state, not caller data) and
+  consolidation's own keys can no longer be overwritten by a colliding caller key.
+
+- **A Redis connect attempt that never settled wedged every cached read.** The
+  stored connection promise was never cleared, so all later cached reads awaited
+  a dead promise forever — `/health` stayed instant while every cached endpoint
+  hung, with an idle event loop and a healthy database pool. Connect attempts are
+  now bounded independently of the client's own retry ladder.
+
+- **`time_start`/`time_end` record ingestion time, not event time** — see
+  `occurred_at` below.
+
+### Added
+
+- **Bi-temporal memory (`occurred_at`)** — records when a remembered event
+  happened, alongside the existing columns that record when it was stored. The
+  `after`/`before` query filters COALESCE to it and fall back to ingestion time,
+  so a conversation from 2023 ingested today no longer answers "what happened
+  this week?". Carried from `add()` through the hot tier into the warm row,
+  taking the earliest contributing event when a batch merges several. Nullable by
+  design: every memory written before this migration has NULL and behaves exactly
+  as before. Migration `schema/migration-v3.13.sql`. Exposed on `QueryResult`, the
+  REST `add` body (`occurred_at`), and the TypeScript SDK.
+
+- **Query-relevant passage extraction (`snippet_tokens`)** — reduces each
+  returned memory to the passages relevant to the query, within a per-result
+  token budget. A consolidated memory is a whole conversation (median ~10,000
+  characters in a real corpus) while the answer is usually one exchange. Opt-in;
+  omitted, content is returned unchanged. Lexical and deterministic — no LLM call
+  and no extra round trip. Available on the REST query endpoint, the TypeScript
+  SDK (`snippetTokens`), and the `memforge_query` MCP tool.
+
+### Changed
+
+- **Hybrid retrieval fuses its arms equally** (`HYBRID_SEMANTIC_WEIGHT` default
+  1.5 → 1.0). The 1.5:1 semantic weight was calibrated while the keyword arm was
+  returning roughly one result per query — it encoded a bug that has since been
+  fixed, rather than a measurement. Measured across all 500 LongMemEval
+  questions: R@1 83.2% → 83.8%, R@5 95.2% → 95.4%, R@10 97.0% → 97.6%, and it
+  halves the cases where fusion buries a session the lexical arm ranked first.
+  Configurable as before; the optimum is embedding-model dependent.
+
+### Fixed (benchmark harness — every prior number was measured through these)
+
+- **QA ran keyword-only retrieval and never exercised hybrid**, because it read a
+  default intended for the mode-enumerating retrieval sweep.
+- **The reader was never given session dates**, making `temporal-reasoning`
+  (133 of 500 questions) unanswerable by construction. Supplying them was worth
+  +12pp on that category.
+- **Rate-limit responses were fatal**, so a transient 429 permanently killed a
+  question; 184 of 500 died that way on one run. Now retried with backoff, and
+  resume discards errored rows so a retry can repair them.
+- Judge verdicts wrapped in a single-element JSON array are accepted; rejecting
+  them made a row permanently unscoreable and spun the resume loop indefinitely.
+
+
 ## [Unreleased] — Benchmark Relabelling + Epistemic Confidence Model + Memory Sentiment Tagging + Adaptive Sleep Intelligence
 
 ### Changed (Benchmark Relabelling — P0)
