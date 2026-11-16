@@ -47,3 +47,7 @@ benchmarks/results/
 __pycache__/
 *.pyc
 benchmarks/longmemeval-qa/results/
+
+# Python
+__pycache__/
+*.pyc
