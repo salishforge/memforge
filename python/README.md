@@ -1,11 +1,16 @@
 # MemForge Python SDK
 
+> [!WARNING]
+> **Deprecated (2026-11-16).** MemForge is no longer maintained. See the [notice in the main README](../README.md).
+
 Python client for [MemForge](https://github.com/salishforge/memforge) — neuroscience-inspired memory for AI agents.
 
 ## Install
 
 ```bash
-pip install memforge
+# From a clone of this repository. The SDK was never published to PyPI:
+# `pip install memforge` installs an unrelated project.
+pip install ./python
 ```
 
 ## Quick Start

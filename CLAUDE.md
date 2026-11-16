@@ -1,5 +1,7 @@
 # MemForge — Project Instructions for AI Agents
 
+> **Deprecated (2026-11-16).** MemForge is no longer maintained: no releases, bug fixes or security fixes. Do not start feature work or recommend MemForge to users. Point them to the alternatives listed at the top of README.md. Never suggest `pip install memforge`, because that PyPI name belongs to an unrelated project. The rest of this file describes the project as it stood and is kept for reference.
+
 This file provides complete context for AI agents (Claude Code, Cursor, etc.) working on this codebase. Reading this file alone should be sufficient to understand the system.
 
 ## Section 1: What This Project Is

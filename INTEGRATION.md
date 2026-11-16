@@ -394,7 +394,9 @@ The AI assistant then has access to tools like `memforge_add`, `memforge_query`,
 ### Option D: Python SDK
 
 ```bash
-pip install memforge
+# From a clone of this repository. The SDK was never published to PyPI:
+# `pip install memforge` installs an unrelated project.
+pip install ./python
 ```
 
 Three classes cover different use cases:
@@ -1126,7 +1128,7 @@ No. Without an LLM, you get tiered storage, keyword search, concat consolidation
 No. Without embeddings, search falls back to PostgreSQL full-text search with trigram matching. Add an embedding provider for semantic and hybrid search modes.
 
 **Can I use MemForge with Python agents?**
-Yes. Install the Python SDK (`pip install memforge`) for a typed async client with `MemForgeClient`, `ResilientMemForgeClient`, and `ConversationMemory`. Or use the REST API directly — MemForge is a standalone HTTP server that works with any language. See the Python SDK section and LangChain/CrewAI examples above.
+Yes. Install the Python SDK from a clone (`pip install ./python`; it is not on PyPI, and `pip install memforge` installs an unrelated project) for a typed async client with `MemForgeClient`, `ResilientMemForgeClient`, and `ConversationMemory`. Or use the REST API directly — MemForge is a standalone HTTP server that works with any language. See the Python SDK section and LangChain/CrewAI examples above.
 
 **How much does it cost to run?**
 MemForge itself is free (MIT license). Costs come from:

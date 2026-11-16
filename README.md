@@ -1,13 +1,19 @@
 # MemForge
 
+> [!WARNING]
+> **Deprecated (2026-11-16). MemForge is no longer maintained.** There will be no further releases, bug fixes or security fixes. Do not use it for new projects.
+>
+> - **If you run it today:** set `MEMFORGE_TOKEN` in the server's own environment. Without it (or OAuth2) the server accepts unauthenticated requests. The standalone image does not set it, and the shipped Docker Compose file does not pass it through from `.env`, so add it to the `memforge` service's `environment:` block. Any valid token can read and write every agent's memory, so keep the server on a trusted network and plan a migration. See [SECURITY.md](SECURITY.md).
+> - **Never run `pip install memforge`.** That PyPI name belongs to an unrelated project. The Python SDK was never published; install it from a clone with `pip install ./python`.
+> - **Alternatives (November 2026):** [Hindsight](https://github.com/vectorize-io/hindsight) (MIT, PostgreSQL + pgvector, self-hostable, official Claude Code and OpenClaw integrations), [agentmemory](https://github.com/rohitg00/agentmemory) (Apache-2.0, runs locally with no API keys), and [Basic Memory](https://github.com/basicmachines-co/basic-memory) (Markdown files plus MCP).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![npm version](https://img.shields.io/npm/v/@salishforge/memforge.svg?label=npm&color=cb3837)](https://www.npmjs.com/package/@salishforge/memforge)
 [![npm downloads](https://img.shields.io/npm/dm/@salishforge/memforge.svg?color=blue)](https://www.npmjs.com/package/@salishforge/memforge)
-[![Status: Beta](https://img.shields.io/badge/Status-Beta-yellow.svg)](#project-status)
+[![Status: Deprecated](https://img.shields.io/badge/Status-Deprecated-red.svg)](#project-status)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg)](https://www.postgresql.org)
-[![Security Audited](https://img.shields.io/badge/Security-9%20Audits%20Passed-brightgreen.svg)](ADVERSARIAL-ASSESSMENT.md)
 [![LongMemEval-S benchmark](https://img.shields.io/badge/LongMemEval--S-re--run%20in%20progress-lightgrey.svg)](benchmarks/RESULTS.md)
 
 Neuroscience-inspired memory system for AI agents. Sleep cycles consolidate, revise, and strengthen memories — just like biological brains.
@@ -18,7 +24,7 @@ MemForge manages agent memory across three tiers (hot → warm → cold) with ve
 
 ## Project Status
 
-**Beta** — Production hardening is complete. MemForge has passed 9 rounds of security audit (all clean at MEDIUM+) and ships with a CI/CD pipeline. The full test suite covers integration paths, LLM-dependent paths via mock providers, HTTP API endpoints, and load targets. Benchmark numbers are currently being re-measured — see the note below.
+**Deprecated (2026-11-16)** — no longer maintained, with no further releases, bug fixes or security fixes (see the notice at the top). The rest of this README describes the project as it stood and is kept for reference.
 
 > **Benchmark note:** Previously published LongMemEval figures (93.2% "R@5") have been **retracted**. The scorer that produced them ignored its `k` argument, so every reported R@k was computed over the entire candidate list rather than the top k — and because consolidation packs many sessions into one retrieved row, that list was far larger than k. The scorer is fixed and a full re-run is in progress. See [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
 
@@ -63,7 +69,7 @@ See [INTEGRATION.md](INTEGRATION.md) for how to wire MemForge into your agent (a
 - **Claude Dreaming** — Four-layer integration with Anthropic's Dreams feature: native async dream runs, `/v1/dreams` drop-in shim, optional Service-layer delegation to Anthropic, and bidirectional sync with Anthropic Memory Stores. See [INTEGRATION.md § Claude Dreaming Integration](INTEGRATION.md#claude-dreaming-integration-v36).
 - **MCP Server** — 30 tools for Claude Code, Cursor, and MCP-compatible AI tools
 - **TypeScript SDK** — Zero-dependency HTTP client for any JS runtime
-- **Python SDK** — `MemForgeClient`, `ResilientMemForgeClient`, `ConversationMemory` adapter, OpenAI + Anthropic tool definitions. `pip install memforge`.
+- **Python SDK** — `MemForgeClient`, `ResilientMemForgeClient`, `ConversationMemory` adapter, OpenAI + Anthropic tool definitions. Install from a clone with `pip install ./python`; it is not on PyPI.
 - **Docker Standalone** — Single container image with embedded PostgreSQL. `docker run -p 3333:3333 salishforge/memforge:standalone`
 - **ChatGPT Plugin** — `public/ai-plugin.json` manifest for direct ChatGPT integration
 - **LLM Opt-In** — Post-retrieval reranking and LLM-assisted ingest available but off by default
@@ -83,7 +89,9 @@ A single container starts MemForge with an embedded PostgreSQL database. No sepa
 ### Path 2: Python SDK
 
 ```bash
-pip install memforge
+# From a clone of this repository. The SDK was never published to PyPI:
+# `pip install memforge` installs an unrelated project.
+pip install ./python
 ```
 
 ```python

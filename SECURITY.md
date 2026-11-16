@@ -1,34 +1,34 @@
 # Security Policy
 
-## Supported Versions
+## Status: unsupported
 
-| Version | Supported          |
-|---------|--------------------|
-| 2.1.x   | Yes                |
-| 2.0.x   | Security fixes only|
-| < 2.0   | No                 |
+MemForge was deprecated on 2026-11-16 and is no longer maintained. **No version receives security fixes**, and no patched release will be published.
+
+| Version | Supported |
+|---------|-----------|
+| All     | No        |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in MemForge, please report it responsibly.
+There is no security support. If you want other users warned about a vulnerability, you can still [open a private security advisory](https://github.com/salishforge/memforge/security/advisories/new). It may be published as a warning, but no fix will follow. Please do not open a public issue.
 
-**Do not open a public issue.** Instead:
+## Known unfixed limitations
 
-1. [Open a private security advisory](https://github.com/salishforge/memforge/security/advisories/new) on GitHub with details of the vulnerability
-2. Include steps to reproduce, potential impact, and suggested fix if you have one
-3. Allow up to 72 hours for an initial response
+These are not going to be fixed. If you still run MemForge, plan around them and migrate:
 
-We will:
-- Acknowledge receipt within 72 hours
-- Provide an estimated timeline for a fix
-- Credit you in the security advisory (unless you prefer anonymity)
-- Release a patch and advisory once the fix is ready
+- **No authentication unless you configure it.** If neither `MEMFORGE_TOKEN` nor OAuth2 is set, every `/memory/*` route accepts unauthenticated requests. The standalone image does not set a token, and the shipped Docker Compose file does not pass `MEMFORGE_TOKEN` through from `.env`; add it to the `memforge` service's `environment:` block yourself.
+- **A token is not bound to an agent.** Any caller with a valid token can read and write every agent's memory. Treat everyone who holds the token as one trust domain.
+- **PostgreSQL row-level security is not enforced on the application's own database connection.** Isolation between agents rests on query predicates only.
+- **Audit-chain verification is unreliable.** It can report tampering on healthy data, and concurrent writers can fork the chain.
+- **The PyPI name `memforge` belongs to an unrelated project.** Never run `pip install memforge`.
+
+The sections below describe the design as documented while the project was maintained. Where they conflict with this list, this list is correct.
 
 ## Security Architecture
 
 ### Authentication
 
-- All `/memory/*` endpoints require Bearer token authentication (`MEMFORGE_TOKEN`)
+- `/memory/*` endpoints require Bearer token authentication only when `MEMFORGE_TOKEN` or OAuth2 is configured (see Known unfixed limitations)
 - Admin endpoints (`/admin/*`) use a separate `ADMIN_TOKEN`
 - Token comparison uses `crypto.timingSafeEqual` to prevent timing attacks
 - Token validation results are cached for 30 seconds to reduce overhead
@@ -36,7 +36,7 @@ We will:
 ### Authorization
 
 - Scope-based authorization: `memforge:read` for GET operations, `memforge:write` for POST operations
-- Multi-tenant isolation: all queries include `agent_id` predicates — Agent A cannot access Agent B's data
+- Agent scoping: all queries include `agent_id` predicates, but the caller chooses the `agent_id`, so this is not isolation between callers (see Known unfixed limitations)
 
 ### Input Validation
 
