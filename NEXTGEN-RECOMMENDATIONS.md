@@ -1,5 +1,9 @@
 # MemForge — Competitive Analysis & Next-Gen Recommendations
 
+> **Superseded (2026-11-16).** The competitive landscape, benchmarks and positioning here are replaced by
+> [planning/COMPETITIVE-ANALYSIS.md](planning/COMPETITIVE-ANALYSIS.md). The work blocks (WB-01…WB-15) are
+> reconciled in [planning/NEXT-ITERATION-PLAN.md](planning/NEXT-ITERATION-PLAN.md) §8.1. This file is kept as history.
+
 **Generated:** 2026-07-27
 **Basis:** MemForge `main` @ v3.0.0-beta.3 (README, Known Limitations) + external research on the
 2026 agent-memory landscape.
