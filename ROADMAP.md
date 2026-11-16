@@ -1,5 +1,7 @@
 # MemForge Roadmap
 
+> **Deprecated (2026-11-16).** This roadmap is no longer active and none of it will be built. See the notice at the top of [README.md](README.md).
+
 ## The Long-Term Vision
 
 AI agents today are stateless by default. Every conversation starts from zero. The few systems that add memory treat it as a passive store — save facts, retrieve facts, hope for the best.

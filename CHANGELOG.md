@@ -2,6 +2,14 @@
 
 All notable changes to MemForge are documented here.
 
+## Deprecated — 2026-11-16
+
+MemForge is no longer maintained. There will be no further releases, bug fixes or security fixes.
+
+- README, CLAUDE.md, ROADMAP and the Python SDK README carry a deprecation notice that points to maintained alternatives.
+- SECURITY.md now lists no supported versions and documents the known unfixed limitations.
+- Install instructions no longer say `pip install memforge`: the SDK was never published to PyPI, and that name belongs to an unrelated project.
+
 ## [Unreleased] — Retrieval Compaction, Bi-Temporal Memory, Benchmark Correctness
 
 ### Fixed (product defects)
