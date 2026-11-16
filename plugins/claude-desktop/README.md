@@ -26,7 +26,7 @@ Open Claude Desktop settings → Developer → Edit Config, or edit directly:
   "mcpServers": {
     "memforge": {
       "command": "npx",
-      "args": ["memforge-mcp"],
+      "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
       "env": {
         "MEMFORGE_URL": "http://localhost:3333",
         "MEMFORGE_TOKEN": ""
@@ -107,7 +107,7 @@ Use different agent IDs for different Claude contexts:
   "mcpServers": {
     "memforge-personal": {
       "command": "npx",
-      "args": ["memforge-mcp"],
+      "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
       "env": {
         "MEMFORGE_URL": "http://localhost:3333",
         "MEMFORGE_AGENT_ID": "claude-personal"
@@ -115,7 +115,7 @@ Use different agent IDs for different Claude contexts:
     },
     "memforge-work": {
       "command": "npx",
-      "args": ["memforge-mcp"],
+      "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
       "env": {
         "MEMFORGE_URL": "http://localhost:3333",
         "MEMFORGE_AGENT_ID": "claude-work"

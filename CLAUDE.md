@@ -92,7 +92,7 @@ context = await memory.get_context("current topic")
 
 **MCP (Claude Code / Cursor):**
 ```json
-{ "mcpServers": { "memforge": { "command": "npx", "args": ["memforge-mcp"],
+{ "mcpServers": { "memforge": { "command": "npx", "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
   "env": { "MEMFORGE_URL": "http://localhost:3333", "MEMFORGE_TOKEN": "your-token" } } } }
 ```
 
