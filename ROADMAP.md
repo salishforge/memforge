@@ -1,12 +1,5 @@
 # MemForge Roadmap
 
-> **Next iteration (November 2026):** the release train, owner decisions and work-item register are in
-> [planning/NEXT-ITERATION-PLAN.md](planning/NEXT-ITERATION-PLAN.md), with the
-> [competitive analysis](planning/COMPETITIVE-ANALYSIS.md) and the
-> [enterprise edition design](planning/ENTERPRISE-EDITION.md). Where the status sections below
-> disagree with that plan (for example "Phases 1–4 complete" or "CI fully green"), the plan's claim
-> gate (§3.3) is the current assessment. The long-term vision below is unchanged.
-
 ## The Long-Term Vision
 
 AI agents today are stateless by default. Every conversation starts from zero. The few systems that add memory treat it as a passive store — save facts, retrieve facts, hope for the best.
