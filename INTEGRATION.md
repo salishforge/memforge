@@ -377,7 +377,7 @@ MemForge ships as an MCP server with 17 tools. AI assistants call the tools dire
   "mcpServers": {
     "memforge": {
       "command": "npx",
-      "args": ["memforge-mcp"],
+      "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
       "env": {
         "MEMFORGE_URL": "http://localhost:3333",
         "MEMFORGE_TOKEN": "your-token"
@@ -750,17 +750,17 @@ export WARM_CONSOLIDATION_TARGET=shared
 # Device A — Claude Desktop on Windows, working on memforge
 export MEMFORGE_NAMESPACE=project-memforge
 export MEMFORGE_SESSION_ID=desktop-windows-$(uuidgen)
-npx memforge-mcp
+npx -p @salishforge/memforge memforge-mcp
 
 # Device B — SSH session on a remote machine, also on memforge
 export MEMFORGE_NAMESPACE=project-memforge
 export MEMFORGE_SESSION_ID=ssh-$(hostname)-$(uuidgen)
-npx memforge-mcp
+npx -p @salishforge/memforge memforge-mcp
 
 # Device C — Claude Code on a laptop, working on a different project
 export MEMFORGE_NAMESPACE=project-callscreen
 export MEMFORGE_SESSION_ID=laptop-$(uuidgen)
-npx memforge-mcp
+npx -p @salishforge/memforge memforge-mcp
 ```
 
 What this gives you:

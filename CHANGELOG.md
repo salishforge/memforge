@@ -9,6 +9,8 @@ MemForge is no longer maintained. There will be no further releases, bug fixes o
 - README, CLAUDE.md, ROADMAP and the Python SDK README carry a deprecation notice that points to maintained alternatives.
 - SECURITY.md now lists no supported versions and documents the known unfixed limitations.
 - Install instructions no longer say `pip install memforge`: the SDK was never published to PyPI, and that name belongs to an unrelated project.
+- Removed the MCP directory manifests (`server.json`, `smithery.yaml`, `glama.json`). They pointed to an npm package named `memforge-mcp`, which does not exist and which MemForge does not own.
+- MCP configs in the docs now run `npx -y -p @salishforge/memforge memforge-mcp`, so `npx` resolves the `memforge-mcp` command from MemForge's own package instead of looking up an unowned package name.
 
 ## [Unreleased] — Retrieval Compaction, Bi-Temporal Memory, Benchmark Correctness
 

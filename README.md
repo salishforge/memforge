@@ -380,7 +380,7 @@ MemForge ships as an MCP server with 17 tools. Add to Claude Code:
   "mcpServers": {
     "memforge": {
       "command": "npx",
-      "args": ["memforge-mcp"],
+      "args": ["-y", "-p", "@salishforge/memforge", "memforge-mcp"],
       "env": {
         "MEMFORGE_URL": "http://localhost:3333",
         "MEMFORGE_TOKEN": "your-token"
